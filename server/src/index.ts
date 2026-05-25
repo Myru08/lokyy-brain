@@ -27,8 +27,11 @@ import { llmRoutes } from "./routes/llm.js";
 import { llmMigrationRoutes } from "./routes/llm-migration.js";
 import { scoringRoutes } from "./routes/scoring.js";
 import { intentRoutes } from "./routes/intent.js";
+import { hydeRoutes } from "./routes/hyde.js";
+import { selfRagRoutes } from "./routes/self-rag.js";
 import { tracesRoutes } from "./routes/traces.js";
 import { sleepAgentRoutes } from "./routes/sleep-agent.js";
+import { pprRoutes } from "./routes/ppr.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -75,6 +78,19 @@ app.route("/api/scoring", scoringRoutes);
 app.use("/api/intent/*", setupGate);
 app.route("/api/intent", intentRoutes);
 
+// Phase B Wave B1 / Story 2 — HyDE (Hypothetical Document Embedding).
+// Triggered for question-intent queries — see packages/core/src/llm/hyde.ts.
+app.use("/api/hyde", setupGate);
+app.use("/api/hyde/*", setupGate);
+app.route("/api/hyde", hydeRoutes);
+
+// Phase B Wave B1 / Story 4 — Self-RAG-style Reflection (prompt-level).
+// Two endpoints: /reflect for post-generation hop-decisions, /critique for
+// pre-generation per-chunk relevance filtering. See packages/core/src/llm/selfRag.ts.
+app.use("/api/self-rag", setupGate);
+app.use("/api/self-rag/*", setupGate);
+app.route("/api/self-rag", selfRagRoutes);
+
 // Phase A Wave A1 / Story 3 — Retrieval-Trace-Log (Multi-Trace-Theory).
 // Fire-and-forget telemetry endpoint for non-API retrieval sources
 // (cmd-k, cmd-o, wikilink, hover, embed). Server-side note GETs call
@@ -89,6 +105,12 @@ app.route("/api/traces", tracesRoutes);
 app.use("/api/sleep-agent", setupGate);
 app.use("/api/sleep-agent/*", setupGate);
 app.route("/api/sleep-agent", sleepAgentRoutes);
+
+// Phase B Wave B1 / Story 1 — Personalized PageRank (HippoRAG-style)
+// über den Wikilink-Graph. Seeds aus RRF-Top-N → spreading activation.
+app.use("/api/ppr", setupGate);
+app.use("/api/ppr/*", setupGate);
+app.route("/api/ppr", pprRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);

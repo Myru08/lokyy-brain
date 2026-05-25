@@ -11,3 +11,6 @@ export * from "./init.js";
 export * from "./configStore.js";
 export * from "./embeddingsMigration.js";
 export * from "./intent.js";
+export * from "./hyde.js";
+export * from "./ragFusion.js";
+export * from "./selfRag.js";

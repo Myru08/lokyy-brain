@@ -1,11 +1,15 @@
 import { Hono } from "hono";
 import {
   EmbeddingUnavailableError,
+  LlmRouter,
+  RagFusion,
   Tier2Provider,
+  getLlmRouting,
   getMemoryProvider,
   getNote,
   hybridSearch,
   type HybridOpts,
+  type RetrieveHit,
   type SearchOpts,
 } from "@lokyy/core";
 
@@ -128,5 +132,103 @@ async function embedQuery(text: string): Promise<number[]> {
   }
   return data.embedding;
 }
+
+/**
+ * POST /api/search/rag-fusion — Multi-Query Rewrite + RRF (Phase B Wave B1 / Story 3).
+ *
+ * Body:
+ *   { query: string, numRewrites?: number, rrfK?: number, topK?: number,
+ *     includeOriginal?: boolean, intent?: HybridOpts["intent"] }
+ *
+ * Response:
+ *   { rewrites: [{ text, isOriginal }],
+ *     fused:    [{ noteId, title?, score, sources }],
+ *     durationMs, degraded? }
+ *
+ * The retrieval function passed to `RagFusion` wraps `hybridSearch` so each
+ * variant gets the full BM25+dense pipeline. Embedding failures degrade
+ * gracefully to a zero-vector (BM25-only) per variant — same behaviour as
+ * `/api/search/hybrid`. LLM rewrite failures degrade to original-only and
+ * are flagged via `degraded: true` in the response.
+ */
+let _ragRouter: LlmRouter | null = null;
+async function getRagRouter(): Promise<LlmRouter> {
+  if (!_ragRouter) {
+    const routing = await getLlmRouting();
+    _ragRouter = new LlmRouter(routing);
+  }
+  return _ragRouter;
+}
+
+searchRoutes.post("/search/rag-fusion", async (c) => {
+  const body = await c.req.json<{
+    query?: string;
+    numRewrites?: number;
+    rrfK?: number;
+    topK?: number;
+    includeOriginal?: boolean;
+    intent?: HybridOpts["intent"];
+  }>();
+  const query = (body.query ?? "").trim();
+  if (query.length === 0) {
+    return c.json({ rewrites: [], fused: [], durationMs: 0 });
+  }
+
+  const router = await getRagRouter();
+
+  // Wrap hybridSearch into a uniform retrieval-fn the fuser expects.
+  // Embedding errors per-variant are absorbed into a zero-vector so the
+  // BM25 leg still contributes — mirrors /api/search/hybrid.
+  const retrieve = async (variant: string): Promise<RetrieveHit[]> => {
+    let embedding: number[];
+    try {
+      embedding = await embedQuery(variant);
+    } catch (err) {
+      if (err instanceof EmbeddingUnavailableError || err instanceof Error) {
+        embedding = new Array<number>(768).fill(0);
+      } else {
+        throw err;
+      }
+    }
+    const hits = await hybridSearch(variant, embedding, {
+      intent: body.intent,
+      topK: body.topK,
+      rrfK: body.rrfK,
+      vaultId: DEFAULT_VAULT,
+    });
+    return hits.map((h) => ({ noteId: h.noteId, score: h.score }));
+  };
+
+  const fuser = new RagFusion(router, retrieve);
+  const result = await fuser.fuse(query, {
+    numRewrites: body.numRewrites,
+    rrfK: body.rrfK,
+    topK: body.topK,
+    includeOriginal: body.includeOriginal,
+  });
+
+  // Enrich fused hits with note titles so the PWA doesn't need an extra
+  // round-trip. Missing notes (deleted between index and request) are
+  // dropped silently — same policy as other search routes.
+  const enriched = await Promise.all(
+    result.fused.map(async (h) => {
+      const note = await getNote(h.noteId);
+      if (!note) return null;
+      return {
+        noteId: h.noteId,
+        title: note.title,
+        score: h.score,
+        sources: h.sources,
+      };
+    }),
+  );
+
+  return c.json({
+    rewrites: result.rewrites,
+    fused: enriched.filter((x): x is NonNullable<typeof x> => x !== null),
+    durationMs: result.durationMs,
+    ...(result.degraded ? { degraded: true } : {}),
+  });
+});
 
 export { getNote };

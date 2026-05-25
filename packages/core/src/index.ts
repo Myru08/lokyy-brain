@@ -49,6 +49,18 @@ export {
   type TagSummary,
 } from "./graph/graphService.js";
 
+// ─── Personalized PageRank (Phase B Wave B1 / Story 1) ──────────────────
+// HippoRAG-style spreading activation über den Wikilink-Graph.
+export {
+  personalizedPageRank,
+  pageRankOnGraph,
+  seedsFromRrfHits,
+  type EdgeKind,
+  type PPRSeeds,
+  type PPROptions,
+  type PPRHit,
+} from "./graph/ppr.js";
+
 // ─── notesService (Story 1.4) ───────────────────────────────────────────
 export {
   listNotes,
