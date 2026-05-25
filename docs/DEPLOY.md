@@ -6,6 +6,25 @@ ParadeDB + Ollama.
 
 ---
 
+## Deploy-Pattern wählen
+
+Es gibt zwei unterstützte Wege:
+
+1. **All-in-one** (`docker-compose.coolify.yml`, dieses Dokument): alle sechs
+   Services in einer Coolify-Application. Einfacher (ein Resource-Item), aber
+   RAM-intensiv beim Build — geeignet wenn dein Coolify-Build-Server ≥6 GB
+   freien RAM hat. Bei kleineren Build-Hosts gibt's gerne OOM-Kills
+   (Exit 255).
+2. **Resources + App** (`docker-compose.coolify-app.yml`, **empfohlen**):
+   Postgres + Ollama + Forgejo als separate Coolify-Resources, nur die drei
+   Lokyy-Services (`lokyy-brain`, `lokyy-pwa`, `lokyy-mcp`) als Application.
+   Vermeidet Build-OOM, bietet saubere Lifecycles und separate Backups pro
+   Service. Schritt-für-Schritt in [DEPLOY-RESOURCES.md](DEPLOY-RESOURCES.md).
+
+Der Rest dieses Dokuments beschreibt das **All-in-one-Pattern**.
+
+---
+
 ## 1. Prerequisites
 
 - A VPS with Coolify v4 installed and reachable on its dashboard URL.
