@@ -1,0 +1,34 @@
+{
+  "name": "@lokyy/mcp",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "dist/bin.js",
+  "bin": {
+    "lokyy-mcp": "./dist/bin.js",
+    "lokyy-mcp-http": "./dist/binHttp.js",
+    "lokyy-mcp-setup": "./dist/setup.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/bin.js",
+    "start:http": "node dist/binHttp.js",
+    "setup": "node dist/setup.js",
+    "dev": "tsx src/bin.ts",
+    "dev:http": "tsx src/binHttp.ts",
+    "dev:setup": "tsx src/setup.ts"
+  },
+  "dependencies": {
+    "@lokyy/core": "workspace:*",
+    "@lokyy/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "micromatch": "^4.0.8",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@types/micromatch": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

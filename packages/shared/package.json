@@ -1,0 +1,11 @@
+{
+  "name": "@lokyy/shared",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "main": "src/types.ts",
+  "types": "src/types.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}

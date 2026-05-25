@@ -1,0 +1,54 @@
+# lokyy-brain Caddy config. Automatisches Let's-Encrypt-Cert via DNS-A-Record.
+# Set LOKYY_DOMAIN in .env zu deiner echten Domain (z.B. lokyy.deine-domain.tld).
+#
+# Routes:
+#   /mcp/*       → MCP HTTP transport (claude.ai Custom Connector kommt hier rein)
+#   /api/*       → lokyy-brain REST API
+#   /            → PWA (Single-Page-App, fallback auf index.html für client-side routing)
+#
+# Forgejo läuft separat unter forgejo.${LOKYY_DOMAIN} (eigener A-Record + subdomain).
+
+{$LOKYY_DOMAIN} {
+	# Sicherheits-Header
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		# CORS für claude.ai Custom Connectors
+		Access-Control-Allow-Origin "https://claude.ai"
+		Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS"
+		Access-Control-Allow-Headers "Content-Type, Authorization, Mcp-Session-Id"
+		Access-Control-Expose-Headers "Mcp-Session-Id"
+	}
+
+	# MCP-Transport (für claude.ai Custom Connector)
+	handle /mcp* {
+		reverse_proxy lokyy-mcp-http:8788
+	}
+
+	# REST-API für PWA + tools
+	handle /api/* {
+		reverse_proxy lokyy-brain:8787
+	}
+
+	# PWA (Static-Site / SPA, alles andere)
+	handle {
+		reverse_proxy lokyy-brain:8787
+	}
+
+	# Compression
+	encode gzip zstd
+
+	# Logging — schreibt in stdout, docker logs caddy
+	log {
+		output stdout
+		format console
+	}
+}
+
+# Forgejo unter forgejo.<domain>
+forgejo.{$LOKYY_DOMAIN} {
+	reverse_proxy forgejo:3000
+	encode gzip zstd
+}

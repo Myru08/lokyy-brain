@@ -1,0 +1,115 @@
+# lokyy-brain — Coolify Compose. Kein Caddy, kein Port-Binding nach außen.
+# Coolify's vorgeschalteter Traefik macht TLS + Routing via SERVICE_FQDN magic vars.
+#
+# Setup in Coolify UI:
+#   1. Project → "+ New Resource" → "Docker Compose"
+#   2. Repository: deine git url (lokyy-brain repo)
+#   3. Compose File Path: docker-compose.coolify.yml
+#   4. Environment Variables (im Coolify-UI setzen — siehe .env.coolify.example):
+#        SERVICE_FQDN_LOKYYBRAIN_8787   (z.B. lokyy.deine-domain.tld)  ← Coolify generiert TLS + Route
+#        SERVICE_FQDN_LOKYYMCP_8788     (z.B. lokyy.deine-domain.tld:/mcp  ODER mcp.lokyy.deine-domain.tld)
+#        SERVICE_FQDN_FORGEJO_3000      (z.B. forgejo.lokyy.deine-domain.tld)
+#        POSTGRES_PASSWORD, LOKYY_MCP_TOKEN, GIT_REMOTE, LOKYY_VAULT_ID
+#   5. Deploy → Coolify pulled das Repo, baut die Images, startet alles, holt TLS-Cert.
+#
+# Für claude.ai Custom Connector: URL = https://<SERVICE_FQDN_LOKYYMCP>/mcp, Bearer = LOKYY_MCP_TOKEN.
+
+services:
+  lokyy-brain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      forgejo:
+        condition: service_started
+    environment:
+      # Coolify-Magic: rewrites zu echter FQDN + setzt Traefik-Labels auto.
+      - SERVICE_FQDN_LOKYYBRAIN_8787
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
+      - VAULT_DIR=/var/lokyy/vault
+      - GIT_REMOTE=${GIT_REMOTE}
+      - GIT_BRANCH=${GIT_BRANCH:-main}
+      - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-lokyy-brain}
+      - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-lokyy-brain@localhost}
+      - OLLAMA_HOST=http://ollama:11434
+      - SUPADATA_API_KEY=${SUPADATA_API_KEY:-}
+      - PORT=8787
+    volumes:
+      - vault-data:/var/lokyy/vault
+
+  lokyy-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lokyy-brain:
+        condition: service_started
+    environment:
+      - SERVICE_FQDN_LOKYYMCP_8788
+      - LOKYY_DB_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
+      - LOKYY_VAULT_DIR=/var/lokyy/vault
+      - LOKYY_GIT_REMOTE=${GIT_REMOTE}
+      - LOKYY_GIT_BRANCH=${GIT_BRANCH:-main}
+      - LOKYY_VAULT_ID=${LOKYY_VAULT_ID}
+      - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
+      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
+      - LOKYY_MCP_HTTP_PORT=8788
+    volumes:
+      - vault-data:/var/lokyy/vault
+    command: ["node", "/app/mcp/dist/binHttp.js"]
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:9
+    restart: unless-stopped
+    environment:
+      - SERVICE_FQDN_FORGEJO_3000
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__database__DB_TYPE=sqlite3
+    volumes:
+      - forgejo-data:/data
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=lokyy_brain
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lokyy_brain"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        sleep 5 &&
+        OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text &&
+        echo "[ollama-init] nomic-embed-text ready"
+    restart: "no"
+
+volumes:
+  vault-data:
+  forgejo-data:
+  postgres-data:
+  ollama-data:

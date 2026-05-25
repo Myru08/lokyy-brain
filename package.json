@@ -1,0 +1,15 @@
+{
+  "name": "lokyy-brain",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Eigenständiges, Obsidian-nahes Knowledge-Tool mit Forgejo als Wahrheit.",
+  "scripts": {
+    "dev:server": "pnpm --filter server dev",
+    "dev:pwa": "pnpm --filter pwa dev",
+    "build": "pnpm -r build"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

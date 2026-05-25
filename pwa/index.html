@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#13171D" />
+    <title>Lokyy Brain</title>
+    <link rel="icon" type="image/png" href="/logo-large.png" />
+    <link rel="apple-touch-icon" href="/logo-large.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        /* Brand-Theme tokens. Mirror of pwa/src/theme.ts — both must stay in sync. */
+        --bg-base: #13171D;
+        --bg-surface: #1A1F26;
+        --bg-elevated: #222831;
+        --border: #2A323D;
+        --border-strong: #3B4452;
+        --text: #FFFFFF;
+        --text-muted: #8B9099;
+        --text-dim: #5A6270;
+        --accent: #F97316;
+        --accent-hover: #FB923C;
+        --accent-dim: #C2410C;
+        --accent2: #FFA94D;
+        --selection: rgba(249, 115, 22, 0.20);
+        --accent-soft: rgba(249, 115, 22, 0.08);
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: var(--bg-base);
+        color: var(--text);
+        font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #root {
+        height: 100%;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      /* von ImportPanel-Statusicons genutzt */
+      @keyframes sw-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      .sw-spin {
+        animation: sw-spin 0.9s linear infinite;
+      }
+      ::-webkit-scrollbar {
+        width: 9px;
+        height: 9px;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: var(--border);
+        border-radius: 5px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: var(--border-strong);
+      }
+      ::-webkit-scrollbar-track {
+        background: transparent;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

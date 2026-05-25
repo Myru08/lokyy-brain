@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.local
+.env
+.DS_Store
+# der Vault-Working-Clone wird vom Server zur Laufzeit befüllt
+/vault/

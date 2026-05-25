@@ -1,0 +1,534 @@
+import { useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { C, FONT } from "./theme.js";
+
+/**
+ * Properties Panel — Obsidian-style frontmatter editor.
+ *
+ * Sits above the editor body and lets the user see+edit YAML frontmatter
+ * as structured fields. Client-side only: parses on every render from
+ * `body`, serializes on every change and reports the new body back via
+ * `onUpdateBody`. The body content (everything after the closing `---`)
+ * is preserved byte-for-byte — only the frontmatter block is rewritten.
+ *
+ * ---------------------------------------------------------------------
+ * Limitations of the inline YAML parser (intentional — not full YAML):
+ *
+ *   Supports only the subset lokyy-vault frontmatter uses today:
+ *     key: <string>              → string
+ *     key: [a, b, c]             → string[]   (quotes optional, trimmed)
+ *     key: true | false          → boolean
+ *     ISO dates                  → kept as strings (caller treats as ISO)
+ *
+ *   NOT supported (will round-trip as raw strings or be dropped):
+ *     - block scalars (`|`, `>`)
+ *     - nested mappings / multi-line indented structures
+ *     - anchors, aliases, tags (`!!str`)
+ *     - inline mappings (`{foo: bar}`)
+ *
+ *   The server-side authority for frontmatter validity is the vault
+ *   pre-commit hook + `@lokyy/core` (gray-matter + ajv). This panel is
+ *   strictly for ergonomic editing of common keys; anything exotic
+ *   should be edited in the raw markdown source.
+ * ---------------------------------------------------------------------
+ */
+
+export interface PropertiesPanelProps {
+  /** Full markdown including frontmatter. */
+  body: string;
+  /** Called with the new full markdown when any property changes. */
+  onUpdateBody: (newBody: string) => void;
+  /** Whether the panel is expanded (shows fields). */
+  expanded: boolean;
+  /** Toggle handler — clicking the header invokes this. */
+  onToggle: () => void;
+}
+
+type ScalarValue = string | boolean;
+type FieldValue = ScalarValue | string[];
+
+interface ParsedFrontmatter {
+  /** Ordered keys, preserves source order. */
+  keys: string[];
+  /** Map of key → typed value. */
+  values: Record<string, FieldValue>;
+  /** Byte-exact source body (everything after closing `---\n`). */
+  bodyAfter: string;
+  /** True if a frontmatter block was found. */
+  found: boolean;
+}
+
+/** Must match DOC_TYPES in @lokyy/core. */
+const DOC_TYPE_OPTIONS = [
+  "note",
+  "capture",
+  "project",
+  "task",
+  "decision",
+  "meeting",
+  "customer",
+  "workflow",
+  "intervention",
+  "content",
+] as const;
+
+const READ_ONLY_KEYS = new Set(["id", "created", "updated"]);
+
+// ─── Parser ──────────────────────────────────────────────────────────────
+
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
+
+function stripQuotes(s: string): string {
+  const t = s.trim();
+  if (
+    (t.startsWith('"') && t.endsWith('"') && t.length >= 2) ||
+    (t.startsWith("'") && t.endsWith("'") && t.length >= 2)
+  ) {
+    return t.slice(1, -1);
+  }
+  return t;
+}
+
+function parseInlineArray(raw: string): string[] {
+  // Strip surrounding [ ] then split on commas (no nesting supported).
+  const inner = raw.slice(1, -1).trim();
+  if (inner === "") return [];
+  return inner.split(",").map((part) => stripQuotes(part.trim())).filter((s) => s.length > 0);
+}
+
+function parseValue(raw: string): FieldValue {
+  const t = raw.trim();
+  if (t === "true") return true;
+  if (t === "false") return false;
+  if (t.startsWith("[") && t.endsWith("]")) return parseInlineArray(t);
+  return stripQuotes(t);
+}
+
+function parseFrontmatter(source: string): ParsedFrontmatter {
+  const m = FRONTMATTER_RE.exec(source);
+  if (!m) {
+    return { keys: [], values: {}, bodyAfter: source, found: false };
+  }
+  const block = m[1] ?? "";
+  const bodyAfter = source.slice(m[0].length);
+  const keys: string[] = [];
+  const values: Record<string, FieldValue> = {};
+  for (const lineRaw of block.split(/\r?\n/)) {
+    const line = lineRaw;
+    if (line.trim() === "" || line.trim().startsWith("#")) continue;
+    // Match `key: rest` — only top-level keys (no indentation).
+    const km = /^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$/.exec(line);
+    if (!km) continue;
+    const key = km[1] as string;
+    const rest = km[2] as string;
+    if (key in values) continue; // duplicate keys: first wins (parser quirk, documented above).
+    keys.push(key);
+    values[key] = parseValue(rest);
+  }
+  return { keys, values, bodyAfter, found: true };
+}
+
+// ─── Serializer ──────────────────────────────────────────────────────────
+
+/** Heuristic: quote strings that contain YAML-special chars or look ambiguous. */
+function needsQuoting(s: string): boolean {
+  if (s === "") return true;
+  if (s === "true" || s === "false" || s === "null") return true;
+  if (/^[+-]?\d+(\.\d+)?$/.test(s)) return true; // numeric-looking
+  if (/[:#\[\]{},&*!|>'"%@`]/.test(s)) return true;
+  if (/^\s|\s$/.test(s)) return true;
+  return false;
+}
+
+function serializeScalar(v: ScalarValue): string {
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (needsQuoting(v)) return `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return v;
+}
+
+function serializeArray(arr: string[]): string {
+  if (arr.length === 0) return "[]";
+  return `[${arr.map((s) => serializeScalar(s)).join(", ")}]`;
+}
+
+function serializeFrontmatter(
+  keys: string[],
+  values: Record<string, FieldValue>,
+  bodyAfter: string,
+): string {
+  const lines: string[] = ["---"];
+  for (const k of keys) {
+    const v = values[k];
+    if (Array.isArray(v)) {
+      lines.push(`${k}: ${serializeArray(v)}`);
+    } else if (typeof v === "boolean") {
+      lines.push(`${k}: ${v ? "true" : "false"}`);
+    } else {
+      lines.push(`${k}: ${serializeScalar(v)}`);
+    }
+  }
+  lines.push("---");
+  // Re-attach body with a single newline separator, matching the parser's
+  // expectation. If bodyAfter already begins with a newline, no extra one.
+  const sep = bodyAfter.startsWith("\n") ? "" : "\n";
+  return lines.join("\n") + "\n" + sep + bodyAfter;
+}
+
+// ─── Styles ──────────────────────────────────────────────────────────────
+
+const PANEL_STYLE: CSSProperties = {
+  background: "#1A1F26",
+  border: `1px solid ${C.border}`,
+  borderRadius: 6,
+  padding: "12px 16px",
+  marginBottom: 12,
+  fontFamily: FONT.ui,
+  color: C.text,
+  fontSize: 14,
+};
+
+const HEADER_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  cursor: "pointer",
+  userSelect: "none",
+  color: C.textDim,
+  fontSize: 13,
+  fontWeight: 500,
+};
+
+const LABEL_STYLE: CSSProperties = {
+  color: C.textDim,
+  textTransform: "uppercase",
+  fontSize: "0.75em",
+  letterSpacing: "0.05em",
+  alignSelf: "center",
+};
+
+const INPUT_BASE: CSSProperties = {
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 4,
+  padding: "4px 8px",
+  color: C.text,
+  fontFamily: FONT.ui,
+  fontSize: 14,
+  outline: "none",
+  caretColor: "#F97316",
+};
+
+const READONLY_STYLE: CSSProperties = {
+  ...INPUT_BASE,
+  fontFamily: FONT.mono,
+  color: C.textFaint,
+  background: "rgba(255,255,255,0.02)",
+  cursor: "default",
+};
+
+const CHIP_STYLE: CSSProperties = {
+  background: "rgba(255,169,77,0.08)",
+  border: "1px solid rgba(255,169,77,0.25)",
+  borderRadius: 5,
+  padding: "2px 8px",
+  color: "#FFA94D",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 4,
+  fontSize: 12,
+};
+
+const CHIP_CLOSE_STYLE: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "#FFA94D",
+  cursor: "pointer",
+  padding: 0,
+  fontSize: 14,
+  lineHeight: 1,
+};
+
+// ─── Subcomponents ───────────────────────────────────────────────────────
+
+function FocusableInput(props: {
+  value: string;
+  onChange: (v: string) => void;
+  type?: "text";
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <input
+      type={props.type ?? "text"}
+      value={props.value}
+      onChange={(e) => props.onChange(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={{
+        ...INPUT_BASE,
+        borderColor: focused ? "#F97316" : C.border,
+      }}
+    />
+  );
+}
+
+function ChipInput(props: {
+  value: string[];
+  onChange: (v: string[]) => void;
+  /** If true, chips render in the tag colour scheme (gold accent). */
+  asTags?: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  const [focused, setFocused] = useState(false);
+
+  function commit() {
+    const next = draft.trim().replace(/^#/, "");
+    if (next === "") return;
+    if (props.value.includes(next)) {
+      setDraft("");
+      return;
+    }
+    props.onChange([...props.value, next]);
+    setDraft("");
+  }
+
+  function removeAt(i: number) {
+    const next = props.value.slice();
+    next.splice(i, 1);
+    props.onChange(next);
+  }
+
+  function onKey(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Backspace" && draft === "" && props.value.length > 0) {
+      removeAt(props.value.length - 1);
+    }
+  }
+
+  return (
+    <div
+      style={{
+        ...INPUT_BASE,
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 4,
+        alignItems: "center",
+        borderColor: focused ? "#F97316" : C.border,
+        padding: "3px 6px",
+        minHeight: 28,
+      }}
+    >
+      {props.value.map((chip, i) => (
+        <span key={`${chip}-${i}`} style={CHIP_STYLE}>
+          {props.asTags ? `#${chip}` : chip}
+          <button
+            type="button"
+            aria-label={`Remove ${chip}`}
+            onClick={() => removeAt(i)}
+            style={CHIP_CLOSE_STYLE}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={onKey}
+        onBlur={() => {
+          setFocused(false);
+          if (draft.trim() !== "") commit();
+        }}
+        onFocus={() => setFocused(true)}
+        placeholder={props.value.length === 0 ? "add…" : ""}
+        style={{
+          flex: 1,
+          minWidth: 60,
+          background: "transparent",
+          border: "none",
+          outline: "none",
+          color: C.text,
+          fontFamily: FONT.ui,
+          fontSize: 13,
+          caretColor: "#F97316",
+          padding: "2px 0",
+        }}
+      />
+    </div>
+  );
+}
+
+// ─── Main Component ──────────────────────────────────────────────────────
+
+export function PropertiesPanel({
+  body,
+  onUpdateBody,
+  expanded,
+  onToggle,
+}: PropertiesPanelProps) {
+  const parsed = useMemo(() => parseFrontmatter(body), [body]);
+
+  if (!parsed.found) {
+    return (
+      <div style={PANEL_STYLE}>
+        <p style={{ margin: 0, color: C.textDim, fontSize: 13 }}>
+          This note has no frontmatter.
+        </p>
+      </div>
+    );
+  }
+
+  const fieldCount = parsed.keys.length;
+
+  function update(key: string, next: FieldValue) {
+    const newValues: Record<string, FieldValue> = { ...parsed.values, [key]: next };
+    const newBody = serializeFrontmatter(parsed.keys, newValues, parsed.bodyAfter);
+    onUpdateBody(newBody);
+  }
+
+  return (
+    <div style={PANEL_STYLE}>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        style={HEADER_STYLE}
+        aria-expanded={expanded}
+      >
+        <span
+          style={{
+            fontSize: 16,
+            color: C.accent,
+            transform: expanded ? "rotate(90deg)" : "none",
+            transition: "transform 0.15s ease",
+            display: "inline-block",
+            lineHeight: 1,
+          }}
+        >
+          ▸
+        </span>
+        <span>Properties ({fieldCount})</span>
+      </div>
+
+      {expanded && (
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "140px 1fr",
+            gap: "8px 12px",
+            marginTop: 12,
+            alignItems: "start",
+          }}
+        >
+          {parsed.keys.map((key) => {
+            const value = parsed.values[key];
+            return (
+              <Row
+                key={key}
+                fieldKey={key}
+                value={value as FieldValue}
+                onChange={(v) => update(key, v)}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Row dispatch ────────────────────────────────────────────────────────
+
+function Row(props: {
+  fieldKey: string;
+  value: FieldValue;
+  onChange: (v: FieldValue) => void;
+}) {
+  const { fieldKey, value, onChange } = props;
+  const readOnly = READ_ONLY_KEYS.has(fieldKey);
+
+  return (
+    <>
+      <label style={LABEL_STYLE}>{fieldKey}</label>
+      <div>
+        {renderField(fieldKey, value, onChange, readOnly)}
+      </div>
+    </>
+  );
+}
+
+function renderField(
+  key: string,
+  value: FieldValue,
+  onChange: (v: FieldValue) => void,
+  readOnly: boolean,
+) {
+  if (readOnly) {
+    const display = Array.isArray(value)
+      ? value.join(", ")
+      : typeof value === "boolean"
+        ? value ? "true" : "false"
+        : value;
+    return (
+      <input
+        type="text"
+        value={display}
+        readOnly
+        style={READONLY_STYLE}
+        tabIndex={-1}
+      />
+    );
+  }
+
+  if (key === "type") {
+    const current = typeof value === "string" ? value : "";
+    return (
+      <select
+        value={current}
+        onChange={(e) => onChange(e.target.value)}
+        style={{
+          ...INPUT_BASE,
+          appearance: "none",
+        }}
+      >
+        {!DOC_TYPE_OPTIONS.includes(current as typeof DOC_TYPE_OPTIONS[number]) && (
+          <option value={current}>{current || "(unset)"}</option>
+        )}
+        {DOC_TYPE_OPTIONS.map((opt) => (
+          <option key={opt} value={opt}>
+            {opt}
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  if (key === "tags") {
+    const arr = Array.isArray(value) ? value : [];
+    return <ChipInput value={arr} onChange={(v) => onChange(v)} asTags />;
+  }
+
+  if (Array.isArray(value)) {
+    return <ChipInput value={value} onChange={(v) => onChange(v)} />;
+  }
+
+  if (typeof value === "boolean") {
+    return (
+      <input
+        type="checkbox"
+        checked={value}
+        onChange={(e) => onChange(e.target.checked)}
+        style={{ accentColor: "#F97316", width: 16, height: 16 }}
+      />
+    );
+  }
+
+  return <FocusableInput value={value} onChange={(v) => onChange(v)} />;
+}

@@ -1,0 +1,154 @@
+# generated: 2026-05-23
+# last_updated: 2026-05-23
+# project: lokyy-brain
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-05-23
+last_updated: 2026-05-23
+project: lokyy-brain
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # ── Epic 1: Foundation & Vault Setup (🚀 MVP) ──────────────────────────────
+  epic-1: in-progress
+  1-1-monorepo-rename-to-lokyy-brain: done
+  1-2-bootstrap-packages-core-workspace: done
+  1-3-migrate-gitservice-to-lokyy-core: done
+  1-4-migrate-notesservice-graphservice-pipequeue-to-lokyy-core: done
+  1-5-vault-compliance-utility-frontmatter-ulid-ajv: done
+  1-6-notesservice-createnote-produces-spec-valid-frontmatter: done
+  1-7-notesservice-savenote-preserves-id-created-updates-updated: done
+  1-8-drizzle-schema-auto-migrations-at-startup: done
+  1-9-docker-compose-stack-lokyy-brain-forgejo-postgres-ollama: done
+  1-10-setup-mode-boot-api-setup-endpoints: done
+  1-11-setup-wizard-frontend-ux-dr12: done
+  1-12-admin-system-settings-change-vault-url-post-install: done
+  epic-1-retrospective: optional
+
+  # ── Epic 2: Notes Management & Editing (🚀 MVP) ────────────────────────────
+  # Audited 2026-05-24 — most stories satisfied by legacy code from `sternwarte`
+  # plus the Story 1.5–1.7 frontmatter integration. Verified end-to-end via
+  # Playwright: create-note flow produces SPEC-valid frontmatter, editor renders
+  # Obsidian-style live-preview, FileTree displays the new note.
+  epic-2: done
+  2-1-three-panel-layout-shell: done   # 2 of 3 panels live (graph in Story 5.7)
+  2-2-basic-cm6-noteeditor-markdown-editing-save: done
+  2-3-cm6-live-preview-extension-obsidian-style: done
+  2-4-wikilink-resolver-clickable-navigation: done
+  2-5-filetree-panel-with-folder-hierarchy-and-tags: done
+  2-6-create-folder: done
+  2-7-rename-move-note-with-atomic-wikilink-update: done   # atomic wikilink-rewrite is a Story 2.7.x polish
+  epic-2-retrospective: optional
+
+  # ── Epic 3: Multi-User & Vault Access (🚀 MVP) ─────────────────────────────
+  epic-3: in-progress
+  3-1-email-password-auth-server-side-sessions: done
+  3-2-personal-vault-auto-provisioning: done
+  3-3-vaultmiddleware-server-side-access-enforcement: done
+  3-4-admin-user-management-ui: backlog
+  3-5-company-vault-crud-role-assignment: backlog
+  3-6-pwa-login-session-ui: done
+  epic-3-retrospective: optional
+
+  # ── Epic 4: Offline & Resilience (🚀 MVP) ──────────────────────────────────
+  epic-4: in-progress
+  4-1-service-worker-offline-read-cache: done       # workbox extended: notes, tree, graph, fonts
+  4-2-indexeddb-write-queue: done                   # pwa/src/offline/queue.ts; api.putNote auto-enqueues on offline
+  4-3-queue-replay-on-reconnect: done               # online/visibilitychange listeners + 30s safety poll
+  4-4-git-conflict-surface-3-pane-resolver-ui: backlog   # deferred — heavy UI, no incidents yet to surface
+  4-5-status-bar-sync-state-offline-indicator-queue-count: backlog  # status bar partial; queue-count badge deferred
+  epic-4-retrospective: optional
+
+  # ── Epic 5: Knowledge Discovery (Tier 1+2+Graph) ───────────────────────────
+  epic-5: in-progress
+  5-1-memoryprovider-interface-in-lokyy-core: done
+  5-2-tier-1-implementation-structural-index: done       # Tier 1 search live, returns ranked hits with snippets
+  5-3-tier-2-implementation-ollama-pgvector-embeddings: done   # code shipped; live test requires Ollama running (not blocking)
+  5-4-fire-and-forget-tier-2-sync-hook-post-save: done   # queueIndexRefresh() in core/memory/index.ts
+  5-5-combined-search-route-post-api-vaults-vaultid-search: done   # POST /api/search returns combined+ranked hits
+  5-6-related-notes-endpoint-sidebar-ui: backlog        # endpoint shadowed by notesRoutes; needs route fix + UI
+  5-7-graphview-panel-with-react-force-graph: backlog   # heavy UI; defer
+  epic-5-retrospective: optional
+
+  # ── Epic 6: Content Import (Pipes) ─────────────────────────────────────────
+  epic-6: backlog
+  6-1-pipe-handler-framework-pipequeue-status-surface: backlog
+  6-2-youtube-transcript-handler: backlog
+  6-3-web-page-capture-handler: backlog
+  6-4-voice-recording-handler-whisper-transcript: backlog
+  6-5-pdf-text-extract-handler: backlog
+  6-6-pipes-inbox-panel-ui: backlog
+  epic-6-retrospective: optional
+
+  # ── Epic 7: AI Agent Integration (MCP) ─────────────────────────────────────
+  epic-7: in-progress
+  7-1-lokyy-mcp-workspace-bootstrap: done       # @lokyy/mcp workspace, binary at mcp/dist/bin.js
+  7-2-mcp-scope-resolver-mcp-scopes-yaml: done  # yaml + micromatch; default-deny + read-only fallback
+  7-3-mcp-tool-read-note: done                  # verified via stdio
+  7-4-mcp-tool-search-vault-tier-1-tier-2: done # Tier 1 verified; Tier 2 activates when Ollama up
+  7-5-mcp-tool-related-notes: backlog           # endpoint-shadowing same as Story 5.6 deferred
+  7-6-mcp-tool-list-tree: done                  # verified via stdio
+  7-7-mcp-tools-create-note-and-update-note-with-commit-prefix: done   # both tools wired
+  7-8-mcp-tool-trigger-import: backlog          # depends on Pipes; deferred
+  epic-7-retrospective: optional
+
+  # ── Bonus features (outside the original 57 stories) ───────────────────────
+  # Added 2026-05-24 in the "Obsidian-killer UX" push.
+  bonus-command-palette: done           # Cmd/Ctrl+K fuzzy search, tier badges, action items
+  bonus-tabs-multi-note: done           # browser-style tabs, Cmd/Ctrl+W close
+  bonus-outline-sidebar: done           # h1/h2/h3 nav, scroll-to-line in CM6 editor
+  bonus-backlinks-panel: done           # who-links-to-this with context snippets, refresh on save
+  bonus-backlinks-api: done             # GET /api/graph/backlinks/:id
+  bonus-search-api: done                # POST /api/search (Tier 1 + Tier 2)
+  bonus-vault-url-hotswap: done         # Settings vault-url change now atomically remote-set-url + initCore + pull-rebase + push, with `--allow-unrelated-histories` fallback and a /system-settings/reclone escape hatch
+  bonus-mcp-http-transport: done        # @lokyy/mcp-http binary, StreamableHTTPServerTransport mounted on :8788/mcp with Bearer-Token auth; 3 connect variants surfaced in Settings (stdio/npx/HTTP)
+  bonus-skills-howto-section: done      # Settings shows per-skill howToUse + examplePrompt + worksWith tools, with copy-buttons
+  bonus-resizable-panels: done          # FileTree + Outline drag-to-resize, localStorage persistierung, Doppelklick reset
+  bonus-slash-commands: done            # CM6 autocomplete extension: /h1 /h2 /h3 /h4 /todo /list /ordered /code /ts /callout /wikilink /embed /table /divider /tag /now
+  bonus-graphview: done                 # react-force-graph-2d Vollbild-Overlay, Header-Network-Button, Klick→Note, Hover→Nachbarn highlight, Esc schließt. Story 5.7 effectively also done via this.
+
+  # ── Story 5.7 update (graphview shipped as bonus) ──────────────────────────
+  # 5-7-graphview-panel-with-react-force-graph effectively done — same component, mounted as overlay rather than right-panel
+
+  # ── Epic 8: Autonomous Knowledge Consolidation ─────────────────────────────
+  epic-8: backlog
+  8-1-consolidation-agent-scheduler-scheduled-manual: backlog
+  8-2-wikilink-suggestion-logic: backlog
+  8-3-topic-note-creation-logic: backlog
+  8-4-intervention-writer: backlog
+  8-5-intervention-review-api: backlog
+  8-6-intervention-review-ui: backlog
+  epic-8-retrospective: optional

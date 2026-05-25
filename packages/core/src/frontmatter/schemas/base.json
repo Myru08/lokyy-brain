@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/base",
+  "type": "object",
+  "required": ["id", "type", "title", "created", "updated"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$",
+      "description": "ULID — 26 chars, Crockford base32, no I/L/O/U."
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "note",
+        "capture",
+        "project",
+        "task",
+        "decision",
+        "meeting",
+        "customer",
+        "workflow",
+        "intervention",
+        "content"
+      ]
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "tags": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": true
+}

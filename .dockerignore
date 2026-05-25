@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+**/dist
+**/.cache
+.git
+_bmad
+_bmad-output
+Plans
+*.log
+.env
+.env.local

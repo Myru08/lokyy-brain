@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/capture",
+  "type": "object",
+  "required": ["id", "type", "title", "created", "updated"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "type": { "const": "capture" },
+    "title": { "type": "string", "minLength": 1 },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "source": { "type": "string", "enum": ["youtube", "url", "voice", "pdf"] },
+    "url": { "type": "string" }
+  },
+  "additionalProperties": true
+}
