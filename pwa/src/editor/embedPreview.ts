@@ -8,6 +8,7 @@ import {
   WidgetType,
 } from "@codemirror/view";
 import { resolveWikilinkTarget } from "./wikilinkAutocomplete.js";
+import { logTrace } from "../api.js";
 
 /**
  * Embedded Note Previews — Obsidian-Style `![[Note Title]]`.
@@ -82,6 +83,9 @@ class EmbedWidget extends WidgetType {
         const truncated =
           stripped.length > 200 ? `${stripped.slice(0, 200)}…` : stripped;
         body.textContent = truncated || "(empty)";
+        // Phase A Wave A1 / Story 3 — log the embed render as a retrieval.
+        // Only after a successful fetch — failed embeds don't count.
+        logTrace({ noteId: fetchKey, source: "embed" });
       })
       .catch(() => {
         body.textContent = "⚠ Note not found";

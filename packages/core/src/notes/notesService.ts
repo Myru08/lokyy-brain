@@ -18,6 +18,18 @@ import {
   type FrontmatterMap,
 } from "../frontmatter/index.js";
 import { FrontmatterValidationError } from "../errors/FrontmatterValidationError.js";
+import {
+  queueSearchIndexRefresh,
+  queueSearchIndexRemove,
+} from "../memory/index.js";
+
+/**
+ * Default vault id used by the BM25 search-index hooks. The Story-2 hybrid
+ * retrieval pipeline runs in single-active-vault dev mode (mirrors the
+ * convention already used by `searchRoutes`). Story 3's per-vault route
+ * migration will plumb the real vault id through here.
+ */
+const DEFAULT_VAULT_ID = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 
 /**
  * Notizen-Service. Eine Notiz == eine .md-Datei im Vault. Kein Cache, keine
@@ -146,7 +158,19 @@ export async function saveNote(id: string, body: string): Promise<Note> {
   // 5. Serialize and commit.
   const content = serializeFrontmatter(merged, bodyText);
   await save(relPath, content, `notiz: ${id}`);
-  return readNoteFile(abs);
+  const saved = await readNoteFile(abs);
+
+  // 6. Fire-and-forget BM25 index refresh (Phase A Wave A1 / Story 2).
+  //    Mirrors the existing Tier-2 embedding hook — never blocks the save
+  //    path, errors are logged only.
+  queueSearchIndexRefresh(
+    DEFAULT_VAULT_ID,
+    saved.id,
+    saved.title,
+    saved.body,
+    saved.tags,
+  );
+  return saved;
 }
 
 /* ------------------------------------------------------------------ *
@@ -270,7 +294,16 @@ export async function createNote(
   const noteBody = body ?? `# ${title}\n\n`;
   const content = serializeFrontmatter(frontmatter, noteBody);
   await save(id + ".md", content, `notiz angelegt: ${id}`);
-  return readNoteFile(abs);
+  const created = await readNoteFile(abs);
+  // Phase A Wave A1 / Story 2 — keep the BM25 corpus in sync.
+  queueSearchIndexRefresh(
+    DEFAULT_VAULT_ID,
+    created.id,
+    created.title,
+    created.body,
+    created.tags,
+  );
+  return created;
 }
 
 /**
@@ -295,6 +328,27 @@ export async function moveEntry(
   const fromRel = kind === "note" ? `${from}.md` : from;
   const toRel = kind === "note" ? `${to}.md` : to;
   await move(fromRel, toRel, `${kind} verschoben: ${from} -> ${to}`);
+
+  // Phase A Wave A1 / Story 2 — keep BM25 corpus in sync on rename/move.
+  // The note id == path-without-".md", so a move changes the id. Remove the
+  // old row, then upsert the new one from the freshly read note.
+  if (kind === "note") {
+    queueSearchIndexRemove(from);
+    const c = coreConfig();
+    const newAbs = join(c.vaultDir, ...to.split("/")) + ".md";
+    try {
+      const moved = await readNoteFile(newAbs);
+      queueSearchIndexRefresh(
+        DEFAULT_VAULT_ID,
+        moved.id,
+        moved.title,
+        moved.body,
+        moved.tags,
+      );
+    } catch {
+      // Note disappeared between move and read — ignore.
+    }
+  }
 }
 
 /** Notiz oder Ordner löschen. */
@@ -304,4 +358,8 @@ export async function deleteEntry(
 ): Promise<void> {
   const rel = kind === "note" ? `${path}.md` : path;
   await remove(rel, `${kind} gelöscht: ${path}`);
+  if (kind === "note") {
+    // Phase A Wave A1 / Story 2 — drop the BM25 row.
+    queueSearchIndexRemove(path);
+  }
 }

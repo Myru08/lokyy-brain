@@ -129,6 +129,61 @@ export type DataviewRow = Record<string, string | number | boolean | null>;
 
 const BASE = "/api";
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Retrieval-Trace-Log (Phase A Wave A1 / Story 3 — Multi-Trace-Theory).
+ *
+ * Closed list of PWA-side retrieval sources. Keep in sync with
+ * `RetrievalSource` in `@lokyy/core/scoring/retrievalLog`. The PWA only
+ * emits the non-API sources — server-side `/api/notes/:id` GETs are logged
+ * server-side directly.
+ * ────────────────────────────────────────────────────────────────────── */
+export type RetrievalSource =
+  | "search"
+  | "wikilink"
+  | "cmd-k"
+  | "cmd-o"
+  | "hover"
+  | "embed"
+  | "api"
+  | "mcp";
+
+export interface TraceEvent {
+  noteId: string;
+  source: RetrievalSource;
+  query?: string;
+  /** Prior notes opened in this session — caller decides what to pass. */
+  preceding?: string[];
+  context?: Record<string, unknown>;
+}
+
+/**
+ * Fire-and-forget trace logging. Never throws. Caller does NOT need to
+ * await this — the helper swallows network and HTTP errors so a backend
+ * outage cannot break UI flows (cmd-k click, wikilink open, hover, embed).
+ *
+ * We don't read the response body — the server returns 202 on success
+ * regardless of whether the DB write succeeded (telemetry is best-effort
+ * by design; the server-side `logRetrieval` is itself fire-and-forget).
+ */
+export function logTrace(event: TraceEvent): void {
+  try {
+    void fetch(`${BASE}/traces`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(event),
+      credentials: "include",
+      // `keepalive` lets the request finish even if the page is closing.
+      // We don't await the response, so this is a no-op for most calls,
+      // but useful when triggered by a navigation handler.
+      keepalive: true,
+    }).catch(() => {
+      // Swallow — telemetry must not surface as a UI error.
+    });
+  } catch {
+    // `fetch` itself synchronously threw (rare, e.g. invalid URL). Swallow.
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));

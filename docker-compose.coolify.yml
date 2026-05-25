@@ -76,7 +76,9 @@ services:
       - forgejo-data:/data
 
   postgres:
-    image: pgvector/pgvector:pg16
+    # ParadeDB drop-in Postgres image — ships pg_search (Tantivy BM25) AND
+    # pgvector. Required for Phase A Wave A1 / Story 2 hybrid retrieval.
+    image: paradedb/paradedb:latest
     restart: unless-stopped
     environment:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}

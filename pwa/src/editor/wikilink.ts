@@ -6,7 +6,8 @@ import {
   ViewPlugin,
   type ViewUpdate,
 } from "@codemirror/view";
-import { isKnownWikilinkTarget } from "./wikilinkAutocomplete.js";
+import { isKnownWikilinkTarget, resolveWikilinkTarget } from "./wikilinkAutocomplete.js";
+import { logTrace } from "../api.js";
 
 /**
  * Wikilink- und Tag-Extension.
@@ -97,6 +98,12 @@ export function wikilinkExtension(
       const el = event.target as HTMLElement | null;
       const link = el?.dataset?.link;
       if (link) {
+        // Phase A Wave A1 / Story 3 — Retrieval-Trace-Log.
+        // Resolve to the canonical note-id when we can (matches what
+        // the server logs on the resulting GET), fall back to the raw
+        // wikilink target otherwise.
+        const resolved = resolveWikilinkTarget(link);
+        logTrace({ noteId: resolved?.id ?? link, source: "wikilink" });
         if ((event.metaKey || event.ctrlKey) && onOpenSplit) {
           onOpenSplit(link);
         } else {

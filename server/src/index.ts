@@ -10,6 +10,7 @@ import {
   registerHandler,
   resumePendingMigration,
   runMigrations,
+  sleepAgent,
 } from "@lokyy/core";
 import { notesRoutes } from "./routes/notes.js";
 import { vaultRoutes } from "./routes/vault.js";
@@ -24,6 +25,10 @@ import { templatesRoutes } from "./routes/templates.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { llmRoutes } from "./routes/llm.js";
 import { llmMigrationRoutes } from "./routes/llm-migration.js";
+import { scoringRoutes } from "./routes/scoring.js";
+import { intentRoutes } from "./routes/intent.js";
+import { tracesRoutes } from "./routes/traces.js";
+import { sleepAgentRoutes } from "./routes/sleep-agent.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -61,6 +66,29 @@ app.use("/api/llm/*", setupGate);
 app.route("/api/admin", adminRoutes);
 app.route("/api/llm", llmRoutes);
 app.route("/api/llm/migration", llmMigrationRoutes);
+
+// Phase A Wave A1 / Story 1 — importance scoring.
+app.use("/api/scoring/*", setupGate);
+app.route("/api/scoring", scoringRoutes);
+
+// Phase A Wave A1 / Story 4 — intent classification (pre-retrieval routing).
+app.use("/api/intent/*", setupGate);
+app.route("/api/intent", intentRoutes);
+
+// Phase A Wave A1 / Story 3 — Retrieval-Trace-Log (Multi-Trace-Theory).
+// Fire-and-forget telemetry endpoint for non-API retrieval sources
+// (cmd-k, cmd-o, wikilink, hover, embed). Server-side note GETs call
+// `logRetrieval` directly inside notesRoutes — no round-trip needed.
+app.use("/api/traces", setupGate);
+app.use("/api/traces/*", setupGate);
+app.route("/api/traces", tracesRoutes);
+
+// Phase A Wave A2 / Story 7 — Sleep-Agent walking skeleton.
+// Manual triggers, run history, cancellation. Idle + nightly scheduler is
+// armed below in main() after the LLM registry is up.
+app.use("/api/sleep-agent", setupGate);
+app.use("/api/sleep-agent/*", setupGate);
+app.route("/api/sleep-agent", sleepAgentRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);
@@ -126,6 +154,19 @@ async function main() {
   } catch (err) {
     console.warn(
       `[lokyy-brain] resumePendingMigration skipped — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // ── Sleep-Agent scheduler (Phase A Wave A2 / Story 7) ─────────────────
+  // Arm the idle + nightly timers. Best-effort: a failure here must NOT
+  // prevent the server from accepting requests — manual triggers via
+  // /api/sleep-agent/trigger still work even if the scheduler didn't arm.
+  try {
+    sleepAgent().startScheduler();
+    console.log("[lokyy-brain] sleep-agent scheduler armed (idle=30min, nightly=03:00)");
+  } catch (err) {
+    console.warn(
+      `[lokyy-brain] sleep-agent scheduler skipped — ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

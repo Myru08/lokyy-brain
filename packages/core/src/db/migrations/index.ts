@@ -7,6 +7,11 @@
 import { migration0000Initial } from "./0000_initial.js";
 import { migration0001LlmUsageEvents } from "./0001_llm_usage_events.js";
 import { migration0002EmbeddingsMigration } from "./0002_embeddings_migration.js";
+import { migration0003ImportanceScoring } from "./0003_importance_scoring.js";
+import { migration0004PgSearch } from "./0004_pg_search.js";
+import { migration0005RetrievalTraces } from "./0005_retrieval_traces.js";
+import { migration0006MultiChunkEmbeddings } from "./0006_multi_chunk_embeddings.js";
+import { migration0007SleepAgentRuns } from "./0007_sleep_agent_runs.js";
 
 export interface Migration {
   name: string;
@@ -17,4 +22,9 @@ export const MIGRATIONS: Migration[] = [
   { name: "0000_initial", sql: migration0000Initial },
   { name: "0001_llm_usage_events", sql: migration0001LlmUsageEvents },
   { name: "0002_embeddings_migration", sql: migration0002EmbeddingsMigration },
+  { name: "0003_importance_scoring", sql: migration0003ImportanceScoring },
+  { name: "0004_pg_search", sql: migration0004PgSearch },
+  { name: "0005_retrieval_traces", sql: migration0005RetrievalTraces },
+  { name: "0006_multi_chunk_embeddings", sql: migration0006MultiChunkEmbeddings },
+  { name: "0007_sleep_agent_runs", sql: migration0007SleepAgentRuns },
 ];

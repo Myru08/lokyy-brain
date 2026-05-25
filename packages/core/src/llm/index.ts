@@ -10,3 +10,4 @@ export * from "./providers/openai-compat.js";
 export * from "./init.js";
 export * from "./configStore.js";
 export * from "./embeddingsMigration.js";
+export * from "./intent.js";

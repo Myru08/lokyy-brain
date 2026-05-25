@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { getNote, listNotes, saveNote } from "@lokyy/core";
+import { getCookie } from "hono/cookie";
+import { getNote, listNotes, logRetrieval, saveNote } from "@lokyy/core";
 
 /** /api/notes — Liste, Einzelnotiz, Speichern. */
 export const notesRoutes = new Hono();
@@ -11,8 +12,22 @@ notesRoutes.get("/", async (c) => {
 
 // GET /api/notes/:id  (id darf "/" enthalten -> Wildcard)
 notesRoutes.get("/:id{.+}", async (c) => {
-  const note = await getNote(c.req.param("id"));
+  const id = c.req.param("id");
+  const note = await getNote(id);
   if (!note) return c.json({ error: "Notiz nicht gefunden" }, 404);
+  // Phase A Wave A1 / Story 3 — Retrieval-Trace-Log.
+  // Fire-and-forget: logRetrieval swallows its own errors. The `void`
+  // prefix makes it explicit that we are not awaiting the side-channel
+  // write, so a slow DB cannot stall the user-facing GET.
+  // We use the note's path-id (frontmatter ULID is not exposed on the
+  // shared Note shape); migrating to ULIDs is the consolidation-agent's
+  // job and out of scope here.
+  const sessionId = getCookie(c, "lokyy_session");
+  void logRetrieval({
+    noteId: note.id,
+    source: "api",
+    sessionId: sessionId,
+  });
   return c.json(note);
 });
 

@@ -14,10 +14,17 @@ export { NullMemoryProvider } from "./MemoryProvider.js";
 export { Tier1Provider } from "./Tier1Provider.js";
 export { Tier2Provider, EmbeddingUnavailableError, type Tier2Config } from "./Tier2Provider.js";
 export { CombinedProvider } from "./CombinedProvider.js";
+export { Tier1BM25, type BM25Hit } from "./Tier1BM25.js";
+export {
+  hybridSearch,
+  resetHybridAvailabilityCache,
+  type HybridOpts,
+} from "./hybrid.js";
 
 import { Tier1Provider } from "./Tier1Provider.js";
 import { Tier2Provider } from "./Tier2Provider.js";
 import { CombinedProvider } from "./CombinedProvider.js";
+import { Tier1BM25 } from "./Tier1BM25.js";
 
 let combined: CombinedProvider | null = null;
 let activeVaultId: string | null = null;
@@ -48,4 +55,53 @@ export function queueIndexRefresh(vaultId: string, noteId: string): void {
         console.error("[memory] indexNote failed (non-blocking)", { vaultId, noteId, err }),
       ),
   );
+}
+
+/** Singleton Tier1BM25 — no per-vault state, the table is keyed by note_id. */
+const tier1Bm25Singleton = new Tier1BM25();
+
+export function getTier1BM25(): Tier1BM25 {
+  return tier1Bm25Singleton;
+}
+
+/**
+ * Fire-and-forget upsert into the `note_search` BM25 corpus (Phase A Wave A1
+ * / Story 2). Call after every successful saveNote with the freshly read
+ * note (title + body + parsed tags). Never blocks the save path.
+ */
+export function queueSearchIndexRefresh(
+  vaultId: string,
+  noteId: string,
+  title: string,
+  body: string,
+  tags: string[],
+): void {
+  void Promise.resolve().then(async () => {
+    try {
+      await tier1Bm25Singleton.upsert(noteId, vaultId, title, body, tags);
+    } catch (err) {
+      console.error("[memory] note_search upsert failed (non-blocking)", {
+        vaultId,
+        noteId,
+        err,
+      });
+    }
+  });
+}
+
+/**
+ * Fire-and-forget removal from the BM25 corpus. Call after every successful
+ * deleteEntry of a note.
+ */
+export function queueSearchIndexRemove(noteId: string): void {
+  void Promise.resolve().then(async () => {
+    try {
+      await tier1Bm25Singleton.remove(noteId);
+    } catch (err) {
+      console.error("[memory] note_search remove failed (non-blocking)", {
+        noteId,
+        err,
+      });
+    }
+  });
 }

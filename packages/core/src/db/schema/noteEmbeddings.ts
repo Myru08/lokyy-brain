@@ -1,4 +1,12 @@
-import { pgTable, text, timestamp, customType, index } from "drizzle-orm/pg-core";
+import {
+  pgTable,
+  text,
+  timestamp,
+  integer,
+  customType,
+  index,
+  primaryKey,
+} from "drizzle-orm/pg-core";
 import { vaults } from "./vaults.js";
 
 /**
@@ -41,14 +49,42 @@ export const noteEmbeddings = pgTable(
      * dimension migrations are validated and rejected at start time.
      */
     generation: text("generation").notNull().default("default"),
+    /**
+     * Phase A Wave A2 / Stories 5+6 — chunk-type discriminator.
+     *   - title         : the note title alone (one row per note)
+     *   - body_full     : the entire body, anchor-prefixed; only emitted
+     *                     when token-budget allows (Late Chunking).
+     *   - section       : one row per H2 boundary (with breadcrumb anchor)
+     *   - sliding_3para : 3-paragraph windows inside long sections
+     * Default 'body_full' for backward-compat with pre-Wave-A2 rows.
+     */
+    chunkType: text("chunk_type").notNull().default("body_full"),
+    /** Stable index within (note_id, chunk_type) — 0 for singletons. */
+    chunkIdx: integer("chunk_idx").notNull().default(0),
+    /**
+     * SHA-256 prefix (32 hex chars) of the anchor-text-injected payload
+     * that was embedded. Used by the indexer to skip Ollama round-trips
+     * for unchanged chunks. NULL on legacy rows (will be backfilled by
+     * the next re-index).
+     */
+    contentHash: text("content_hash"),
     embedding: vector768("embedding").notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (t) => ({
+    pk: primaryKey({
+      columns: [t.noteId, t.vaultId, t.generation, t.chunkType, t.chunkIdx],
+    }),
     vaultIdIdx: index("idx_note_embeddings_vault_id").on(t.vaultId),
     generationIdx: index("idx_note_embeddings_generation").on(t.generation),
+    chunkIdx: index("idx_note_embeddings_chunk").on(
+      t.noteId,
+      t.vaultId,
+      t.generation,
+      t.chunkType,
+    ),
   }),
 );
 

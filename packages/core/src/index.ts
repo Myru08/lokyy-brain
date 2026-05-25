@@ -141,7 +141,70 @@ export {
   type SearchOpts,
   type RelatedOpts,
   type Tier2Config,
+  // Phase A Wave A1 / Story 2 — BM25 + Hybrid retrieval.
+  Tier1BM25,
+  type BM25Hit,
+  hybridSearch,
+  resetHybridAvailabilityCache,
+  type HybridOpts,
+  getTier1BM25,
+  queueSearchIndexRefresh,
+  queueSearchIndexRemove,
 } from "./memory/index.js";
 
 // ─── Model-Agnostic LLM Layer (Phase 0) ─────────────────────────────────
 export * from "./llm/index.js";
+
+// ─── Importance Scoring (Phase A Wave A1 Story 1) ───────────────────────
+export {
+  ORIGIN_SCORES,
+  HALF_LIFE_DAYS,
+  originScore,
+  recencyDecay,
+  computeImportance,
+  getScoring,
+  upsertScoring,
+  touchView,
+  touchEdit,
+  recomputeOne,
+  recomputeAll,
+  type ImportanceSignals,
+  type NoteScoringRow,
+  type RecomputeAllResult,
+} from "./scoring/index.js";
+
+// ─── Chunking (Phase A Wave A2 Stories 5+6) ─────────────────────────────
+export {
+  chunkNote,
+  approximateTokens,
+  hashChunk,
+  type Chunk,
+  type ChunkType,
+  type ChunkOptions,
+} from "./chunking/index.js";
+
+// ─── Retrieval-Trace-Log (Phase A Wave A1 Story 3) ──────────────────────
+export {
+  logRetrieval,
+  queryTraces,
+  retrievalCounts,
+  coRetrievalPairs,
+  isRetrievalSource,
+  RETRIEVAL_SOURCES,
+  type RetrievalSource,
+  type RetrievalEvent,
+  type RetrievalTraceRow,
+  type TraceQueryOpts,
+} from "./scoring/index.js";
+
+// ─── Sleep-Agent (Phase A Wave A2 Story 7) ──────────────────────────────
+export {
+  SleepAgent,
+  sleepAgent,
+  type SleepPhase,
+  type SleepTrigger,
+  type SleepStatus,
+  type SleepRun,
+  type SleepPass,
+  type SleepPassResult,
+} from "./sleep-agent/index.js";

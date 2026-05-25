@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { NoteSummary } from "@lokyy/shared";
-import { api } from "./api.js";
+import { api, logTrace } from "./api.js";
 import { C, FONT } from "./theme.js";
 
 /**
@@ -123,6 +123,8 @@ export function QuickSwitcher({ open, onClose, onOpenNote }: QuickSwitcherProps)
   function activate(idx: number) {
     const hit = ranked[idx];
     if (!hit) return;
+    // Phase A Wave A1 / Story 3 — Retrieval-Trace-Log (Multi-Trace-Theory).
+    logTrace({ noteId: hit.id, source: "cmd-o", query: q.trim() || undefined });
     onOpenNote(hit.id);
     onClose();
   }

@@ -1,5 +1,6 @@
 import { EditorView, hoverTooltip, type Tooltip } from "@codemirror/view";
 import { resolveWikilinkTarget } from "./wikilinkAutocomplete.js";
+import { logTrace } from "../api.js";
 
 /**
  * Wikilink-Hover-Preview — Obsidian-Style.
@@ -73,6 +74,11 @@ async function fetchPreview(
       fetchedAt: Date.now(),
     };
     previewCache.set(fetchKey, entry);
+    // Phase A Wave A1 / Story 3 — Retrieval-Trace-Log.
+    // Logged only when an actual network fetch occurred (cache hits
+    // skip this branch entirely), so the trace count tracks real
+    // hover-driven retrieval, not idle re-hovers of the same target.
+    logTrace({ noteId: fetchKey, source: "hover" });
     return entry;
   })();
 

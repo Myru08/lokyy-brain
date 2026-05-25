@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api } from "./api.js";
+import { api, logTrace } from "./api.js";
 import { C, FONT } from "./theme.js";
 
 interface Hit {
@@ -118,6 +118,8 @@ export function CommandPalette({
     }
     const hit = hits[idx - actions.length];
     if (hit) {
+      // Phase A Wave A1 / Story 3 — Retrieval-Trace-Log (Multi-Trace-Theory).
+      logTrace({ noteId: hit.noteId, source: "cmd-k", query: q.trim() });
       onOpenNote(hit.noteId);
       onClose();
     }
