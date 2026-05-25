@@ -36,6 +36,62 @@ export type DocType = (typeof DOC_TYPES)[number];
 export type NotePrivacy = "default" | "local-only";
 
 /**
+ * Device categories used by the encoding-context-capture (Phase B Wave B3 /
+ * Story 1 — Tulving 1973 Encoding Specificity Principle).
+ *
+ * `"api"` covers headless / scripted writes; `"mcp"` distinguishes writes
+ * arriving through the MCP tool surface so retrieval can prefer
+ * human-authored notes when the query comes from the PWA.
+ */
+export type DeviceType =
+  | "laptop"
+  | "desktop"
+  | "mobile"
+  | "tablet"
+  | "api"
+  | "mcp";
+
+/** Coarse time-of-day bucket. See `timeOfDayFrom` in `scoring/encodingContext.ts`. */
+export type TimeOfDay = "morning" | "midday" | "evening" | "night";
+
+/** Lowercase English weekday name. */
+export type Weekday =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
+/**
+ * Encoding-context block. Captured at note-creation time and persisted as
+ * `encoded:` in the YAML frontmatter. NEVER updated on subsequent saves —
+ * it describes the encoding event, not the current state of the note.
+ *
+ * All fields are optional so legacy notes (no `encoded` block) continue to
+ * validate; matchers treat a missing block as "no boost".
+ */
+export interface EncodedContext {
+  /** Device class the note was authored on. */
+  device?: DeviceType;
+  /** Free-form app-state label (e.g. `"focused-writing"`, `"daily-review"`). */
+  app_state?: string;
+  /** Coarse time-of-day at creation. Derived from local clock. */
+  time_of_day?: TimeOfDay;
+  /** Weekday at creation. Derived from local clock. */
+  weekday?: Weekday;
+  /** Notes that were open immediately before this one was created. */
+  preceding_notes?: string[];
+  /** Length of the authoring session up to this note, in minutes. */
+  session_duration_min?: number;
+  /** Word-count produced during this session up to creation. */
+  word_count_session?: number;
+  /** Origin metadata when the note came from a pipe (url, youtube, …). */
+  source?: Record<string, unknown>;
+}
+
+/**
  * Parsed frontmatter map — open shape; per-type schemas enforce required
  * keys via ajv. We type the well-known fields for ergonomics, but keep the
  * index signature so per-doc-type extras (e.g. `status` on tasks, `source`
@@ -62,6 +118,11 @@ export interface FrontmatterMap {
    * the user's global privacyTier setting. Absent = `"default"`.
    */
   privacy?: NotePrivacy;
+  /**
+   * Encoding-context captured at create-time. See `EncodedContext` and
+   * `scoring/encodingContext.ts`. Optional — legacy notes have no block.
+   */
+  encoded?: EncodedContext;
   /** Per-doc-type extras (status, due, source, …) pass through here. */
   [key: string]: unknown;
 }
@@ -80,6 +141,8 @@ export interface BaseFrontmatter {
   updated: string;
   /** Optional privacy tier — see `NotePrivacy`. */
   privacy?: NotePrivacy;
+  /** Optional encoding-context block — see `EncodedContext`. */
+  encoded?: EncodedContext;
 }
 
 /** Ajv-style validation result wrapper. */

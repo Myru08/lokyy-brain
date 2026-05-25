@@ -15,6 +15,7 @@ import {
   serializeFrontmatter,
   validateFrontmatter,
   type DocType,
+  type EncodedContext,
   type FrontmatterMap,
 } from "../frontmatter/index.js";
 import { FrontmatterValidationError } from "../errors/FrontmatterValidationError.js";
@@ -242,6 +243,15 @@ export interface CreateNoteOpts {
   title?: string;
   /** Extra frontmatter fields merged in (e.g. `source: "youtube"` for captures). */
   extra?: FrontmatterMap;
+  /**
+   * Phase B Wave B3 / Story 1 — Encoding-Context (Tulving 1973). Captured
+   * at create-time and persisted as `encoded:` in the frontmatter. The
+   * server route assembles it from the request (User-Agent device,
+   * current weekday/time-of-day, recently-opened notes); the helper
+   * `captureEncodingContext` in `scoring/encodingContext.ts` does the
+   * derivation. NEVER updated by `saveNote` — encoding is a one-shot event.
+   */
+  encoded?: EncodedContext;
 }
 
 /**
@@ -281,6 +291,12 @@ export async function createNote(
     updated: now,
     ...(opts.extra ?? {}),
   };
+  // Encoding-context (Tulving 1973) — only attach when the caller supplied
+  // a block. `extra` may have already provided one for tests; we override
+  // with the explicit `opts.encoded` so the route-level capture wins.
+  if (opts.encoded) {
+    frontmatter.encoded = opts.encoded;
+  }
 
   const validation = validateFrontmatter(frontmatter, type);
   if (!validation.valid) {

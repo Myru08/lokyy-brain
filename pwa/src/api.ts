@@ -165,6 +165,57 @@ export interface TraceEvent {
  * regardless of whether the DB write succeeded (telemetry is best-effort
  * by design; the server-side `logRetrieval` is itself fire-and-forget).
  */
+/* ──────────────────────────────────────────────────────────────────────────
+ * Encoding-Context (Phase B Wave B3 / Story 1 — Tulving 1973).
+ *
+ * The PWA assembles a thin client-side context block at create-time —
+ * device class from `navigator.userAgent` + caller-supplied
+ * preceding-notes / session-duration / app_state. Everything else
+ * (time-of-day, weekday) is derived server-side from the wall clock.
+ *
+ * Keep this shape compatible with `EncodedContext` in @lokyy/core; the
+ * server merges it via `captureEncodingContext`.
+ * ────────────────────────────────────────────────────────────────────── */
+export type ClientDevice = "laptop" | "desktop" | "mobile" | "tablet" | "api" | "mcp";
+
+export interface ClientEncodingInput {
+  device?: ClientDevice;
+  app_state?: string;
+  preceding_notes?: string[];
+  session_duration_min?: number;
+  word_count_session?: number;
+  source?: Record<string, unknown>;
+}
+
+/**
+ * Lightweight UA → device classifier for the PWA. The server runs the
+ * same heuristic against the `User-Agent` header — we send a hint
+ * client-side so the request still works without a UA header (some
+ * service-worker re-issues drop it). The server-side mapping wins when
+ * the client omits the field.
+ */
+export function detectClientDevice(): ClientDevice {
+  if (typeof navigator === "undefined") return "api";
+  const ua = navigator.userAgent.toLowerCase();
+  if (/ipad|tablet|playbook|silk/.test(ua)) return "tablet";
+  if (/iphone|ipod|android.*mobile|mobile.*safari|opera mini|iemobile/.test(ua)) {
+    return "mobile";
+  }
+  if (/windows nt|macintosh|mac os x|linux x86|x11/.test(ua)) return "laptop";
+  return "api";
+}
+
+/**
+ * Build the default client-side encoding hint — just the device. Callers
+ * that want to attach preceding-notes / session_duration override this
+ * by passing an explicit input to `api.createNote`.
+ */
+export function buildClientEncoding(
+  extra: Omit<ClientEncodingInput, "device"> = {},
+): ClientEncodingInput {
+  return { device: detectClientDevice(), ...extra };
+}
+
 export function logTrace(event: TraceEvent): void {
   try {
     void fetch(`${BASE}/traces`, {
@@ -283,11 +334,21 @@ export const api = {
 
   tree: () => fetch(`${BASE}/vault/tree`).then(json<TreeNode[]>),
 
-  createNote: (path: string, body?: string) =>
+  /**
+   * Create a new note. Optionally carries a partial encoding-context
+   * (Phase B Wave B3 / Story 1 — Tulving 1973) for the server to merge
+   * with time/weekday + UA-derived device. Caller passes preceding-notes
+   * + session-duration from `App.tsx`; the server fills in the rest.
+   */
+  createNote: (
+    path: string,
+    body?: string,
+    encoded?: ClientEncodingInput,
+  ) =>
     fetch(`${BASE}/vault/note`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path, body }),
+      body: JSON.stringify({ path, body, encoded: encoded ?? buildClientEncoding() }),
     }).then(json<Note>),
 
   createFolder: (path: string) =>

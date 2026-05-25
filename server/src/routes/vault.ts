@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  captureEncodingContext,
   coreConfig,
   createFolder,
   createNote,
@@ -10,7 +11,11 @@ import {
   getTree,
   moveEntry,
   saveBinary,
+  type CaptureContextInput,
+  type DeviceType,
+  type EncodedContext,
 } from "@lokyy/core";
+import { deviceFromUserAgent } from "./encoding.js";
 
 /**
  * Erlaubte Asset-MIME-Typen für `POST /api/vault/asset`.
@@ -57,12 +62,27 @@ vaultRoutes.get("/tree", async (c) => {
   return c.json(await getTree());
 });
 
-// POST /api/vault/note  { path, body? }  -> neue Notiz
+// POST /api/vault/note  { path, body?, encoded? }  -> neue Notiz
+//
+// Phase B Wave B3 / Story 1 — the request optionally carries a partial
+// encoding-context (`encoded`) from the PWA (device class, preceding
+// notes, session duration). The server fills in time-of-day + weekday
+// from the wall clock and falls back to a UA-derived device when the
+// client did not supply one. The result lands as `encoded:` in the
+// frontmatter, captured exactly once at create-time.
 vaultRoutes.post("/note", async (c) => {
-  const { path, body } = await c.req.json<{ path: string; body?: string }>();
+  const payload = await c.req.json<{
+    path: string;
+    body?: string;
+    encoded?: Partial<CaptureContextInput> & { device?: string };
+  }>();
+  const { path, body } = payload;
   if (!path) return c.json({ error: "path erforderlich" }, 400);
+
+  const encoded = buildEncodedFromRequest(c.req.header("user-agent"), payload.encoded);
+
   try {
-    return c.json(await createNote(path, body), 201);
+    return c.json(await createNote(path, body, { encoded }), 201);
   } catch (err) {
     return c.json(
       { error: err instanceof Error ? err.message : "Anlegen fehlgeschlagen" },
@@ -70,6 +90,57 @@ vaultRoutes.post("/note", async (c) => {
     );
   }
 });
+
+/**
+ * Helper: build an `EncodedContext` from the request — UA derives the
+ * device when the client omitted it, the rest is trusted as-is (after a
+ * coarse type check so we never write garbage into the frontmatter).
+ *
+ * Kept route-local because the device-from-UA mapping is HTTP-specific.
+ */
+function buildEncodedFromRequest(
+  userAgent: string | undefined,
+  raw: (Partial<CaptureContextInput> & { device?: string }) | undefined,
+): EncodedContext {
+  const VALID_DEVICES: DeviceType[] = [
+    "laptop",
+    "desktop",
+    "mobile",
+    "tablet",
+    "api",
+    "mcp",
+  ];
+  const input: CaptureContextInput = {};
+  if (raw?.device && (VALID_DEVICES as string[]).includes(raw.device)) {
+    input.device = raw.device as DeviceType;
+  } else {
+    input.device = deviceFromUserAgent(userAgent);
+  }
+  if (typeof raw?.app_state === "string") input.app_state = raw.app_state;
+  if (Array.isArray(raw?.preceding_notes)) {
+    input.preceding_notes = raw.preceding_notes.filter(
+      (n): n is string => typeof n === "string",
+    );
+  }
+  if (
+    typeof raw?.session_duration_min === "number" &&
+    raw.session_duration_min >= 0 &&
+    Number.isInteger(raw.session_duration_min)
+  ) {
+    input.session_duration_min = raw.session_duration_min;
+  }
+  if (
+    typeof raw?.word_count_session === "number" &&
+    raw.word_count_session >= 0 &&
+    Number.isInteger(raw.word_count_session)
+  ) {
+    input.word_count_session = raw.word_count_session;
+  }
+  if (raw?.source && typeof raw.source === "object" && !Array.isArray(raw.source)) {
+    input.source = raw.source as Record<string, unknown>;
+  }
+  return captureEncodingContext(input);
+}
 
 // POST /api/vault/folder  { path }  -> neuer Ordner
 vaultRoutes.post("/folder", async (c) => {

@@ -95,6 +95,11 @@ export {
   type BaseFrontmatter,
   type ValidationErrorDetail,
   type ValidationResult,
+  // Phase B Wave B3 / Story 1 — Encoding-Context-Match-Boost (Tulving 1973).
+  type EncodedContext,
+  type DeviceType,
+  type TimeOfDay,
+  type Weekday,
 } from "./frontmatter/index.js";
 
 export { FrontmatterValidationError } from "./errors/FrontmatterValidationError.js";
@@ -221,6 +226,21 @@ export {
   type SurfaceRecommendation,
 } from "./scoring/index.js";
 
+// ─── Encoding-Context-Match-Boost (Phase B Wave B3 Story 1) ─────────────
+// Tulving 1973: capture device/time/weekday/preceding-notes at create-time,
+// match it at retrieve-time, multiply the retrieval score by a small boost.
+export {
+  captureEncodingContext,
+  timeOfDayFrom,
+  weekdayFrom,
+  contextMatchBoost,
+  applyContextBoost,
+  type CaptureContextInput,
+  type QueryContext,
+  type ContextMatchResult,
+  type ScoredHit,
+} from "./scoring/index.js";
+
 // ─── Sleep-Agent (Phase A Wave A2 Story 7) ──────────────────────────────
 export {
   SleepAgent,
@@ -232,3 +252,15 @@ export {
   type SleepPass,
   type SleepPassResult,
 } from "./sleep-agent/index.js";
+
+// ─── End-to-End Retrieval-Pipeline (Phase B Wave B3 / Story 2) ──────────
+// Orchestrates the eight cognitive-loop stages (rewrite → intent → hybrid
+// → PPR → encoding-context → rerank → lost-in-middle → generate-with-
+// reflection). See packages/core/src/pipeline/search.ts.
+export {
+  SearchPipeline,
+  buildSearchPipeline,
+  type SearchPipelineInput,
+  type SearchPipelineResult,
+  type PipelineStepTrace,
+} from "./pipeline/index.js";

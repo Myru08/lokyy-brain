@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { Fragment, useMemo, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { C, FONT } from "./theme.js";
 
 /**
@@ -74,6 +74,27 @@ const DOC_TYPE_OPTIONS = [
 const READ_ONLY_KEYS = new Set(["id", "created", "updated"]);
 
 /**
+ * Keys whose top-level entry is hidden from the field grid because we
+ * render them in a dedicated section (privacy row, encoded-context
+ * details panel). Without this, the panel would show `encoded:` as a
+ * lonely string field with no usable value (the inline YAML parser does
+ * not descend into nested mappings).
+ */
+const HIDDEN_TOPLEVEL_KEYS = new Set(["encoded"]);
+
+/** Field labels for the read-only encoded-context section. */
+const ENCODED_FIELD_LABELS: Record<string, string> = {
+  device: "Device",
+  app_state: "App state",
+  time_of_day: "Time of day",
+  weekday: "Weekday",
+  preceding_notes: "Preceding notes",
+  session_duration_min: "Session (min)",
+  word_count_session: "Words in session",
+  source: "Source",
+};
+
+/**
  * Valid privacy tier values. Must mirror `NotePrivacy` in `@lokyy/core`.
  * `"default"` = follow the user's global privacyTier setting.
  * `"local-only"` = hard-force a local LLM provider for any AI op against
@@ -137,6 +158,63 @@ function parseFrontmatter(source: string): ParsedFrontmatter {
     values[key] = parseValue(rest);
   }
   return { keys, values, bodyAfter, found: true };
+}
+
+// ─── Encoded-context sub-block parser ─────────────────────────────────────
+//
+// The frontmatter parser above is intentionally flat-only (top-level keys
+// with scalar / inline-array values). For the Tulving-style `encoded:` block
+// we want to *display* the nested fields read-only without buying into a
+// real YAML lib. So we scan the raw frontmatter block, find the `encoded:`
+// line, and pick up the indented children until the next non-indented key.
+//
+// Format we accept:
+//   encoded:
+//     device: laptop
+//     time_of_day: evening
+//     preceding_notes: [a, b]
+//     source: { kind: "youtube" }     ← rendered as raw string
+//
+// Anything we can't parse cleanly falls back to a raw string for that
+// sub-field; nothing in this read-only path is allowed to throw.
+type EncodedField = string | string[];
+interface EncodedSnapshot {
+  fields: Array<{ key: string; value: EncodedField }>;
+}
+
+function parseEncodedSubBlock(source: string): EncodedSnapshot | null {
+  const m = FRONTMATTER_RE.exec(source);
+  if (!m) return null;
+  const block = m[1] ?? "";
+  const lines = block.split(/\r?\n/);
+  const idx = lines.findIndex((l) => /^encoded\s*:\s*$/.test(l));
+  if (idx < 0) return null;
+
+  const out: EncodedSnapshot = { fields: [] };
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    // Stop at the first non-indented (or empty) line — that's the next
+    // top-level key.
+    if (line.trim() === "") continue;
+    if (!/^\s+/.test(line)) break;
+
+    const km = /^\s+([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$/.exec(line);
+    if (!km) continue;
+    const key = km[1] as string;
+    const rest = (km[2] as string).trim();
+    if (rest === "") {
+      // Nested object (e.g. `source:` followed by deeper indent). Render
+      // as a placeholder — the read-only UI just shows "(nested)".
+      out.fields.push({ key, value: "(nested)" });
+      continue;
+    }
+    if (rest.startsWith("[") && rest.endsWith("]")) {
+      out.fields.push({ key, value: parseInlineArray(rest) });
+      continue;
+    }
+    out.fields.push({ key, value: stripQuotes(rest) });
+  }
+  return out.fields.length > 0 ? out : null;
 }
 
 // ─── Serializer ──────────────────────────────────────────────────────────
@@ -436,10 +514,17 @@ export function PropertiesPanel({
     rawPrivacy === "local-only" ? "local-only" : "default";
   const isLocalOnly = currentPrivacy === "local-only";
 
-  // Count fields *excluding* privacy in the header total — privacy gets
-  // its own dedicated row above the grid, so it shouldn't double-count.
-  const visibleKeys = parsed.keys.filter((k) => k !== PRIVACY_KEY);
+  // Count fields *excluding* privacy + hidden-top-level (encoded) — those
+  // get dedicated rows above/below the grid and shouldn't double-count.
+  const visibleKeys = parsed.keys.filter(
+    (k) => k !== PRIVACY_KEY && !HIDDEN_TOPLEVEL_KEYS.has(k),
+  );
   const fieldCount = visibleKeys.length;
+
+  // Encoded-context (Tulving 1973) — captured at create-time, never
+  // edited by the user. Parsed independently from the raw body because
+  // the flat YAML parser above doesn't descend into nested mappings.
+  const encodedSnapshot = useMemo(() => parseEncodedSubBlock(body), [body]);
 
   function update(key: string, next: FieldValue) {
     const newValues: Record<string, FieldValue> = { ...parsed.values, [key]: next };
@@ -534,6 +619,49 @@ export function PropertiesPanel({
               );
             })}
           </div>
+
+          {encodedSnapshot && (
+            <details style={{ marginTop: 12 }}>
+              <summary
+                style={{
+                  cursor: "pointer",
+                  color: C.textDim,
+                  fontSize: 12,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                  userSelect: "none",
+                  padding: "4px 0",
+                }}
+              >
+                Encoded Context ({encodedSnapshot.fields.length})
+              </summary>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "140px 1fr",
+                  gap: "6px 12px",
+                  alignItems: "center",
+                  marginTop: 8,
+                  paddingLeft: 4,
+                }}
+              >
+                {encodedSnapshot.fields.map((f) => (
+                  <Fragment key={f.key}>
+                    <span style={LABEL_STYLE}>
+                      {ENCODED_FIELD_LABELS[f.key] ?? f.key}
+                    </span>
+                    <input
+                      type="text"
+                      value={Array.isArray(f.value) ? f.value.join(", ") : f.value}
+                      readOnly
+                      tabIndex={-1}
+                      style={READONLY_STYLE}
+                    />
+                  </Fragment>
+                ))}
+              </div>
+            </details>
+          )}
         </>
       )}
     </div>

@@ -135,4 +135,9 @@ export type {
   BaseFrontmatter,
   ValidationErrorDetail,
   ValidationResult,
+  // Phase B Wave B3 / Story 1 — Encoding-Context-Match-Boost (Tulving 1973).
+  EncodedContext,
+  DeviceType,
+  TimeOfDay,
+  Weekday,
 } from "./types.js";

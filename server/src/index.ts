@@ -35,6 +35,7 @@ import { pprRoutes } from "./routes/ppr.js";
 import { rerankRoutes } from "./routes/rerank.js";
 import { surfaceRoutes, workingMemoryRoutes } from "./routes/surface.js";
 import { layoutRoutes } from "./routes/layout.js";
+import { encodingRoutes } from "./routes/encoding.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -137,6 +138,15 @@ app.route("/api/working-memory", workingMemoryRoutes);
 app.use("/api/layout", setupGate);
 app.use("/api/layout/*", setupGate);
 app.route("/api/layout", layoutRoutes);
+
+// Phase B Wave B3 / Story 1 — Encoding-Context-Match-Boost (Tulving 1973).
+//   /api/encoding/capture       → derive an EncodedContext from request UA + body
+//   /api/encoding/match-boost   → batch-apply context-match-boost to scored hits
+// Pure compute, no DB / git. Keeps the matching logic available outside
+// the in-process createNote path (pipe handlers, MCP, future Wave B3 Story 2).
+app.use("/api/encoding", setupGate);
+app.use("/api/encoding/*", setupGate);
+app.route("/api/encoding", encodingRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);

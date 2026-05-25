@@ -4,6 +4,7 @@ import {
   LlmRouter,
   RagFusion,
   Tier2Provider,
+  buildSearchPipeline,
   getLlmRouting,
   getMemoryProvider,
   getNote,
@@ -11,6 +12,7 @@ import {
   type HybridOpts,
   type RetrieveHit,
   type SearchOpts,
+  type SearchPipelineInput,
 } from "@lokyy/core";
 
 /**
@@ -229,6 +231,60 @@ searchRoutes.post("/search/rag-fusion", async (c) => {
     durationMs: result.durationMs,
     ...(result.degraded ? { degraded: true } : {}),
   });
+});
+
+/**
+ * POST /api/search/pipeline — Phase B Wave B3 / Story 2.
+ *
+ * Run the full 8-step cognitive retrieval pipeline:
+ *   conversational rewrite → intent classify → hybrid (or RAG-Fusion for
+ *   question intent) → working-memory boost → PPR (associative only) →
+ *   encoding-context boost → rerank → lost-in-middle layout → generate
+ *   with Self-RAG reflection.
+ *
+ * Body matches `SearchPipelineInput`:
+ *   { query: string,
+ *     conversationHistory?, sessionId?, sessionContext?,
+ *     generate?, forceIntent?, maxRetrievalHops?, vaultId? }
+ *
+ * Response is the full `SearchPipelineResult` including per-step
+ * telemetry and `degraded[]` flags. The pipeline never throws — caller
+ * always gets a result, possibly with `rerankedHits: []` if retrieval
+ * found nothing.
+ *
+ * Note on cost: when `generate=true` and the LLM judges the answer
+ * incomplete, the pipeline may issue up to `maxRetrievalHops-1` extra
+ * direct-hybrid retrievals + LLM regenerations. Cap at the default 3
+ * if you care about p99 latency; bump for research-grade answers.
+ */
+searchRoutes.post("/search/pipeline", async (c) => {
+  // Reuse the request's JSON as `SearchPipelineInput`. Defensive: missing
+  // body / missing query short-circuits with an empty-shape response so
+  // the PWA gets predictable JSON instead of a 400.
+  let body: Partial<SearchPipelineInput>;
+  try {
+    body = (await c.req.json()) as Partial<SearchPipelineInput>;
+  } catch {
+    body = {};
+  }
+  const query = (body.query ?? "").trim();
+  if (query.length === 0) {
+    return c.json({
+      query: "",
+      rewrittenQuery: "",
+      intent: "topical" as const,
+      hops: 0,
+      totalDurationMs: 0,
+      steps: [],
+      rerankedHits: [],
+      degraded: ["empty_query"],
+    });
+  }
+  const pipeline = await buildSearchPipeline();
+  // Cast through SearchPipelineInput so optional fields propagate without
+  // re-declaring the body shape here.
+  const result = await pipeline.execute({ ...body, query } as SearchPipelineInput);
+  return c.json(result);
 });
 
 export { getNote };

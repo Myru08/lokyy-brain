@@ -51,3 +51,16 @@ export {
   type WorkingMemoryOptions,
   type SurfaceRecommendation,
 } from "./workingMemory.js";
+
+// Phase B Wave B3 / Story 1 — Encoding-Context-Match-Boost (Tulving 1973).
+export {
+  captureEncodingContext,
+  timeOfDayFrom,
+  weekdayFrom,
+  contextMatchBoost,
+  applyContextBoost,
+  type CaptureContextInput,
+  type QueryContext,
+  type ContextMatchResult,
+  type ScoredHit,
+} from "./encodingContext.js";

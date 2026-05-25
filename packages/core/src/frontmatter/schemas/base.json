@@ -33,6 +33,38 @@
       "enum": ["default", "local-only"],
       "default": "default",
       "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    },
+    "encoded": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Encoding-context captured at note creation time. Used by the Encoding-Context-Match-Boost (Tulving 1973) to boost retrieval when the query-time context matches the encoding-time context. All fields optional; absent block is the default for legacy notes.",
+      "properties": {
+        "device": {
+          "type": "string",
+          "enum": ["laptop", "desktop", "mobile", "tablet", "api", "mcp"]
+        },
+        "app_state": { "type": "string" },
+        "time_of_day": {
+          "type": "string",
+          "enum": ["morning", "midday", "evening", "night"]
+        },
+        "weekday": {
+          "type": "string",
+          "enum": [
+            "monday",
+            "tuesday",
+            "wednesday",
+            "thursday",
+            "friday",
+            "saturday",
+            "sunday"
+          ]
+        },
+        "preceding_notes": { "type": "array", "items": { "type": "string" } },
+        "session_duration_min": { "type": "integer", "minimum": 0 },
+        "word_count_session": { "type": "integer", "minimum": 0 },
+        "source": { "type": "object", "additionalProperties": true }
+      }
     }
   },
   "additionalProperties": true
