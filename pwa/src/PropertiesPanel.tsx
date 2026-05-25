@@ -73,6 +73,18 @@ const DOC_TYPE_OPTIONS = [
 
 const READ_ONLY_KEYS = new Set(["id", "created", "updated"]);
 
+/**
+ * Valid privacy tier values. Must mirror `NotePrivacy` in `@lokyy/core`.
+ * `"default"` = follow the user's global privacyTier setting.
+ * `"local-only"` = hard-force a local LLM provider for any AI op against
+ * this note, even if the global setting says cloud is fine.
+ */
+const PRIVACY_OPTIONS = ["default", "local-only"] as const;
+type PrivacyValue = (typeof PRIVACY_OPTIONS)[number];
+
+/** Key the Privacy row renders for. Universal across all doc types. */
+const PRIVACY_KEY = "privacy";
+
 // ─── Parser ──────────────────────────────────────────────────────────────
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -247,6 +259,42 @@ const CHIP_CLOSE_STYLE: CSSProperties = {
   lineHeight: 1,
 };
 
+// ─── Privacy-row styles ──────────────────────────────────────────────────
+
+/**
+ * The privacy row gets its own dedicated layout — full-width, single line,
+ * label + select + optional badge. It sits at the very top of the expanded
+ * panel because the privacy state is high-stakes (gates the LLM router).
+ */
+const PRIVACY_ROW_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 10,
+  padding: "8px 10px",
+  marginBottom: 12,
+  borderRadius: 5,
+  border: `1px solid ${C.border}`,
+  background: "rgba(255,255,255,0.015)",
+};
+
+const PRIVACY_BADGE_STYLE: CSSProperties = {
+  background: "rgba(249,115,22,0.15)",
+  border: "1px solid rgba(249,115,22,0.45)",
+  borderRadius: 4,
+  padding: "2px 8px",
+  color: "#F97316",
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.04em",
+  textTransform: "uppercase",
+};
+
+const PRIVACY_SELECT_STYLE: CSSProperties = {
+  ...INPUT_BASE,
+  flex: 1,
+  appearance: "none",
+};
+
 // ─── Subcomponents ───────────────────────────────────────────────────────
 
 function FocusableInput(props: {
@@ -379,16 +427,40 @@ export function PropertiesPanel({
     );
   }
 
-  const fieldCount = parsed.keys.length;
+  // Resolve current privacy state. Tolerate missing key, unknown values
+  // (legacy or hand-edited notes) — anything that isn't "local-only" is
+  // treated as "default" for UI purposes; the underlying value is only
+  // written when the user picks a non-default option.
+  const rawPrivacy = parsed.values[PRIVACY_KEY];
+  const currentPrivacy: PrivacyValue =
+    rawPrivacy === "local-only" ? "local-only" : "default";
+  const isLocalOnly = currentPrivacy === "local-only";
+
+  // Count fields *excluding* privacy in the header total — privacy gets
+  // its own dedicated row above the grid, so it shouldn't double-count.
+  const visibleKeys = parsed.keys.filter((k) => k !== PRIVACY_KEY);
+  const fieldCount = visibleKeys.length;
 
   function update(key: string, next: FieldValue) {
     const newValues: Record<string, FieldValue> = { ...parsed.values, [key]: next };
-    const newBody = serializeFrontmatter(parsed.keys, newValues, parsed.bodyAfter);
+    // Preserve key order; ensure `privacy` exists in `keys` if newly set.
+    const keys = parsed.keys.includes(key) ? parsed.keys : [...parsed.keys, key];
+    const newBody = serializeFrontmatter(keys, newValues, parsed.bodyAfter);
     onUpdateBody(newBody);
   }
 
+  function updatePrivacy(next: PrivacyValue) {
+    update(PRIVACY_KEY, next);
+  }
+
+  // Subtle Brand-accent tint when privacy is local-only — visible at a
+  // glance without being shouty. RGBA over the existing panel background.
+  const panelStyle: CSSProperties = isLocalOnly
+    ? { ...PANEL_STYLE, background: "rgba(249,115,22,0.05)" }
+    : PANEL_STYLE;
+
   return (
-    <div style={PANEL_STYLE}>
+    <div style={panelStyle}>
       <div
         role="button"
         tabIndex={0}
@@ -415,30 +487,54 @@ export function PropertiesPanel({
           ▸
         </span>
         <span>Properties ({fieldCount})</span>
+        {isLocalOnly && <span style={PRIVACY_BADGE_STYLE}>🔒 LOCAL</span>}
       </div>
 
       {expanded && (
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "140px 1fr",
-            gap: "8px 12px",
-            marginTop: 12,
-            alignItems: "start",
-          }}
-        >
-          {parsed.keys.map((key) => {
-            const value = parsed.values[key];
-            return (
-              <Row
-                key={key}
-                fieldKey={key}
-                value={value as FieldValue}
-                onChange={(v) => update(key, v)}
-              />
-            );
-          })}
-        </div>
+        <>
+          {/* Dedicated Privacy row — pinned at the top because the
+              privacy tier gates which LLM provider the router chooses. */}
+          <div style={{ ...PRIVACY_ROW_STYLE, marginTop: 12 }}>
+            <span style={{ ...LABEL_STYLE, alignSelf: "center" }}>
+              🔒 Privacy
+            </span>
+            <select
+              value={currentPrivacy}
+              onChange={(e) => updatePrivacy(e.target.value as PrivacyValue)}
+              style={PRIVACY_SELECT_STYLE}
+              aria-label="Privacy tier for AI operations"
+            >
+              <option value="default">
+                Default (follows your global setting)
+              </option>
+              <option value="local-only">
+                Local-only (never sent to cloud LLMs)
+              </option>
+            </select>
+            {isLocalOnly && <span style={PRIVACY_BADGE_STYLE}>🔒 LOCAL</span>}
+          </div>
+
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "140px 1fr",
+              gap: "8px 12px",
+              alignItems: "start",
+            }}
+          >
+            {visibleKeys.map((key) => {
+              const value = parsed.values[key];
+              return (
+                <Row
+                  key={key}
+                  fieldKey={key}
+                  value={value as FieldValue}
+                  onChange={(v) => update(key, v)}
+                />
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );

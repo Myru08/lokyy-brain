@@ -131,6 +131,8 @@ export { DOC_TYPES };
 export type {
   DocType,
   FrontmatterMap,
+  NotePrivacy,
+  BaseFrontmatter,
   ValidationErrorDetail,
   ValidationResult,
 } from "./types.js";

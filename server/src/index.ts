@@ -8,6 +8,7 @@ import {
   initDb,
   initLlmFromConfig,
   registerHandler,
+  resumePendingMigration,
   runMigrations,
 } from "@lokyy/core";
 import { notesRoutes } from "./routes/notes.js";
@@ -22,6 +23,7 @@ import { dataviewRoutes } from "./routes/dataview.js";
 import { templatesRoutes } from "./routes/templates.js";
 import { settingsRoutes } from "./routes/settings.js";
 import { llmRoutes } from "./routes/llm.js";
+import { llmMigrationRoutes } from "./routes/llm-migration.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -58,6 +60,7 @@ app.use("/api/admin/*", setupGate);
 app.use("/api/llm/*", setupGate);
 app.route("/api/admin", adminRoutes);
 app.route("/api/llm", llmRoutes);
+app.route("/api/llm/migration", llmMigrationRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);
@@ -111,6 +114,18 @@ async function main() {
   } catch (err) {
     console.warn(
       `[lokyy-brain] LLM registry init skipped — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // ── Resume any in-flight embedding migration (Phase-0 Wave D) ─────────
+  // A migration row in status=pending/running means the previous process
+  // exited mid-run. Re-spawn the worker, skipping notes already marked done.
+  // Failures here MUST NOT abort startup.
+  try {
+    await resumePendingMigration();
+  } catch (err) {
+    console.warn(
+      `[lokyy-brain] resumePendingMigration skipped — ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

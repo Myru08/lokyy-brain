@@ -84,6 +84,25 @@ export interface LlmConfigResponse {
 }
 
 /**
+ * Embedding-migration progress shape. Sync with
+ * `packages/core/src/llm/embeddingsMigration.ts → MigrationProgress`.
+ */
+export interface MigrationProgress {
+  migrationId: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  totalNotes: number;
+  processedNotes: number;
+  currentNote?: string;
+  errorCount: number;
+  elapsedMs: number;
+  fromProvider: string;
+  fromModel: string;
+  toProvider: string;
+  toModel: string;
+  errorMessage?: string;
+}
+
+/**
  * Dataview query shape — kept in sync with `@lokyy/core`'s `DataviewQuery`.
  * Defined here (not imported) because `@lokyy/core` has node-only deps and
  * is forbidden from the PWA bundle.
@@ -345,4 +364,70 @@ export const api = {
     fetch(`${BASE}/llm/presets/openai-compat`, {
       credentials: "include",
     }).then(json<OpenAICompatPreset[]>),
+
+  /* ──── Embedding-Migration (Phase-0 Wave D / Agent 1) ──── */
+
+  /** Kick off a re-embed of the entire vault under a new provider/model. */
+  startEmbeddingMigration: (
+    toProvider: string,
+    toModel?: string,
+  ): Promise<{ migrationId: string }> =>
+    fetch(`${BASE}/llm/migration/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toProvider, toModel }),
+      credentials: "include",
+    }).then(json<{ migrationId: string }>),
+
+  /** Snapshot progress of an active or completed migration. */
+  getMigrationStatus: (id: string): Promise<MigrationProgress> =>
+    fetch(`${BASE}/llm/migration/${encodeURIComponent(id)}/status`, {
+      credentials: "include",
+    }).then(json<MigrationProgress>),
+
+  /** Best-effort cancel. Worker stops between notes. */
+  cancelMigration: async (id: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/llm/migration/${encodeURIComponent(id)}/cancel`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok && res.status !== 204) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "cancel failed");
+    }
+  },
+
+  /**
+   * Subscribe to a migration's progress via Server-Sent Events. Returns an
+   * abort function — call it to close the underlying EventSource.
+   *
+   * `onProgress` fires for each progress event (~1/s).
+   * `onClose` fires once the stream is closed (terminal state OR aborted).
+   */
+  streamMigration: (
+    id: string,
+    onProgress: (p: MigrationProgress) => void,
+    onClose: () => void,
+  ): (() => void) => {
+    const url = `${BASE}/llm/migration/${encodeURIComponent(id)}/stream`;
+    const es = new EventSource(url, { withCredentials: true });
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      es.close();
+      onClose();
+    };
+    es.addEventListener("progress", (ev) => {
+      try {
+        const data = JSON.parse((ev as MessageEvent).data) as MigrationProgress;
+        onProgress(data);
+      } catch {
+        // ignore malformed event
+      }
+    });
+    es.addEventListener("done", () => close());
+    es.addEventListener("error", () => close());
+    return close;
+  },
 };

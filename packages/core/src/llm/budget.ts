@@ -1,31 +1,57 @@
+import { and, eq, gte, sql } from "drizzle-orm";
+import { ulid } from "ulid";
+import { database } from "../db/index.js";
+import { llmUsageEvents } from "../db/schema/llmUsage.js";
 import type { UsageEvent, UsageStats } from "./types.js";
 
 /**
  * Tracks LLM usage + cost per provider per month.
- * Storage: persisted to system_config or a dedicated table (this implementation
- * uses an in-memory + sql-backed approach; the SQL persistence is filed as a
- * follow-up so Wave A can ship without DB migration).
+ *
+ * Storage: Postgres table `llm_usage_events` (append-only ledger). Aggregations
+ * run as `SUM(...)` queries; there is no precomputed monthly rollup. Indexes
+ * `(provider, timestamp)` and `(timestamp)` cover the two read paths used here
+ * (`monthlyUsage`, `listMonthlyUsage`).
+ *
+ * Pricing data lives inside `estimateCost` — the canonical 2026 price table.
  */
 export class BudgetTracker {
-  private events: UsageEvent[] = [];
-
   async record(event: UsageEvent): Promise<void> {
-    this.events.push(event);
+    const db = database();
+    await db.insert(llmUsageEvents).values({
+      id: ulid(),
+      provider: event.provider,
+      role: event.role,
+      model: event.model,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      estimatedCostUsd: event.estimatedCostUsd,
+      timestamp: event.timestamp,
+    });
   }
 
   async monthlyUsage(provider: string, now: Date = new Date()): Promise<UsageStats> {
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const relevant = this.events.filter(
-      (e) => e.provider === provider && e.timestamp >= monthStart,
-    );
-    const input = relevant.reduce((s, e) => s + e.inputTokens, 0);
-    const output = relevant.reduce((s, e) => s + e.outputTokens, 0);
-    const cost = relevant.reduce((s, e) => s + e.estimatedCostUsd, 0);
+    const db = database();
+    const rows = await db
+      .select({
+        monthInputTokens: sql<number>`COALESCE(SUM(${llmUsageEvents.inputTokens}), 0)::int`,
+        monthOutputTokens: sql<number>`COALESCE(SUM(${llmUsageEvents.outputTokens}), 0)::int`,
+        monthCostUsd: sql<number>`COALESCE(SUM(${llmUsageEvents.estimatedCostUsd}), 0)::float8`,
+      })
+      .from(llmUsageEvents)
+      .where(
+        and(eq(llmUsageEvents.provider, provider), gte(llmUsageEvents.timestamp, monthStart)),
+      );
+    const r = rows[0] ?? {
+      monthInputTokens: 0,
+      monthOutputTokens: 0,
+      monthCostUsd: 0,
+    };
     return {
       provider,
-      monthInputTokens: input,
-      monthOutputTokens: output,
-      monthCostUsd: cost,
+      monthInputTokens: Number(r.monthInputTokens) || 0,
+      monthOutputTokens: Number(r.monthOutputTokens) || 0,
+      monthCostUsd: Number(r.monthCostUsd) || 0,
     };
   }
 
@@ -43,7 +69,7 @@ export class BudgetTracker {
     };
   }
 
-  /** Estimate cost based on token counts. Provider-specific pricing tables. */
+  /** Estimate cost based on token counts. Provider-specific pricing tables (2026). */
   estimateCost(
     provider: string,
     model: string,
@@ -72,6 +98,32 @@ export class BudgetTracker {
     const row = pricing[provider]?.[model];
     if (!row) return 0;
     return (inputTokens / 1_000_000) * row.in + (outputTokens / 1_000_000) * row.out;
+  }
+
+  /**
+   * Aggregated monthly usage across all providers that have any event in the
+   * current calendar month. Returned shape feeds the `/api/llm/config`
+   * response `usage` field.
+   */
+  async listMonthlyUsage(now: Date = new Date()): Promise<UsageStats[]> {
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const db = database();
+    const rows = await db
+      .select({
+        provider: llmUsageEvents.provider,
+        monthInputTokens: sql<number>`COALESCE(SUM(${llmUsageEvents.inputTokens}), 0)::int`,
+        monthOutputTokens: sql<number>`COALESCE(SUM(${llmUsageEvents.outputTokens}), 0)::int`,
+        monthCostUsd: sql<number>`COALESCE(SUM(${llmUsageEvents.estimatedCostUsd}), 0)::float8`,
+      })
+      .from(llmUsageEvents)
+      .where(gte(llmUsageEvents.timestamp, monthStart))
+      .groupBy(llmUsageEvents.provider);
+    return rows.map((r) => ({
+      provider: r.provider,
+      monthInputTokens: Number(r.monthInputTokens) || 0,
+      monthOutputTokens: Number(r.monthOutputTokens) || 0,
+      monthCostUsd: Number(r.monthCostUsd) || 0,
+    }));
   }
 }
 

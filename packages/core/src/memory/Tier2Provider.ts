@@ -1,6 +1,8 @@
 import { sql } from "drizzle-orm";
 import { database } from "../db/index.js";
 import { getNote } from "../notes/notesService.js";
+import { getActiveGeneration } from "../llm/embeddingsMigration.js";
+import { DEFAULT_EMBEDDINGS_GENERATION } from "../db/schema/embeddingsMigration.js";
 import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./MemoryProvider.js";
 
 /**
@@ -66,20 +68,37 @@ export class Tier2Provider implements MemoryProvider {
     return `[${arr.join(",")}]`;
   }
 
+  /**
+   * Resolve the active generation tag with a safe fallback. If the
+   * system_config row is missing (older databases pre-migration 0002),
+   * fall back to "default" so the legacy single-generation behaviour
+   * keeps working.
+   */
+  private async activeGeneration(): Promise<string> {
+    try {
+      return await getActiveGeneration();
+    } catch {
+      return DEFAULT_EMBEDDINGS_GENERATION;
+    }
+  }
+
   async indexNote(noteId: string): Promise<void> {
     const note = await getNote(noteId);
     if (!note) return;
     const vec = await this.embed(`${note.title}\n\n${note.body}`);
     const v = this.toPgVector(vec);
+    const generation = await this.activeGeneration();
     await database().execute(sql`
-      INSERT INTO note_embeddings (note_id, vault_id, embedding, updated_at)
-      VALUES (${noteId}, ${this.vaultId}, ${v}::vector, NOW())
-      ON CONFLICT (note_id, vault_id) DO UPDATE
+      INSERT INTO note_embeddings (note_id, vault_id, generation, embedding, updated_at)
+      VALUES (${noteId}, ${this.vaultId}, ${generation}, ${v}::vector, NOW())
+      ON CONFLICT (note_id, vault_id, generation) DO UPDATE
         SET embedding = EXCLUDED.embedding, updated_at = NOW()
     `);
   }
 
   async removeNote(noteId: string): Promise<void> {
+    // Remove from ALL generations — the note is gone, no point keeping
+    // stale embeddings in any generation.
     await database().execute(sql`
       DELETE FROM note_embeddings WHERE note_id = ${noteId} AND vault_id = ${this.vaultId}
     `);
@@ -95,10 +114,12 @@ export class Tier2Provider implements MemoryProvider {
       return [];
     }
     const v = this.toPgVector(vec);
+    const generation = await this.activeGeneration();
     const rows = await database().execute<{ note_id: string; distance: number }>(sql`
       SELECT note_id, embedding <=> ${v}::vector AS distance
       FROM note_embeddings
       WHERE vault_id = ${this.vaultId}
+        AND generation = ${generation}
       ORDER BY embedding <=> ${v}::vector ASC
       LIMIT ${limit}
     `);
@@ -118,12 +139,15 @@ export class Tier2Provider implements MemoryProvider {
 
   async relatedNotes(noteId: string, opts: RelatedOpts = {}): Promise<SearchHit[]> {
     const limit = opts.limit ?? 5;
+    const generation = await this.activeGeneration();
     const rows = await database().execute<{ note_id: string; distance: number }>(sql`
       SELECT ne.note_id, ne.embedding <=> me.embedding AS distance
       FROM note_embeddings ne, note_embeddings me
       WHERE me.note_id = ${noteId}
         AND me.vault_id = ${this.vaultId}
+        AND me.generation = ${generation}
         AND ne.vault_id = ${this.vaultId}
+        AND ne.generation = ${generation}
         AND ne.note_id != ${noteId}
       ORDER BY ne.embedding <=> me.embedding ASC
       LIMIT ${limit}

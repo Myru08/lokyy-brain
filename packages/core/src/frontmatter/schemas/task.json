@@ -11,7 +11,13 @@
     "updated": { "type": "string", "format": "date-time" },
     "tags": { "type": "array", "items": { "type": "string" } },
     "status": { "type": "string", "enum": ["open", "doing", "done", "cancelled"] },
-    "due": { "type": "string", "format": "date-time" }
+    "due": { "type": "string", "format": "date-time" },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
   },
   "additionalProperties": true
 }

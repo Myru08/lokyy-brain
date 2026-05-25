@@ -4,6 +4,7 @@ import { C, FONT } from "./theme.js";
 import {
   api,
   type LlmRole,
+  type MigrationProgress,
   type PrivacyTier,
   type ProviderConfig,
   type LlmRoutingConfig,
@@ -204,6 +205,15 @@ export function AiProviderSettings() {
   const [confirmProfile, setConfirmProfile] = useState<typeof PROFILES[number] | null>(null);
   const [folderInput, setFolderInput] = useState("");
 
+  /** Embedding-migration UI state (Phase-0 Wave D / Agent 1). */
+  const [migConfirm, setMigConfirm] = useState<{
+    toProvider: string;
+    toModel?: string;
+  } | null>(null);
+  const [migration, setMigration] = useState<MigrationProgress | null>(null);
+  const [migError, setMigError] = useState<string | undefined>();
+  const [migAbort, setMigAbort] = useState<(() => void) | null>(null);
+
   // ── Initial load ──
   useEffect(() => {
     let cancelled = false;
@@ -323,6 +333,49 @@ export function AiProviderSettings() {
   function applyProfile(profile: typeof PROFILES[number]) {
     setRouting((prev) => ({ ...prev, roles: profile.build() }));
     setConfirmProfile(null);
+  }
+
+  // ── Embedding migration handlers ──
+  async function startMigrationRun(toProvider: string, toModel?: string) {
+    setMigError(undefined);
+    try {
+      const { migrationId } = await api.startEmbeddingMigration(toProvider, toModel);
+      // initial poll for the freshly-created row, then attach SSE
+      const initial = await api.getMigrationStatus(migrationId);
+      setMigration(initial);
+      const abort = api.streamMigration(
+        migrationId,
+        (p) => setMigration(p),
+        () => setMigAbort(null),
+      );
+      setMigAbort(() => abort);
+    } catch (err) {
+      setMigError(err instanceof Error ? err.message : "Migration konnte nicht gestartet werden");
+    }
+    setMigConfirm(null);
+  }
+
+  async function cancelMigrationRun() {
+    if (!migration) return;
+    try {
+      await api.cancelMigration(migration.migrationId);
+    } catch (err) {
+      setMigError(err instanceof Error ? err.message : "Cancel fehlgeschlagen");
+    }
+  }
+
+  function migrationButtonLabel(): string {
+    const assignment = routing.roles.embedding;
+    if (!assignment) return "Migrate Embeddings…";
+    const model = assignment.model ?? "(default model)";
+    return `Migrate Embeddings → ${assignment.provider} / ${model}`;
+  }
+
+  function migrationButtonDisabled(): boolean {
+    if (migration && (migration.status === "pending" || migration.status === "running")) {
+      return true;
+    }
+    return !routing.roles.embedding;
   }
 
   // ── Save ──
@@ -673,6 +726,194 @@ export function AiProviderSettings() {
             </div>
           );
         })}
+      </div>
+
+      {/* ───── Embedding Migration ───── */}
+      <div style={subhead}>Embedding-Migration</div>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>
+          Wechselt der Embedding-Provider/Modell, müssen ALLE Notes neu
+          embedded werden — der Vektorraum unterscheidet sich pro Modell.
+          Die alte Generation bleibt aktiv, bis die neue vollständig
+          aufgebaut ist (atomic swap).
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={() => {
+              const assignment = routing.roles.embedding;
+              if (!assignment) return;
+              setMigConfirm({
+                toProvider: assignment.provider,
+                toModel: assignment.model,
+              });
+            }}
+            disabled={migrationButtonDisabled()}
+            style={{
+              ...btnPrimary,
+              opacity: migrationButtonDisabled() ? 0.5 : 1,
+              cursor: migrationButtonDisabled() ? "not-allowed" : "pointer",
+            }}
+          >
+            {migrationButtonLabel()}
+          </button>
+          {!routing.roles.embedding && (
+            <span style={{ color: C.textFaint, fontSize: 11 }}>
+              Erst eine Embedding-Rolle im Task-Routing zuweisen.
+            </span>
+          )}
+        </div>
+
+        {migConfirm && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: 12,
+              background: C.elevated,
+              border: `1px solid ${C.accent}`,
+              borderRadius: 6,
+            }}
+          >
+            <div style={{ fontSize: 13, color: C.text, marginBottom: 6 }}>
+              Migration zu{" "}
+              <strong style={{ color: C.accent }}>
+                {migConfirm.toProvider}
+                {migConfirm.toModel ? ` / ${migConfirm.toModel}` : ""}
+              </strong>{" "}
+              starten?
+            </div>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 10 }}>
+              Alle Notes im Vault werden neu embedded. Der Vorgang läuft im
+              Hintergrund und kann jederzeit abgebrochen werden. Die alte
+              Generation bleibt aktiv bis zum erfolgreichen Abschluss.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={() => void startMigrationRun(migConfirm.toProvider, migConfirm.toModel)}
+                style={btnPrimary}
+              >
+                Migration starten
+              </button>
+              <button onClick={() => setMigConfirm(null)} style={btn}>
+                Abbrechen
+              </button>
+            </div>
+          </div>
+        )}
+
+        {migration && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: 12,
+              background: C.elevated,
+              border: `1px solid ${
+                migration.status === "failed"
+                  ? C.err
+                  : migration.status === "completed"
+                  ? C.ok
+                  : C.border
+              }`,
+              borderRadius: 6,
+            }}
+          >
+            <div style={{ fontSize: 12, color: C.text, marginBottom: 6 }}>
+              {migration.status === "running" || migration.status === "pending" ? (
+                <>
+                  Re-Embedding {migration.processedNotes} von {migration.totalNotes} Notes…{" "}
+                  {migration.totalNotes > 0
+                    ? Math.round((migration.processedNotes / migration.totalNotes) * 100)
+                    : 0}
+                  %
+                </>
+              ) : migration.status === "completed" ? (
+                <>
+                  <Check size={12} /> Migration abgeschlossen (
+                  {Math.round(migration.elapsedMs / 1000)}s, {migration.errorCount} Fehler)
+                </>
+              ) : migration.status === "cancelled" ? (
+                <>Migration abgebrochen ({migration.processedNotes} von {migration.totalNotes})</>
+              ) : (
+                <>
+                  <X size={12} /> Migration fehlgeschlagen
+                  {migration.errorMessage ? `: ${migration.errorMessage}` : ""}. Alte
+                  Embeddings bleiben aktiv.
+                </>
+              )}
+            </div>
+            <div style={progressBar}>
+              <div
+                style={{
+                  width: `${
+                    migration.totalNotes > 0
+                      ? Math.min(
+                          100,
+                          (migration.processedNotes / migration.totalNotes) * 100,
+                        )
+                      : 0
+                  }%`,
+                  height: "100%",
+                  background:
+                    migration.status === "failed"
+                      ? C.err
+                      : migration.status === "completed"
+                      ? C.ok
+                      : C.accent,
+                  transition: "width 200ms ease",
+                }}
+              />
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                color: C.textFaint,
+                fontFamily: FONT.mono,
+                marginTop: 6,
+              }}
+            >
+              {migration.fromProvider}/{migration.fromModel} → {migration.toProvider}/
+              {migration.toModel}
+            </div>
+            {(migration.status === "pending" || migration.status === "running") && (
+              <div style={{ marginTop: 8 }}>
+                <button onClick={() => void cancelMigrationRun()} style={smallBtn}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            {(migration.status === "completed" ||
+              migration.status === "failed" ||
+              migration.status === "cancelled") && (
+              <div style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => {
+                    if (migAbort) migAbort();
+                    setMigration(null);
+                    setMigError(undefined);
+                  }}
+                  style={smallBtn}
+                >
+                  Schließen
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {migError && (
+          <div
+            style={{
+              marginTop: 10,
+              padding: 10,
+              background: C.elevated,
+              border: `1px solid ${C.err}`,
+              borderRadius: 6,
+              color: C.err,
+              fontSize: 12,
+            }}
+          >
+            {migError}
+          </div>
+        )}
       </div>
 
       {/* ───── Privacy ───── */}

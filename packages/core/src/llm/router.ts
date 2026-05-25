@@ -1,3 +1,4 @@
+import type { FrontmatterMap } from "../frontmatter/types.js";
 import type { LlmProvider, LlmRole, LlmRoutingConfig } from "./types.js";
 import { llmRegistry } from "./registry.js";
 import { LlmUnavailable } from "./errors.js";
@@ -67,4 +68,29 @@ export class LlmRouter {
       return true;
     return false;
   }
+}
+
+/**
+ * Derive a `RouteContext` from a note's id (path-like, e.g. `inbox/note`)
+ * and its parsed frontmatter. Honors the per-note `privacy:` field:
+ * `privacy: local-only` flips `noteIsPrivate` on, which the router treats
+ * as a hard constraint to skip cloud (`isLocal: false`) providers — even
+ * if the user's global privacyTier is `cloud_ok`.
+ *
+ * `noteFolder` is the directory portion of `noteId` (empty string if the
+ * note lives at the vault root). The router compares it against the
+ * configured `privacyTierFolders` only when the global tier is set to
+ * `local_for_personal_folders`.
+ */
+export function routeContextFromNote(
+  noteId: string,
+  frontmatter: FrontmatterMap,
+): RouteContext {
+  const folder = noteId.includes("/")
+    ? noteId.slice(0, noteId.lastIndexOf("/"))
+    : "";
+  return {
+    noteIsPrivate: frontmatter.privacy === "local-only",
+    noteFolder: folder,
+  };
 }

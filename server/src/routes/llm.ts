@@ -7,6 +7,7 @@ import {
   maskApiKey,
   initLlmFromConfig,
   llmRegistry,
+  budgetTracker,
   OPENAI_COMPAT_PRESETS,
   type ProviderConfig,
   type LlmRoutingConfig,
@@ -40,9 +41,8 @@ llmRoutes.get("/config", async (c) => {
     apiKey: maskApiKey(p.apiKey ?? null),
   }));
   const routing = await getLlmRouting();
-  // BudgetTracker is in-memory until DB-persist follow-up — return empty array
-  // so the UI shape is stable.
-  return c.json({ providers: masked, routing, usage: [] });
+  const usage = await budgetTracker().listMonthlyUsage();
+  return c.json({ providers: masked, routing, usage });
 });
 
 interface PutBody {

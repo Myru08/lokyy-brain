@@ -79,6 +79,8 @@ export {
   DOC_TYPES,
   type DocType,
   type FrontmatterMap,
+  type NotePrivacy,
+  type BaseFrontmatter,
   type ValidationErrorDetail,
   type ValidationResult,
 } from "./frontmatter/index.js";

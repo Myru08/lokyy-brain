@@ -13,7 +13,13 @@
     "intervention_kind": { "type": "string", "enum": ["wikilink", "topic_note", "other"] },
     "status": { "type": "string", "enum": ["pending", "accepted", "rejected", "ignored"] },
     "target_note_id": { "type": "string" },
-    "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
   },
   "additionalProperties": true
 }
