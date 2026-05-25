@@ -23,6 +23,7 @@ import {
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
 } from "../memory/index.js";
+import { syncWikilinksToTemporalEdges } from "../graph/temporalEdges.js";
 
 /**
  * Default vault id used by the BM25 search-index hooks. The Story-2 hybrid
@@ -31,6 +32,28 @@ import {
  * migration will plumb the real vault id through here.
  */
 const DEFAULT_VAULT_ID = process.env.LOKYY_DEFAULT_VAULT ?? "default";
+
+/**
+ * Phase C Wave C2 / Story 1 — fire-and-forget hook into the bi-temporal
+ * edges table. NEVER blocks the save path. Errors are logged only — git
+ * commit is the source of truth, temporal-edges are a derived index.
+ */
+function queueTemporalEdgeSync(
+  noteId: string,
+  wikilinkTargets: string[],
+  updatedAt: Date,
+): void {
+  if (wikilinkTargets.length === 0) return;
+  void syncWikilinksToTemporalEdges(noteId, wikilinkTargets, updatedAt).catch(
+    (err) => {
+      console.warn(
+        `[notesService] temporal-edge sync failed for ${noteId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    },
+  );
+}
 
 /**
  * Notizen-Service. Eine Notiz == eine .md-Datei im Vault. Kein Cache, keine
@@ -171,6 +194,9 @@ export async function saveNote(id: string, body: string): Promise<Note> {
     saved.body,
     saved.tags,
   );
+  // 7. Phase C Wave C2 / Story 1 — bi-temporal-edge sync. Fire-and-forget;
+  //    git commit already succeeded, this is derived index maintenance.
+  queueTemporalEdgeSync(saved.id, saved.links, new Date(saved.updatedAt));
   return saved;
 }
 
@@ -319,6 +345,8 @@ export async function createNote(
     created.body,
     created.tags,
   );
+  // Phase C Wave C2 / Story 1 — bi-temporal-edge sync (fire-and-forget).
+  queueTemporalEdgeSync(created.id, created.links, new Date(created.updatedAt));
   return created;
 }
 

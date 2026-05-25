@@ -49,6 +49,10 @@ export const ORIGIN_SCORES: Record<DocType, number> = {
   note: 0.8,
   meeting: 0.7,
   customer: 0.7,
+  // Peer-notes anchor relationships like customer notes do; the relationship
+  // is itself the load-bearing asset. Same baseline (0.7) so a peer-note
+  // ranks alongside customer/meeting evidence in retrieval.
+  peer: 0.7,
   workflow: 0.5,
   task: 0.5,
   intervention: 0.6,
@@ -65,6 +69,10 @@ export const HALF_LIFE_DAYS: Record<DocType, number> = {
   decision: 720,
   project: 540,
   customer: 365,
+  // A peer-relationship persists like a customer relationship — long half-
+  // life so an inactive contact doesn't get prematurely decayed out of
+  // retrieval before the next nightly relationship_strength recompute.
+  peer: 365,
   note: 180,
   meeting: 90,
   capture: 30,

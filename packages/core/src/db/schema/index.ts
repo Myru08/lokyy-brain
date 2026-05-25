@@ -13,3 +13,6 @@ export * from "./sleepAgentRuns.js";
 export * from "./mem0ReviewQueue.js";
 export * from "./edgeWeights.js";
 export * from "./lintFindings.js";
+export * from "./temporalEdges.js";
+export * from "./entities.js";
+export * from "./peerProfiles.js";

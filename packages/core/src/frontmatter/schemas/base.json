@@ -21,7 +21,8 @@
         "customer",
         "workflow",
         "intervention",
-        "content"
+        "content",
+        "peer"
       ]
     },
     "title": { "type": "string", "minLength": 1 },

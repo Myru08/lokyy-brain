@@ -18,12 +18,46 @@ import { getSupadataApiKey, getDefaultImportFolder } from "@lokyy/core";
 
 const SUPADATA_BASE = "https://api.supadata.ai/v1";
 
-interface SupadataTranscript {
-  /** zusammengesetzter Volltext */
+interface SupadataSegment {
+  text?: string;
   content?: string;
-  /** alternativ: Segmente */
-  transcript?: { text: string }[];
+  start?: number;
+  duration?: number;
+  end?: number;
+  offset?: number;
+}
+
+interface SupadataTranscript {
+  /** zusammengesetzter Volltext — kann String ODER Array<Segment> sein, je nach Endpoint-Version */
+  content?: string | SupadataSegment[];
+  /** alternativ: Segmente in eigenem Feld */
+  transcript?: SupadataSegment[];
+  /** weitere mögliche Felder aktueller API-Versionen */
+  text?: string;
+  segments?: SupadataSegment[];
   lang?: string;
+}
+
+/**
+ * Normalisiert die Supadata-Antwort zu einem flachen Text-String.
+ * Tolerant gegenüber API-Schema-Varianten:
+ *   - `content` als String
+ *   - `content`/`transcript`/`segments` als Array<{text}> oder Array<{content}> oder Array<string>
+ */
+function normalizeTranscript(input: unknown): string {
+  if (typeof input === "string") return input;
+  if (!Array.isArray(input)) return "";
+  return input
+    .map((s): string => {
+      if (typeof s === "string") return s;
+      if (s && typeof s === "object") {
+        const obj = s as SupadataSegment;
+        return obj.text ?? obj.content ?? "";
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join(" ");
 }
 
 function extractUrl(payload: SharePayload): string {
@@ -72,9 +106,15 @@ export async function youtubeHandler(
   }
   const data = (await res.json()) as SupadataTranscript;
 
-  const transcript =
-    data.content ??
-    (data.transcript ?? []).map((s) => s.text).join(" ").trim();
+  // Supadata API has multiple shapes across versions — try each defensively.
+  // BUG-FIX 2026-05-25: content was being template-stringified as [object Object]
+  // when the API returned an Array<{text,start,end}> instead of a String.
+  const candidateBlocks = [data.content, data.text, data.transcript, data.segments];
+  let transcript = "";
+  for (const candidate of candidateBlocks) {
+    transcript = normalizeTranscript(candidate).trim();
+    if (transcript) break;
+  }
   if (!transcript) throw new Error("Leeres Transkript von Supadata.");
 
   const title = payload.title?.trim() || `YouTube ${id}`;

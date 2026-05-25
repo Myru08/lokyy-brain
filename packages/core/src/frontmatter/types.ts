@@ -18,9 +18,59 @@ export const DOC_TYPES = [
   "workflow",
   "intervention",
   "content",
+  // Phase C Wave C2 / Story 3 — Honcho-style peer abstraction.
+  // A peer-note represents a person/org/agent the user has an ongoing
+  // relationship with; the sleep-agent maintains relationship_strength,
+  // ongoing_topics, traits, last_interaction over time.
+  "peer",
 ] as const;
 
 export type DocType = (typeof DOC_TYPES)[number];
+
+/**
+ * Phase C Wave C2 / Story 3 — kinds of peer the user interacts with.
+ *
+ * Mirrors the Honcho peer-abstraction: every entity with ongoing two-way
+ * interaction shares the same profile shape, but the `peer_type` distinguishes
+ * how the relationship is interpreted (e.g. `customer` vs `family`).
+ */
+export const PEER_TYPES = [
+  "person",
+  "customer",
+  "collaborator",
+  "family",
+  "agent",
+  "organization",
+] as const;
+export type PeerType = (typeof PEER_TYPES)[number];
+
+export function isPeerType(value: string): value is PeerType {
+  return (PEER_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * Strict frontmatter shape for `type: peer` notes. The DB sidecar
+ * (`peer_profiles`) mirrors the same fields plus a computed timestamp; the
+ * frontmatter is the source of truth (Forgejo > DB), the sidecar is an
+ * index for cheap aggregate listing.
+ */
+export interface PeerFrontmatter extends BaseFrontmatter {
+  peer_type: PeerType;
+  relationship_strength?: number;
+  first_met?: string;
+  last_interaction?: string;
+  interaction_count?: number;
+  ongoing_topics?: string[];
+  traits?: string[];
+  linked_entity_id?: string;
+  contact?: {
+    email?: string;
+    phone?: string;
+    company?: string;
+    role?: string;
+  };
+  communication_history_summary?: string;
+}
 
 /**
  * Per-note privacy tier (frontmatter `privacy:` field).

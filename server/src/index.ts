@@ -38,7 +38,10 @@ import { surfaceRoutes, workingMemoryRoutes } from "./routes/surface.js";
 import { layoutRoutes } from "./routes/layout.js";
 import { encodingRoutes } from "./routes/encoding.js";
 import { edgesRoutes } from "./routes/edges.js";
+import { temporalEdgesRoutes } from "./routes/temporal-edges.js";
 import { lintRoutes } from "./routes/lint.js";
+import { entitiesRoutes } from "./routes/entities.js";
+import { peersRoutes } from "./routes/peers.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -169,6 +172,17 @@ app.use("/api/edges", setupGate);
 app.use("/api/edges/*", setupGate);
 app.route("/api/edges", edgesRoutes);
 
+// Phase C Wave C2 / Story 1 — Bi-Temporal Edges (Graphiti pattern).
+//   GET  /api/temporal-edges/from/:noteId             active outbound edges
+//   GET  /api/temporal-edges/from/:noteId/at?ts=ISO   point-in-time query
+//   POST /api/temporal-edges/invalidate               mark an edge invalid
+//   GET  /api/temporal-edges/history/:edgeId          full (from,to,kind) lineage
+// Writes (note-save / note-create) populate temporal_edges via a fire-and-
+// forget hook in notesService.
+app.use("/api/temporal-edges", setupGate);
+app.use("/api/temporal-edges/*", setupGate);
+app.route("/api/temporal-edges", temporalEdgesRoutes);
+
 // Phase C Wave C1 / Story 3 — Karpathy-Lint review queue.
 //   GET  /api/lint/findings?status=open&kind=...
 //   POST /api/lint/findings/:id/acknowledge
@@ -179,6 +193,31 @@ app.route("/api/edges", edgesRoutes);
 app.use("/api/lint", setupGate);
 app.use("/api/lint/*", setupGate);
 app.route("/api/lint", lintRoutes);
+
+// Phase C Wave C2 / Story 2 — Entity-Extraction-Pipeline.
+//   GET /api/entities?type=person&limit=50&minMentions=2
+//   GET /api/entities/by-note/:noteId
+//   GET /api/entities/:id
+//   GET /api/entities/:id/notes
+//   GET /api/entities/:id/co-occurrence?limit=20
+// The mention rows are produced by the `entity-extraction` REM sleep-pass
+// (LLM-as-NER via the `ner`-role provider); routes are read-only.
+app.use("/api/entities", setupGate);
+app.use("/api/entities/*", setupGate);
+app.route("/api/entities", entitiesRoutes);
+
+// Phase C Wave C2 / Story 3 — Honcho peer abstraction.
+//   GET  /api/peers                                  all peer profiles
+//   GET  /api/peers/suggestions?minMentions=5        unbacked person-entities
+//   GET  /api/peers/:noteId                          one peer profile
+//   POST /api/peers/from-entity { entityId, peerType } materialize peer-note
+//   POST /api/peers/:noteId/recompute                refresh sidecar
+// Sidecar is written by the `peer-profile-update` REM sleep-pass; routes
+// are read + materialize + manual-recompute. Frontmatter is the source of
+// truth, the DB is an index.
+app.use("/api/peers", setupGate);
+app.use("/api/peers/*", setupGate);
+app.route("/api/peers", peersRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);

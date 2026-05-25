@@ -12,6 +12,9 @@ import { topicSynthesisPass } from "./passes/topicSynthesis.js";
 import { mem0ClassifierPass } from "./passes/mem0Classifier.js";
 import { synapticPruningPass } from "./passes/synapticPruning.js";
 import { lintPass } from "./passes/lint.js";
+import { entityExtractionPass } from "./passes/entityExtraction.js";
+import { biTemporalValidationPass } from "./passes/biTemporalValidation.js";
+import { peerProfileUpdatePass } from "./passes/peerProfileUpdate.js";
 import type {
   SleepPass,
   SleepPhase,
@@ -44,8 +47,13 @@ const ALL_PASSES: SleepPass[] = [
   mem0ClassifierPass,
   synapticPruningPass,
   lintPass,
-  // Future: multiChunkReEmbedPass, multiTraceConsolidationPass,
-  // lintPass, …
+  entityExtractionPass,
+  biTemporalValidationPass,
+  // Phase C Wave C2 / Story 3 — Honcho-style peer-profile-update.
+  // REM-phase pass; refreshes relationship_strength + ongoing_topics +
+  // last_interaction from entity_mentions for every `type: peer` note.
+  peerProfileUpdatePass,
+  // Future: multiChunkReEmbedPass, multiTraceConsolidationPass, …
 ];
 
 const TERMINAL_STATUSES: ReadonlySet<SleepStatus> = new Set([

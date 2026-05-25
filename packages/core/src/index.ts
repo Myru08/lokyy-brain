@@ -61,6 +61,31 @@ export {
   type EdgeWeightRow,
 } from "./graph/edgeWeights.js";
 
+// ─── Bi-Temporal Edges (Phase C Wave C2 / Story 1) ──────────────────────
+// Graphiti-pattern: every asserted-fact carries four timestamps (t_created,
+// t_expired, t_valid, t_invalid). Invalidation never deletes — point-in-
+// time queries return the edges that were valid at any past timestamp.
+// Sits parallel to edge_weights; different table, different use-case.
+export {
+  createTemporalEdge,
+  invalidateEdge,
+  activeEdgesFrom,
+  edgesFromAsOf,
+  edgeHistory,
+  findInvalidationCandidates,
+  syncWikilinksToTemporalEdges,
+  markEdgeStale,
+  type TemporalEdge,
+  type TemporalEdgeInput,
+} from "./graph/temporalEdges.js";
+export {
+  EDGE_KINDS,
+  isTemporalEdgeKind,
+  type TemporalEdgeKind,
+  type TemporalEdgeRow,
+  type NewTemporalEdgeRow,
+} from "./db/schema/temporalEdges.js";
+
 // ─── Personalized PageRank (Phase B Wave B1 / Story 1) ──────────────────
 // HippoRAG-style spreading activation über den Wikilink-Graph.
 export {
@@ -110,6 +135,8 @@ export {
   serializeFrontmatter,
   validateFrontmatter,
   DOC_TYPES,
+  PEER_TYPES,
+  isPeerType,
   type DocType,
   type FrontmatterMap,
   type NotePrivacy,
@@ -121,6 +148,9 @@ export {
   type DeviceType,
   type TimeOfDay,
   type Weekday,
+  // Phase C Wave C2 / Story 3 — Honcho peer abstraction.
+  type PeerType,
+  type PeerFrontmatter,
 } from "./frontmatter/index.js";
 
 export { FrontmatterValidationError } from "./errors/FrontmatterValidationError.js";
@@ -291,6 +321,29 @@ export {
   type NewMem0ReviewQueueRow,
 } from "./db/schema/mem0ReviewQueue.js";
 
+// ─── Entity-Extraction (Phase C Wave C2 / Story 2) ──────────────────────
+// The `entity-extraction` REM sleep-pass walks recent / unprocessed notes,
+// asks the `ner`-role LLM (lokal-bevorzugt) for named entities, and writes
+// canonical-deduped rows into `entities` + `entity_mentions`. Routes under
+// `/api/entities/*` read the store; the schema re-export above already
+// covers the Drizzle tables.
+export {
+  normalizeName,
+  upsertEntity,
+  listEntities,
+  getEntity,
+  entitiesInNote,
+  notesForEntity,
+  entityCoOccurrence,
+  ENTITY_TYPES,
+  isEntityType,
+  type Entity,
+  type EntityType,
+  type ExtractedEntity,
+  type ListEntitiesOpts,
+  type CoOccurrenceHit,
+} from "./entities/index.js";
+
 // ─── Karpathy-Lint Findings (Phase C Wave C1 / Story 3) ─────────────────
 // The `karpathy-lint` sleep-pass (phase=`lint`) writes findings to
 // `lint_findings`; `/api/lint/*` is read + status-transition only. Schema
@@ -308,6 +361,23 @@ export {
   type LintFindingRow,
   type NewLintFindingRow,
 } from "./db/schema/lintFindings.js";
+
+// ─── Honcho-Peer-Abstraction (Phase C Wave C2 / Story 3) ────────────────
+// Peer-notes are an evolving profile of any person/org/agent the user
+// interacts with. The DB sidecar `peer_profiles` is an index; the note
+// frontmatter is the source of truth. The `peer-profile-update` REM sleep-
+// pass aggregates entity_mentions → relationship_strength + topics +
+// last_interaction and writes back both sidecar and frontmatter.
+export {
+  listPeers,
+  getPeer,
+  recomputePeerProfile,
+  suggestPeerCandidates,
+  createPeerFromEntity,
+  computeRelationshipStrength,
+  type Peer,
+  type PeerSuggestion,
+} from "./peers/index.js";
 
 // ─── End-to-End Retrieval-Pipeline (Phase B Wave B3 / Story 2) ──────────
 // Orchestrates the eight cognitive-loop stages (rewrite → intent → hybrid

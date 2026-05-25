@@ -15,6 +15,9 @@ import { migration0007SleepAgentRuns } from "./0007_sleep_agent_runs.js";
 import { migration0008Mem0ReviewQueue } from "./0008_mem0_review_queue.js";
 import { migration0009EdgeWeights } from "./0009_edge_weights.js";
 import { migration0010LintFindings } from "./0010_lint_findings.js";
+import { migration0011BiTemporalEdges } from "./0011_bi_temporal_edges.js";
+import { migration0012Entities } from "./0012_entities.js";
+import { migration0013PeerProfiles } from "./0013_peer_profiles.js";
 
 export interface Migration {
   name: string;
@@ -33,4 +36,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0008_mem0_review_queue", sql: migration0008Mem0ReviewQueue },
   { name: "0009_edge_weights", sql: migration0009EdgeWeights },
   { name: "0010_lint_findings", sql: migration0010LintFindings },
+  { name: "0011_bi_temporal_edges", sql: migration0011BiTemporalEdges },
+  { name: "0012_entities", sql: migration0012Entities },
+  { name: "0013_peer_profiles", sql: migration0013PeerProfiles },
 ];

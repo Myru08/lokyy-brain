@@ -69,7 +69,33 @@ const DOC_TYPE_OPTIONS = [
   "workflow",
   "intervention",
   "content",
+  "peer",
 ] as const;
+
+/**
+ * Phase C Wave C2 / Story 3 — peer-specific frontmatter keys we render in
+ * a dedicated section when `type === "peer"`. These keys are filtered OUT
+ * of the standard field grid (so they don't render twice) and surfaced
+ * with peer-specific widgets (slider, chip-list, entity-link).
+ *
+ * `relationship_strength` is shown read-only as an agent-computed slider;
+ * the value comes from the sleep-pass. The user CAN edit it in raw .md
+ * (frontmatter wins), but the panel doesn't expose that as a quick action
+ * because the agent overwrites it every sleep cycle UNLESS the user
+ * supplied an explicit override.
+ */
+const PEER_EXTRA_KEYS = new Set([
+  "peer_type",
+  "relationship_strength",
+  "ongoing_topics",
+  "traits",
+  "last_interaction",
+  "first_met",
+  "interaction_count",
+  "linked_entity_id",
+  "communication_history_summary",
+  "contact",
+]);
 
 const READ_ONLY_KEYS = new Set(["id", "created", "updated"]);
 
@@ -514,10 +540,21 @@ export function PropertiesPanel({
     rawPrivacy === "local-only" ? "local-only" : "default";
   const isLocalOnly = currentPrivacy === "local-only";
 
+  // Phase C Wave C2 / Story 3 — Peer-specific extras get their own widget
+  // section below, so we filter them out of the standard grid only when
+  // this note is actually `type: peer`. For non-peer notes a stray
+  // `peer_type:` field would still render as a normal text field (defensive).
+  const docType = typeof parsed.values.type === "string" ? parsed.values.type : "";
+  const isPeer = docType === "peer";
+
   // Count fields *excluding* privacy + hidden-top-level (encoded) — those
   // get dedicated rows above/below the grid and shouldn't double-count.
+  // For peer notes also hide peer-specific keys (rendered in PeerSection).
   const visibleKeys = parsed.keys.filter(
-    (k) => k !== PRIVACY_KEY && !HIDDEN_TOPLEVEL_KEYS.has(k),
+    (k) =>
+      k !== PRIVACY_KEY &&
+      !HIDDEN_TOPLEVEL_KEYS.has(k) &&
+      !(isPeer && PEER_EXTRA_KEYS.has(k)),
   );
   const fieldCount = visibleKeys.length;
 
@@ -619,6 +656,13 @@ export function PropertiesPanel({
               );
             })}
           </div>
+
+          {isPeer && (
+            <PeerSection
+              values={parsed.values}
+              onUpdate={(key, next) => update(key, next)}
+            />
+          )}
 
           {encodedSnapshot && (
             <details style={{ marginTop: 12 }}>
@@ -755,4 +799,209 @@ function renderField(
   }
 
   return <FocusableInput value={value} onChange={(v) => onChange(v)} />;
+}
+
+// ─── Peer-Section (Phase C Wave C2 / Story 3) ────────────────────────────
+//
+// Honcho-style peer-note extras. Only rendered when `type: peer`. The
+// `relationship_strength` slider is read-only by design — the sleep-pass
+// owns the value (frontmatter can still override by raw .md edit). The
+// other extras are user-editable chip-lists and inputs.
+//
+// Peer-types — duplicated here intentionally instead of importing from
+// @lokyy/core (PWA is a browser bundle, `core` ships node-only code).
+const PEER_TYPE_OPTIONS = [
+  "person",
+  "customer",
+  "collaborator",
+  "family",
+  "agent",
+  "organization",
+] as const;
+
+const PEER_SECTION_STYLE: CSSProperties = {
+  marginTop: 14,
+  paddingTop: 12,
+  borderTop: `1px dashed ${C.border}`,
+};
+
+const PEER_SECTION_HEADER_STYLE: CSSProperties = {
+  fontSize: 12,
+  textTransform: "uppercase",
+  letterSpacing: "0.05em",
+  color: C.textDim,
+  marginBottom: 8,
+  fontWeight: 600,
+};
+
+const STRENGTH_BAR_BG: CSSProperties = {
+  background: "rgba(255,255,255,0.04)",
+  border: `1px solid ${C.border}`,
+  borderRadius: 4,
+  height: 18,
+  position: "relative",
+  overflow: "hidden",
+};
+
+const STRENGTH_BAR_FILL = (pct: number): CSSProperties => ({
+  position: "absolute",
+  top: 0,
+  bottom: 0,
+  left: 0,
+  width: `${Math.round(pct * 100)}%`,
+  background:
+    "linear-gradient(90deg, rgba(249,115,22,0.55), rgba(255,169,77,0.75))",
+});
+
+const STRENGTH_VALUE_STYLE: CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  fontSize: 11,
+  color: C.text,
+  fontVariantNumeric: "tabular-nums",
+};
+
+function PeerSection(props: {
+  values: Record<string, FieldValue>;
+  onUpdate: (key: string, next: FieldValue) => void;
+}) {
+  const { values, onUpdate } = props;
+
+  // ── relationship_strength (read-only slider) ────────────────────────
+  const rawStrength = values.relationship_strength;
+  const strength = (() => {
+    const n = typeof rawStrength === "string" ? Number(rawStrength) : rawStrength;
+    return typeof n === "number" && Number.isFinite(n)
+      ? Math.max(0, Math.min(1, n))
+      : 0;
+  })();
+
+  // ── peer_type ───────────────────────────────────────────────────────
+  const rawPeerType = values.peer_type;
+  const peerType = typeof rawPeerType === "string" ? rawPeerType : "";
+
+  // ── ongoing_topics ──────────────────────────────────────────────────
+  const ongoingTopics = Array.isArray(values.ongoing_topics)
+    ? values.ongoing_topics
+    : [];
+
+  // ── traits ──────────────────────────────────────────────────────────
+  const traits = Array.isArray(values.traits) ? values.traits : [];
+
+  // ── last_interaction ────────────────────────────────────────────────
+  const lastInteraction =
+    typeof values.last_interaction === "string" ? values.last_interaction : "";
+
+  // ── first_met ───────────────────────────────────────────────────────
+  const firstMet = typeof values.first_met === "string" ? values.first_met : "";
+
+  // ── interaction_count ───────────────────────────────────────────────
+  const interactionCount = (() => {
+    const v = values.interaction_count;
+    if (typeof v === "string") {
+      const n = Number(v);
+      return Number.isFinite(n) ? String(Math.floor(n)) : "";
+    }
+    return "";
+  })();
+
+  // ── linked_entity_id ────────────────────────────────────────────────
+  const linkedEntityId =
+    typeof values.linked_entity_id === "string" ? values.linked_entity_id : "";
+
+  return (
+    <div style={PEER_SECTION_STYLE}>
+      <div style={PEER_SECTION_HEADER_STYLE}>Peer Profile</div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "140px 1fr",
+          gap: "8px 12px",
+          alignItems: "center",
+        }}
+      >
+        {/* peer_type select */}
+        <label style={LABEL_STYLE}>peer_type</label>
+        <select
+          value={peerType}
+          onChange={(e) => onUpdate("peer_type", e.target.value)}
+          style={{ ...INPUT_BASE, appearance: "none" }}
+        >
+          {!(PEER_TYPE_OPTIONS as readonly string[]).includes(peerType) && (
+            <option value={peerType}>{peerType || "(unset)"}</option>
+          )}
+          {PEER_TYPE_OPTIONS.map((opt) => (
+            <option key={opt} value={opt}>
+              {opt}
+            </option>
+          ))}
+        </select>
+
+        {/* relationship_strength — read-only progress bar */}
+        <label style={LABEL_STYLE}>strength</label>
+        <div style={STRENGTH_BAR_BG} title="Agent-computed — frontmatter override wins">
+          <div style={STRENGTH_BAR_FILL(strength)} />
+          <span style={STRENGTH_VALUE_STYLE}>{strength.toFixed(2)}</span>
+        </div>
+
+        {/* ongoing_topics chip-list */}
+        <label style={LABEL_STYLE}>ongoing topics</label>
+        <ChipInput
+          value={ongoingTopics}
+          onChange={(v) => onUpdate("ongoing_topics", v)}
+        />
+
+        {/* traits chip-list */}
+        <label style={LABEL_STYLE}>traits</label>
+        <ChipInput value={traits} onChange={(v) => onUpdate("traits", v)} />
+
+        {/* last_interaction — datetime-local input */}
+        <label style={LABEL_STYLE}>last interaction</label>
+        <FocusableInput
+          value={lastInteraction}
+          onChange={(v) => onUpdate("last_interaction", v)}
+        />
+
+        {/* first_met — date input */}
+        <label style={LABEL_STYLE}>first met</label>
+        <FocusableInput
+          value={firstMet}
+          onChange={(v) => onUpdate("first_met", v)}
+        />
+
+        {/* interaction_count — numeric */}
+        <label style={LABEL_STYLE}>interactions</label>
+        <FocusableInput
+          value={interactionCount}
+          onChange={(v) => {
+            const n = Number(v);
+            if (v === "") onUpdate("interaction_count", "");
+            else if (Number.isFinite(n) && n >= 0)
+              onUpdate("interaction_count", String(Math.floor(n)));
+          }}
+        />
+
+        {/* linked_entity_id — clickable when present (anchor to entity page) */}
+        <label style={LABEL_STYLE}>linked entity</label>
+        {linkedEntityId ? (
+          <a
+            href={`/entities/${encodeURIComponent(linkedEntityId)}`}
+            style={{
+              ...INPUT_BASE,
+              color: "#FFA94D",
+              textDecoration: "none",
+              display: "block",
+            }}
+          >
+            {linkedEntityId} →
+          </a>
+        ) : (
+          <span style={{ ...READONLY_STYLE, display: "block" }}>(none)</span>
+        )}
+      </div>
+    </div>
+  );
 }

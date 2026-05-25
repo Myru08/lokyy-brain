@@ -22,6 +22,7 @@ import customerSchema from "./schemas/customer.json" with { type: "json" };
 import workflowSchema from "./schemas/workflow.json" with { type: "json" };
 import interventionSchema from "./schemas/intervention.json" with { type: "json" };
 import contentSchema from "./schemas/content.json" with { type: "json" };
+import peerSchema from "./schemas/peer.json" with { type: "json" };
 
 /**
  * Vault frontmatter utility for lokyy-brain.
@@ -47,6 +48,7 @@ const validators = new Map<DocType, ValidateFunction>([
   ["workflow", ajv.compile(workflowSchema as object)],
   ["intervention", ajv.compile(interventionSchema as object)],
   ["content", ajv.compile(contentSchema as object)],
+  ["peer", ajv.compile(peerSchema as object)],
 ]);
 
 const baseValidator = ajv.compile(baseSchema as object);
@@ -127,7 +129,7 @@ function toDetails(errs: ErrorObject[] | null | undefined): ValidationErrorDetai
   }));
 }
 
-export { DOC_TYPES };
+export { DOC_TYPES, PEER_TYPES, isPeerType } from "./types.js";
 export type {
   DocType,
   FrontmatterMap,
@@ -140,4 +142,7 @@ export type {
   DeviceType,
   TimeOfDay,
   Weekday,
+  // Phase C Wave C2 / Story 3 — Honcho peer abstraction.
+  PeerType,
+  PeerFrontmatter,
 } from "./types.js";
