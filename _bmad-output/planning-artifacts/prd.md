@@ -426,3 +426,77 @@ Any competitor can copy one of the three properties. The coherent combination re
 ### Accessibility
 
 - **NFR-A1:** The PWA meets WCAG 2.1 AA compliance level; accessibility acceptance criteria are explicitly defined per PWA story
+
+---
+
+## Section 7 — Cognitive Loop Vision (added 2026-05-25 after research synthesis)
+
+> Vollständige Architektur-Doku: `vault://10_projects/lokyy-brain/vision-cognitive-loop-v2.md`. Diese Section fasst die für das PRD relevanten Anforderungen zusammen.
+
+### Framing
+
+Lokyy-Brain positioniert sich als die ernsthafte Implementation von Andrej Karpathys "LLM Wiki"-Vision (Gist vom 4. April 2026, 17M views): Vault als kollaborativ vom LLM gepflegtes Wissens-Codebase. PLUS die Lücke die Karpathy explizit hand-waved: die **Lint-Operation** (Widerspruchs-Erkennung, Orphan-Detection, Cross-Reference-Konsistenz, Schema-Drift-Flagging).
+
+Diese Vision ist konvergent validiert durch drei unabhängige Research-Stränge (Mai 2026):
+- **Neuroscience + Cognitive Science** — Complementary Learning Systems (McClelland et al. 1995), Spreading Activation (Collins & Loftus 1975), Encoding Specificity (Tulving 1973), Synaptic Homeostasis (Tononi 2003), Power-Law Forgetting (Anderson & Schooler 1991), Recognition-vs-Recall (Yonelinas 2002)
+- **AI Memory-Systems State-of-the-Art** — Mem0 (best LoCoMo 92.5%), Letta/MemGPT (filesystem-as-memory 74%), Graphiti (bi-temporal edges), HippoRAG (PPR over KG, +20.9pp multi-hop), GraphRAG (community summaries), RAPTOR, Self-RAG, HyDE
+- **Production Engineering** — pgvector HNSW + ParadeDB pg_search + Late Chunking + RRF Hybrid + bge-reranker-v2-m3 + Lost-in-Middle Layout
+
+### Functional Requirements (additive)
+
+- **FR-CL1: Importance-Scoring** — Jede Note trägt einen computed `importance_score` (0-1) im frontmatter, kombiniert aus Origin-Type, Recency-Decay, Backlink-Count, User-Touch-Signal und Co-Citation-Strength
+- **FR-CL2: Power-Law Recency-Decay** — `recency_score = 1 / (1 + (age_days / half_life)^1.2)` mit type-spezifischen Half-Lives (decision=720d, project=540d, note=180d, meeting=90d, customer=365d, capture=30d). Touch (Lese/Edit/neues incoming Wikilink) resetet recency
+- **FR-CL3: Retrieval-Trace-Log** — Jede Note-Access (search/wikilink/cmd-k/cmd-o/hover/embed) schreibt ein `retrieval_traces`-Row mit (note_id, session_id, source, query, preceding_notes, context)
+- **FR-CL4: Multi-Chunk Embeddings** — Pro Note werden mehrere Embedding-Chunks erzeugt: title, body_full (für Notes ≤6000 tokens via Late Chunking), section (H2-Boundaries), sliding_3para (für lange Notes). Anchor-Text-Injection (`{title}\n{H1 > H2 > H3}\n\n{chunk}`) vor jedem embed
+- **FR-CL5: Hybrid Retrieval mit Intent-Routing** — Query wird klassifiziert in (exact_recall, topical, associative, question). Hybrid-Retrieval via SQL-CTE: BM25 (pg_search) + Dense (pgvector HNSW), fusioniert mit RRF (k=60). α-Gewichtung dynamisch per Intent
+- **FR-CL6: Spreading Activation / Personalized PageRank** — Für associative-intent: RRF-Top-20 als PPR-Seeds, Personalized PageRank über Wikilink-Graph (α-personalization=0.15, damping=0.5), fused mit RRF-Liste
+- **FR-CL7: Encoding-Context-Match Boost** — Frontmatter-Block `encoded:` (device, app_state, time_of_day, weekday, preceding_notes, session_duration) wird beim Retrieval mit aktueller Session abgeglichen — Match boostet Result um 1.3-1.8× (Encoding Specificity Principle)
+- **FR-CL8: Re-Ranking mit bge-reranker-v2-m3** — Top-25 nach Hybrid+PPR → Cross-Encoder Re-Score, multipliziert mit Importance-Score → Top-5
+- **FR-CL9: Lost-in-the-Middle Layout** — Final-Context Anordnung als `[rank1, rank3, rank5, rank4, rank2]`, Query VOR UND NACH Context, Compress auf 3-5 chunks
+- **FR-CL10: Self-RAG Reflection** — LLM emit `[need_more_retrieval: yes/no]`-token; Loop bis max 3 hops oder Termination
+- **FR-CL11: Cognitive Loop (Sleep-Agent) — 4 Phasen**
+  - **Phase A (Wake)**: live indexing, retrieval-trace-logging, Hebbian-Edge-Updates mit STDP-Timing
+  - **Phase B (NREM)**: 30min idle ODER nightly 03:00 — re-embed, multi-trace consolidation, synaptic pruning (weak edges → graveyard), importance-recompute, power-law decay
+  - **Phase C (REM)**: weekly — Mem0 ADD/UPDATE/DELETE/NOOP-Classifier, Leiden community detection, Topic-Note-Synthesis (Claude Haiku), bi-temporal validation
+  - **Phase D (LINT)**: daily — Orphan-Detection, Contradiction-Detection, Cross-Reference-Konsistenz, Schema-Drift, Duplicate-Detection, Stale-Capture-Detection. Output: User-Dashboard "5 Sachen die Lokyy heute Nacht über deinen Vault rausgefunden hat"
+  - **Phase E (Dream)**: continuous background — spreading activation aus aktiver Note, predictive prefetch, spacing-effect surfacing
+- **FR-CL12: Bi-Temporal Edges** — Edge-Tabelle mit `(t_created, t_expired, t_valid, t_invalid)`-Spalten (Graphiti-Pattern). Edge-Invalidation statt Delete bei Widerspruch
+- **FR-CL13: 5-Layer Vault-Architektur** — Working (ephemeral), Episodic (`30_captures/`, `40_daily/`, `60_meetings/` — immutable), Semantic (`10_projects/`, `20_notes/`, `40_customers/`, `50_decisions/` — curated), Wisdom (`70_pai/topics/auto-*` — agent-derived), Autobiographic (`70_pai/profile.md`)
+- **FR-CL14: Auto-Content Workflow** — Agent-generated Content lebt immer in `70_pai/topics/auto-*` ODER `70_pai/interventions/auto-*` mit frontmatter `origin: agent, confidence: 0.x`. User-Acceptance bewegt nach kuratiertem Ordner und setzt `origin: curated, confidence: 1.0`
+- **FR-CL15: Cite & Explain** — Jedes Retrieval-Ergebnis zeigt WARUM es gefunden wurde: "Match via Titel + Embed-Score X + Y Hops via [[Z]] + Recency-Boost + Encoding-Context-Match"
+
+### Non-Functional Requirements (additive)
+
+- **NFR-CL-P1**: Retrieval-Latency p95 ≤ 250ms (interactive Mode), ≤ 1.7s (deep-investigation Mode mit Multi-Hop IRCoT)
+- **NFR-CL-P2**: Sleep-Agent NREM-Phase muss innerhalb 10 Minuten pro Run komplett laufen (kein open-ended)
+- **NFR-CL-P3**: REM-Phase LLM-Cost ≤ $5/Monat pro aktiver User (Claude Haiku, weekly Topic-Synthesis)
+- **NFR-CL-P4**: Lint-Phase muss komplett lokal ohne externe API laufen (Llama 3.1 8B / spaCy / GLiNER)
+- **NFR-CL-D1**: Nichts wird hart gelöscht — Forgetting ist Score-Rank-Decay, nicht Datenverlust. Synaptic Pruning verschiebt edges in `weak_edges_graveyard` (recoverable)
+- **NFR-CL-D2**: Bi-Temporal-History bleibt erhalten — alte Facts werden invalidated (`t_invalid` gesetzt), nicht überschrieben
+- **NFR-CL-D3**: Agent-generated Content ist immer klar als solcher markiert (`origin: agent` + Folder `70_pai/topics/auto-*`). User-Trust durch Transparenz
+
+### Strategic Differentiation
+
+Lokyy-Brain unterscheidet sich von Obsidian/Notion/Roam, Mem0/Letta/Graphiti, GraphRAG/HippoRAG durch die Kombination von:
+1. **Vault-as-Truth** (Letta-Benchmark-validated: 74% LoCoMo schlägt spezialisierte Memory-Libs)
+2. **5-Phase Cognitive Loop** (kein Konkurrent hat NREM/REM/Lint/Dream-Trennung)
+3. **Lint-Operation als first-class Feature** (Karpathys hand-waved Lücke)
+4. **Encoding-Context als first-class metadata** (niemand sonst implementiert Tulving)
+5. **User-owned LLM stack** (Ollama lokal, Forgejo lokal, kein Vendor Lock-in)
+6. **Open Source self-hostable** (vs Mem0/Zep SaaS-Only)
+
+### Phasenplan (vollständig in vision-cognitive-loop-v2.md)
+
+- **Phase A — Foundation** (1-2 Wochen, kein LLM-Risk): Importance-Scoring, Late Chunking, Multi-Chunk-Embeddings, ParadeDB Integration, Retrieval-Trace-Logging, Intent-Classifier, Sleep-Agent Walking Skeleton
+- **Phase B — Cognitive Power** (2-3 Wochen): PPR, HyDE, RAG-Fusion, bge-reranker, Lost-in-Middle, Self-RAG, Encoding-Context-Match, Working-Memory + Spacing
+- **Phase C — Cognitive Loop** (3-4 Wochen): Mem0-Classifier, Bi-Temporal, Leiden, **Karpathy-Lint** (Differenziator), Pruning, Entity-Extraction, Peer-Abstraction
+- **Phase D — Polish + Tier-3**: variabel
+
+### Voraussetzungen
+
+- Phase A erfordert Phase 1 (current state, marathon-fertig) als getestete Production-Basis
+- Vor Phase A: Hand-Test aller 14 Marathon-Features + Coolify-Deploy abschließen
+
+### Referenz
+
+Vollständige Architektur, Datenmodelle, Pipeline-Pseudocode und Citation-Trail siehe `vault://10_projects/lokyy-brain/vision-cognitive-loop-v2.md` (Forgejo-getrackte Single-Source-of-Truth).
