@@ -52,26 +52,34 @@ async function getNotes(): Promise<NoteRef[]> {
   return inFlight;
 }
 
+/** Basename of an id ("10_projects/foo/bar" → "bar"), lowercased. */
+function basenameOf(id: string): string {
+  const slash = id.lastIndexOf("/");
+  return (slash === -1 ? id : id.slice(slash + 1)).toLowerCase();
+}
+
 /** External helper for the wikilink-decoration extension to query existence. */
 export function isKnownWikilinkTarget(targetLowercase: string): boolean {
   if (!cache) return true; // optimistic: not loaded yet — don't flag
   return cache.some(
     (n) =>
       n.title.toLowerCase() === targetLowercase ||
-      n.id.toLowerCase() === targetLowercase ||
-      n.aliases.some((a) => a.toLowerCase() === targetLowercase),
+      n.aliases.some((a) => a.toLowerCase() === targetLowercase) ||
+      basenameOf(n.id) === targetLowercase ||
+      n.id.toLowerCase() === targetLowercase,
   );
 }
 
 /**
- * Resolve a wikilink target (title, alias, OR id; case-insensitive) to the
- * canonical { id, title } pair of the owning note. Returns null if the
- * target is unknown or the note-list cache hasn't loaded yet — callers
- * should fall back to passing the raw target to the API (works when
- * target already IS an id).
+ * Resolve a wikilink target (title, alias, basename, OR full id;
+ * case-insensitive) to the canonical { id, title } pair of the owning note.
+ * Returns null if the target is unknown or the note-list cache hasn't
+ * loaded yet — callers should fall back to passing the raw target to the
+ * API (works when target already IS an id).
  *
- * Resolution priority — title > alias > id — mirrors `buildGraph()` in
- * `@lokyy/core`, so the PWA preview and the server-built graph agree.
+ * Resolution priority — title > alias > basename > full-id — mirrors
+ * `buildGraph()` in `@lokyy/core`, so the PWA preview and the server-built
+ * graph agree. Basename match is first-write-wins on conflicts.
  */
 export function resolveWikilinkTarget(
   target: string,
@@ -84,6 +92,8 @@ export function resolveWikilinkTarget(
     n.aliases.some((a) => a.toLowerCase() === lc),
   );
   if (byAlias) return { id: byAlias.id, title: byAlias.title };
+  const byBase = cache.find((n) => basenameOf(n.id) === lc);
+  if (byBase) return { id: byBase.id, title: byBase.title };
   const byId = cache.find((n) => n.id.toLowerCase() === lc);
   if (byId) return { id: byId.id, title: byId.title };
   return null;
@@ -115,16 +125,16 @@ export async function wikilinkSource(
    * label.
    */
   interface Candidate {
-    /** What the user sees in the menu. Title for title-rows, alias for alias-rows. */
+    /** What the user sees in the menu. Title for title-rows, alias for alias-rows, basename for base-rows. */
     label: string;
     /** Literal text inserted into the wikilink (`[[<insertCore>]]`). */
     insertCore: string;
-    /** Right-column detail string. Alias rows show "→ Title". */
+    /** Right-column detail string. Alias/basename rows show context. */
     detail: string;
     /** Score for fuzzy ranking. */
     score: number;
-    /** Tie-breaker so title rows precede alias rows of the same note. */
-    kind: 0 | 1;
+    /** Tie-breaker: title (0) > alias (1) > basename (2) for the same note. */
+    kind: 0 | 1 | 2;
     /** Owning note id, used to dedupe and as a stable key. */
     noteId: string;
   }
@@ -169,6 +179,23 @@ export async function wikilinkSource(
           detail: `→ ${n.title}`,
           score: aScore,
           kind: 1,
+          noteId: n.id,
+        });
+      }
+    }
+    // Basename row — `[[my-note]]` style, when basename differs from title.
+    // Lets Obsidian/Roam-style id writing surface in autocomplete even
+    // though the visible title is something else (e.g. "Task: Coolify …").
+    const baseLc = basenameOf(n.id);
+    if (baseLc && baseLc !== titleLc) {
+      const bScore = rank(baseLc);
+      if (bScore > 0) {
+        candidates.push({
+          label: baseLc,
+          insertCore: baseLc,
+          detail: `by basename: ${n.title}`,
+          score: bScore,
+          kind: 2,
           noteId: n.id,
         });
       }

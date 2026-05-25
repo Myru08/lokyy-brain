@@ -3,8 +3,10 @@ import { Hono } from "hono";
 import { config } from "./config.js";
 import {
   ensureRepo,
+  getLlmProviders,
   initCore,
   initDb,
+  initLlmFromConfig,
   registerHandler,
   runMigrations,
 } from "@lokyy/core";
@@ -19,6 +21,7 @@ import { searchRoutes } from "./routes/search.js";
 import { dataviewRoutes } from "./routes/dataview.js";
 import { templatesRoutes } from "./routes/templates.js";
 import { settingsRoutes } from "./routes/settings.js";
+import { llmRoutes } from "./routes/llm.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -52,7 +55,9 @@ app.use("/api/vault/*", setupGate);
 app.use("/api/graph/*", setupGate);
 app.use("/api/pipes/*", setupGate);
 app.use("/api/admin/*", setupGate);
+app.use("/api/llm/*", setupGate);
 app.route("/api/admin", adminRoutes);
+app.route("/api/llm", llmRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);
@@ -89,6 +94,26 @@ async function main() {
     process.exit(1);
   }
   await ensureRepo();
+
+  // ── LLM registry init (Phase-0 Wave C-Backend) ─────────────────────────
+  // Read persisted provider configs and instantiate the runtime registry.
+  // Failures here MUST NOT abort startup — a missing/broken provider is
+  // expected on first boot (config empty) and recoverable via PUT /api/llm/config.
+  try {
+    const providers = await getLlmProviders();
+    const result = await initLlmFromConfig(providers);
+    console.log(
+      `[lokyy-brain] LLM registry initialised — registered: [${result.registered.join(", ")}], errors: ${result.errors.length}`,
+    );
+    for (const e of result.errors) {
+      console.warn(`[lokyy-brain] LLM provider ${e.providerName} failed: ${e.error}`);
+    }
+  } catch (err) {
+    console.warn(
+      `[lokyy-brain] LLM registry init skipped — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
   serve({ fetch: app.fetch, port: config.port });
   console.log(`lokyy-brain Server laeuft auf :${config.port}`);
   console.log(`Vault: ${config.vaultDir}`);

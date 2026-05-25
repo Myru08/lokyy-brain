@@ -106,6 +106,11 @@ export async function buildGraph(): Promise<GraphData> {
   // if two notes accidentally declare the same one. Title-collisions take
   // precedence over aliases by virtue of the resolution order below.
   const byAlias = new Map<string, string>();
+  // Basename lookup. Lets `[[my-note]]` resolve when there's a single
+  // `*/my-note.md` somewhere in the vault — the natural Obsidian/Roam
+  // writing style. First-write-wins on conflicts; we log a warning so
+  // the author can disambiguate (full-path id or unique title).
+  const byBasename = new Map<string, string>();
   const byId = new Set<string>();
   // links = wikilink-targets (titles or ids); mdLinks = relative .md paths
   const raw: { id: string; folder: string; links: string[]; mdLinks: string[] }[] = [];
@@ -122,6 +127,15 @@ export async function buildGraph(): Promise<GraphData> {
       const key = alias.toLowerCase();
       if (!byAlias.has(key)) byAlias.set(key, id);
     }
+    const basename = (id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id).toLowerCase();
+    const existingBase = byBasename.get(basename);
+    if (existingBase === undefined) {
+      byBasename.set(basename, id);
+    } else if (existingBase !== id) {
+      console.warn(
+        `[graphService] basename conflict for "${basename}": keeping "${existingBase}", ignoring "${id}"`,
+      );
+    }
     byId.add(id);
     raw.push({ id, folder, links: parseLinks(body), mdLinks: parseMdLinks(body) });
   }
@@ -137,19 +151,31 @@ export async function buildGraph(): Promise<GraphData> {
   }
 
   for (const { id, folder, links, mdLinks } of raw) {
-    // Wikilinks resolve in priority order: title > alias > raw id.
+    // Wikilinks resolve in priority order: title > alias > basename > full-id.
+    // Mirrors `resolveWikilinkTarget()` in the PWA so preview + server graph agree.
     for (const link of links) {
       const lc = link.toLowerCase();
       const target =
         byTitle.get(lc) ??
         byAlias.get(lc) ??
+        byBasename.get(lc) ??
         (byId.has(link) ? link : null);
       if (target) addEdge(id, target);
     }
-    // Markdown-Links: resolve relative path → note id
+    // Markdown-Links: resolve relative path → note id, with basename
+    // fallback so `[text](my-note.md)` resolves even when the .md sits in
+    // a different folder than the linking note.
     for (const md of mdLinks) {
       const targetId = resolveMdLink(md, folder);
-      if (targetId && byId.has(targetId)) addEdge(id, targetId);
+      if (targetId && byId.has(targetId)) {
+        addEdge(id, targetId);
+        continue;
+      }
+      // Strip path + extension, try basename map.
+      const base = md.replace(/\.md$/, "");
+      const baseName = (base.includes("/") ? base.slice(base.lastIndexOf("/") + 1) : base).toLowerCase();
+      const baseHit = byBasename.get(baseName);
+      if (baseHit) addEdge(id, baseHit);
     }
   }
 

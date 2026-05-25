@@ -8,6 +8,81 @@ import type {
   TreeNode,
 } from "@lokyy/shared";
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * LLM provider / routing types — sync with packages/core/src/llm/types.ts.
+ * Inlined here because @lokyy/core has node-only deps and is forbidden
+ * from the PWA bundle. Keep field names + shapes 1:1 with the source.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export type LlmRole =
+  | "embedding"
+  | "rerank"
+  | "topic-synthesis"
+  | "query-rewrite"
+  | "hyde"
+  | "self-rag"
+  | "lint"
+  | "ner"
+  | "mem0-classifier"
+  | "intent-classifier";
+
+export type PrivacyTier =
+  | "always_local"
+  | "local_for_personal_folders"
+  | "cloud_ok";
+
+export interface ProviderConfig {
+  name: string;
+  preset?: string;
+  /** When read back from server this is a masked form like `sk-•••…abc4`. */
+  apiKey?: string;
+  baseUrl?: string;
+  defaultModel?: string;
+  enabled: boolean;
+  monthlyBudgetUsd?: number;
+}
+
+export interface LlmRoutingConfig {
+  roles: Partial<Record<LlmRole, { provider: string; model?: string }>>;
+  fallbacks?: Partial<Record<LlmRole, string[]>>;
+  privacyTier: PrivacyTier;
+  privacyTierFolders?: string[];
+}
+
+export interface UsageStats {
+  provider: string;
+  monthInputTokens: number;
+  monthOutputTokens: number;
+  monthCostUsd: number;
+  budgetUsd?: number;
+  budgetPercent?: number;
+}
+
+export interface TestConnectionResult {
+  ok: boolean;
+  latencyMs?: number;
+  error?: string;
+  modelsAvailable?: string[];
+}
+
+/** Sync with packages/core/src/llm/providers/openai-compat.ts → PresetConfig. */
+export interface OpenAICompatPreset {
+  name: string;
+  label: string;
+  baseUrl: string;
+  defaultChatModel: string;
+  defaultEmbedModel?: string;
+  supportsEmbed: boolean;
+  isLocal: boolean;
+  apiKeyRequired: boolean;
+}
+
+export interface LlmConfigResponse {
+  providers: ProviderConfig[];
+  routing: LlmRoutingConfig;
+  usage: UsageStats[];
+}
+
 /**
  * Dataview query shape — kept in sync with `@lokyy/core`'s `DataviewQuery`.
  * Defined here (not imported) because `@lokyy/core` has node-only deps and
@@ -235,4 +310,39 @@ export const api = {
     const data = await json<{ rows: DataviewRow[] }>(res);
     return data.rows;
   },
+
+  /* ──── LLM provider config (Wave C, AI-Provider Settings UI) ──── */
+
+  /** Read current provider configs (masked API keys), routing + usage. */
+  getLlmConfig: (): Promise<LlmConfigResponse> =>
+    fetch(`${BASE}/llm/config`, { credentials: "include" }).then(
+      json<LlmConfigResponse>,
+    ),
+
+  /** Persist provider configs + routing. Server returns the updated config. */
+  setLlmConfig: (body: {
+    providers: ProviderConfig[];
+    routing: LlmRoutingConfig;
+  }): Promise<LlmConfigResponse> =>
+    fetch(`${BASE}/llm/config`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      credentials: "include",
+    }).then(json<LlmConfigResponse>),
+
+  /** Ping a single configured provider; returns latency + reachable models. */
+  testLlmConnection: (providerName: string): Promise<TestConnectionResult> =>
+    fetch(`${BASE}/llm/test-connection`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providerName }),
+      credentials: "include",
+    }).then(json<TestConnectionResult>),
+
+  /** Static list of the 8 OpenAI-compatible presets (openrouter, …, custom). */
+  getOpenAICompatPresets: (): Promise<OpenAICompatPreset[]> =>
+    fetch(`${BASE}/llm/presets/openai-compat`, {
+      credentials: "include",
+    }).then(json<OpenAICompatPreset[]>),
 };

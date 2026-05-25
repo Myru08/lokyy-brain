@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, X, Loader2, Copy, ExternalLink } from "lucide-react";
 import { C, FONT } from "./theme.js";
+import { AiProviderSettings } from "./AiProviderSettings.js";
 
 /**
  * Settings Page (Story 1.12). Four sections per user requirement:
@@ -352,6 +353,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
           )}
         </div>
       </Section>
+
+      {/* ───── 2c. AI Provider (Wave C-Frontend) ───── */}
+      <AiProviderSettings />
 
       {/* ───── 3. MCP-Endpoint für Claude Desktop ───── */}
       <Section title="MCP-Anbindung — drei Wege">

@@ -140,3 +140,6 @@ export {
   type RelatedOpts,
   type Tier2Config,
 } from "./memory/index.js";
+
+// ─── Model-Agnostic LLM Layer (Phase 0) ─────────────────────────────────
+export * from "./llm/index.js";
