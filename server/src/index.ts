@@ -32,6 +32,9 @@ import { selfRagRoutes } from "./routes/self-rag.js";
 import { tracesRoutes } from "./routes/traces.js";
 import { sleepAgentRoutes } from "./routes/sleep-agent.js";
 import { pprRoutes } from "./routes/ppr.js";
+import { rerankRoutes } from "./routes/rerank.js";
+import { surfaceRoutes, workingMemoryRoutes } from "./routes/surface.js";
+import { layoutRoutes } from "./routes/layout.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -111,6 +114,29 @@ app.route("/api/sleep-agent", sleepAgentRoutes);
 app.use("/api/ppr", setupGate);
 app.use("/api/ppr/*", setupGate);
 app.route("/api/ppr", pprRoutes);
+
+// Phase B Wave B2 / Story 1 — Re-Ranker (Cohere Rerank-3 / LocalReranker)
+// mit Importance-Score-Boost. Zweite Retrieval-Stufe nach Hybrid+PPR.
+app.use("/api/rerank", setupGate);
+app.use("/api/rerank/*", setupGate);
+app.route("/api/rerank", rerankRoutes);
+
+// Phase B Wave B2 / Story 2 — Working-Memory + Spacing-Effect-Surfacing.
+//   /api/surface/*         → cold-notes-linked-to-hot-notes (runtime computed)
+//   /api/working-memory/*  → in-process per-session retrieval cache + boosts
+app.use("/api/surface", setupGate);
+app.use("/api/surface/*", setupGate);
+app.use("/api/working-memory", setupGate);
+app.use("/api/working-memory/*", setupGate);
+app.route("/api/surface", surfaceRoutes);
+app.route("/api/working-memory", workingMemoryRoutes);
+
+// Phase B Wave B2 / Story 3 — Lost-in-the-Middle Context-Layout.
+// Pure debug/preview endpoint — composes the prompt that downstream
+// answer-routes will send to the LLM. No model calls, no state.
+app.use("/api/layout", setupGate);
+app.use("/api/layout/*", setupGate);
+app.route("/api/layout", layoutRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);

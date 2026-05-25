@@ -6,6 +6,8 @@ import {
   OpenAICompatProvider,
   type OpenAICompatPreset,
 } from "./providers/openai-compat.js";
+import { CohereProvider } from "./providers/cohere.js";
+import { LocalReranker } from "./providers/localReranker.js";
 import type { LlmProvider, ProviderConfig } from "./types.js";
 
 export interface LlmInitResult {
@@ -79,6 +81,20 @@ function instantiate(cfg: ProviderConfig): LlmProvider {
         apiKey: cfg.apiKey,
         baseUrl: cfg.baseUrl,
         defaultChatModel: cfg.defaultModel,
+      });
+    }
+    case "cohere": {
+      if (!cfg.apiKey) throw new Error("cohere requires apiKey");
+      return new CohereProvider({
+        apiKey: cfg.apiKey,
+        defaultRerankModel: cfg.defaultModel,
+        baseUrl: cfg.baseUrl,
+      });
+    }
+    case "local-reranker": {
+      return new LocalReranker({
+        baseUrl: cfg.baseUrl,
+        judgeModel: cfg.defaultModel,
       });
     }
     default:

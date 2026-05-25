@@ -38,3 +38,16 @@ export {
   type RetrievalTraceRow,
   type TraceQueryOpts,
 } from "./retrievalLog.js";
+
+// Phase B Wave B2 / Story 2 — working-memory + spacing-effect-surfacing.
+export {
+  WorkingMemory,
+  workingMemory,
+  getSurfaceRecommendations,
+  SURFACE_MAX_HOT_NOTES,
+  _resetWorkingMemoryForTests,
+  type WorkingMemoryEntry,
+  type WorkingMemoryBoost,
+  type WorkingMemoryOptions,
+  type SurfaceRecommendation,
+} from "./workingMemory.js";

@@ -209,6 +209,18 @@ export {
   type TraceQueryOpts,
 } from "./scoring/index.js";
 
+// ─── Working-Memory + Spacing-Effect (Phase B Wave B2 Story 2) ──────────
+export {
+  WorkingMemory,
+  workingMemory,
+  getSurfaceRecommendations,
+  SURFACE_MAX_HOT_NOTES,
+  type WorkingMemoryEntry,
+  type WorkingMemoryBoost,
+  type WorkingMemoryOptions,
+  type SurfaceRecommendation,
+} from "./scoring/index.js";
+
 // ─── Sleep-Agent (Phase A Wave A2 Story 7) ──────────────────────────────
 export {
   SleepAgent,

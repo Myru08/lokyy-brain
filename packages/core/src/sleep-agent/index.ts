@@ -7,6 +7,7 @@ import {
   type SleepAgentRunRow,
 } from "../db/schema/sleepAgentRuns.js";
 import { importanceRecomputePass } from "./passes/importanceRecompute.js";
+import { spacingEffectPass } from "./passes/spacingEffect.js";
 import type {
   SleepPass,
   SleepPhase,
@@ -34,6 +35,7 @@ import type {
 
 const ALL_PASSES: SleepPass[] = [
   importanceRecomputePass,
+  spacingEffectPass,
   // Future: multiChunkReEmbedPass, multiTraceConsolidationPass,
   // synapticPruningPass, topicSynthesisPass, lintPass, …
 ];
