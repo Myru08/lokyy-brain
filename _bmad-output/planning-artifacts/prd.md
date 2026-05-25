@@ -500,3 +500,54 @@ Lokyy-Brain unterscheidet sich von Obsidian/Notion/Roam, Mem0/Letta/Graphiti, Gr
 ### Referenz
 
 Vollständige Architektur, Datenmodelle, Pipeline-Pseudocode und Citation-Trail siehe `vault://10_projects/lokyy-brain/vision-cognitive-loop-v2.md` (Forgejo-getrackte Single-Source-of-Truth).
+
+---
+
+## Section 8 — Model-Agnostic LLM Layer (added 2026-05-25)
+
+> Cross-cutting Voraussetzung vor Phase A/B/C-Implementation. Vollständige Architektur in `vault://10_projects/lokyy-brain/model-agnostic-llm-layer.md`.
+
+### Kern-Prinzip
+
+Lokyy-Brain ist provider-agnostisch by design. Jeder LLM-Call geht durch einen Router, der per User-Settings entscheidet welcher Provider/Modell verwendet wird. Plus first-class DACH-Sovereignty via eurouter.ai.
+
+### Functional Requirements
+
+- **FR-MA1**: `LlmProvider`-Interface (chat, embeddings, rerank optional) + Registry mit Auto-Init aus `system_config`
+- **FR-MA2**: User-Settings für pro-Task-Routing (10 Rollen: Embedding, Re-Rank, Topic-Synthesis, Query-Rewrite, HyDE, Self-RAG, Lint, NER, Mem0-Classifier, Intent-Classifier)
+- **FR-MA3**: API-Key-Management mit Mask-on-GET, plain-on-PUT (gleiches Pattern wie Supadata-Key)
+- **FR-MA4**: Failover-Chain pro Rolle (primary → fallback → graceful skip mit User-Notification)
+- **FR-MA5**: Embedding-Migration-Workflow (expliziter Button, Confirmation-Dialog, Progress-Bar, atomar — alter Index aktiv bis neuer fertig, resumable)
+- **FR-MA6**: Privacy-Tier — Frontmatter `privacy: local-only` blockiert Cloud-Provider; Default-Tier konfigurierbar (`always_local` / `local_for_personal_folders` / `cloud_ok`)
+- **FR-MA7**: Cost-Tracking + monatliche Budget-Limits pro Provider (warn @80%, hard-stop @100%)
+- **FR-MA8**: OpenAI-Compat-Provider mit Presets: **OpenRouter, eurouter.ai (DACH), Cortex.so, Groq, Together, LM-Studio, vLLM, Custom**
+- **FR-MA9**: Drei Default-Profile beim Setup wählbar: **Privacy-Max** (alles Ollama, $0), **Balanced** (Lint/Rewrite/NER lokal, Synthesis Haiku, ~$2-3/Monat), **Quality-Max** (alles Sonnet, ~$10-20/Monat)
+- **FR-MA10**: Test-Connection-Button pro Provider (API-Key + Latency Sanity-Check)
+
+### Non-Functional Requirements
+
+- **NFR-MA-S1**: API-Keys nie plain-text gespeichert/transmittet
+- **NFR-MA-D1**: Provider-Switch darf Vault-Daten nie beschädigen
+- **NFR-MA-D2**: Embedding-Re-Index interruptable + resumable
+- **NFR-MA-P1**: Failed-Provider → Fallback in <2s
+- **NFR-MA-R1**: All-Providers-Down → Operation skip mit klarer User-Notification, kein Hang
+
+### First-Class Provider Matrix
+
+**Cloud APIs**: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Cohere (Rerank), Voyage (Embed + Rerank)
+**OpenAI-Compat Presets**: OpenRouter, **eurouter.ai (DACH-Sovereignty)**, Cortex.so, Groq, Together, LM-Studio, vLLM, Custom
+**Local Runtime**: Ollama (default Privacy-Tier)
+
+### Strategic Implication
+
+Model-Agnostic-Layer ist NICHT optional sondern Phase-0-Pflicht VOR Phase A. Sonst wird in jede Phase-A/B/C-Story Anthropic-Lock-in eingebaut und Refactor wird teuer. Vor Phase 0: nur Bug-Fixes + UX-Patches.
+
+### Voraussetzungen
+
+- Wikilink-Basename-Resolution-Bug gefixt (Wave 1)
+- Graph-UX-Hover-Highlight implementiert (Wave 1)
+- Phase 0 Settings-UI muss bestehende Settings.tsx-Pattern (Supadata) erweitern, nicht ersetzen
+
+### Referenz
+
+Vollständige Spec, Story-Liste mit File-Sets und Estimate: `vault://10_projects/lokyy-brain/model-agnostic-llm-layer.md`
