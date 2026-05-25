@@ -1,5 +1,6 @@
 import type { PipeResult, SharePayload } from "@lokyy/shared";
 import { getSupadataApiKey, getDefaultImportFolder } from "@lokyy/core";
+import { ulid } from "ulid";
 
 /**
  * Web-Scrape-Pipe.
@@ -62,11 +63,20 @@ function noteFrom(
   subfolder: string,
 ): PipeResult {
   const now = new Date().toISOString();
+  const noteUlid = ulid();
+  // SPEC-valid frontmatter: id+type+title+created+updated MUSS gesetzt sein,
+  // sonst greift NoteHeader-ULID-Badge nicht + resolve_by_id MCP-Tool findet nix.
   const body = [
     "---",
+    `id: ${noteUlid}`,
+    `type: capture`,
     `title: "${title.replace(/"/g, "'")}"`,
     `source: ${url}`,
+    `source_type: ${extraTag}`,
+    `source_url: ${url}`,
+    `captured_at: ${now}`,
     `created: ${now}`,
+    `updated: ${now}`,
     `tags: [inbox, ${extraTag}]`,
     "---",
     "",

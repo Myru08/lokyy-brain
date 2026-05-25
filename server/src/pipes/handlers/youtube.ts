@@ -1,5 +1,6 @@
 import type { PipeResult, SharePayload } from "@lokyy/shared";
 import { getSupadataApiKey, getDefaultImportFolder } from "@lokyy/core";
+import { ulid } from "ulid";
 
 /**
  * YouTube-Pipe — Referenz-Handler.
@@ -119,11 +120,20 @@ export async function youtubeHandler(
 
   const title = payload.title?.trim() || `YouTube ${id}`;
   const now = new Date().toISOString();
+  const noteUlid = ulid();
+  // SPEC-valid frontmatter MUSS id+type+title+created+updated enthalten —
+  // sonst kein ULID-Resolve, kein NoteHeader-Badge, kein AI-Prompt-Button.
   const body = [
     "---",
+    `id: ${noteUlid}`,
+    `type: capture`,
     `title: "${title.replace(/"/g, "'")}"`,
     `source: ${url}`,
+    `source_type: youtube`,
+    `source_url: ${url}`,
+    `captured_at: ${now}`,
     `created: ${now}`,
+    `updated: ${now}`,
     "tags: [inbox, youtube]",
     "---",
     "",

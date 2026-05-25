@@ -178,6 +178,9 @@ importers:
       postgres:
         specifier: ^3.4.4
         version: 3.4.9
+      ulid:
+        specifier: ^3.0.2
+        version: 3.0.2
     devDependencies:
       '@types/bcrypt':
         specifier: ^5.0.2
