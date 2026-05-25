@@ -12,6 +12,9 @@ import { migration0004PgSearch } from "./0004_pg_search.js";
 import { migration0005RetrievalTraces } from "./0005_retrieval_traces.js";
 import { migration0006MultiChunkEmbeddings } from "./0006_multi_chunk_embeddings.js";
 import { migration0007SleepAgentRuns } from "./0007_sleep_agent_runs.js";
+import { migration0008Mem0ReviewQueue } from "./0008_mem0_review_queue.js";
+import { migration0009EdgeWeights } from "./0009_edge_weights.js";
+import { migration0010LintFindings } from "./0010_lint_findings.js";
 
 export interface Migration {
   name: string;
@@ -27,4 +30,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0005_retrieval_traces", sql: migration0005RetrievalTraces },
   { name: "0006_multi_chunk_embeddings", sql: migration0006MultiChunkEmbeddings },
   { name: "0007_sleep_agent_runs", sql: migration0007SleepAgentRuns },
+  { name: "0008_mem0_review_queue", sql: migration0008Mem0ReviewQueue },
+  { name: "0009_edge_weights", sql: migration0009EdgeWeights },
+  { name: "0010_lint_findings", sql: migration0010LintFindings },
 ];

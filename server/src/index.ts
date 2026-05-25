@@ -31,11 +31,14 @@ import { hydeRoutes } from "./routes/hyde.js";
 import { selfRagRoutes } from "./routes/self-rag.js";
 import { tracesRoutes } from "./routes/traces.js";
 import { sleepAgentRoutes } from "./routes/sleep-agent.js";
+import { mem0ReviewRoutes } from "./routes/mem0-review.js";
 import { pprRoutes } from "./routes/ppr.js";
 import { rerankRoutes } from "./routes/rerank.js";
 import { surfaceRoutes, workingMemoryRoutes } from "./routes/surface.js";
 import { layoutRoutes } from "./routes/layout.js";
 import { encodingRoutes } from "./routes/encoding.js";
+import { edgesRoutes } from "./routes/edges.js";
+import { lintRoutes } from "./routes/lint.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -110,6 +113,14 @@ app.use("/api/sleep-agent", setupGate);
 app.use("/api/sleep-agent/*", setupGate);
 app.route("/api/sleep-agent", sleepAgentRoutes);
 
+// Phase C Wave C1 / Story 1 — Mem0 review queue.
+// Lists/accepts/rejects ADD/UPDATE/DELETE/NOOP decisions emitted by the
+// `mem0-classifier` REM-sleep pass. Vault mutations only happen on accept,
+// never inside the classifier itself.
+app.use("/api/mem0", setupGate);
+app.use("/api/mem0/*", setupGate);
+app.route("/api/mem0/review", mem0ReviewRoutes);
+
 // Phase B Wave B1 / Story 1 — Personalized PageRank (HippoRAG-style)
 // über den Wikilink-Graph. Seeds aus RRF-Top-N → spreading activation.
 app.use("/api/ppr", setupGate);
@@ -147,6 +158,27 @@ app.route("/api/layout", layoutRoutes);
 app.use("/api/encoding", setupGate);
 app.use("/api/encoding/*", setupGate);
 app.route("/api/encoding", encodingRoutes);
+
+// Phase C Wave C1 / Story 4 — Synaptic-Pruning (Tononi & Cirelli 2003/2014/2020).
+//   /api/edges/pruned       → graveyard listing
+//   /api/edges/resurrect    → un-prune a single edge (user intervention)
+//   /api/edges/weights      → all tracked outbound edges for a note
+//   /api/edges/weight       → single edge weight (or null)
+// The actual pruning happens inside the NREM `synaptic-pruning` sleep pass.
+app.use("/api/edges", setupGate);
+app.use("/api/edges/*", setupGate);
+app.route("/api/edges", edgesRoutes);
+
+// Phase C Wave C1 / Story 3 — Karpathy-Lint review queue.
+//   GET  /api/lint/findings?status=open&kind=...
+//   POST /api/lint/findings/:id/acknowledge
+//   POST /api/lint/findings/:id/dismiss
+//   POST /api/lint/findings/:id/mark-fixed
+// The findings themselves are produced by the `karpathy-lint` sleep-pass
+// (phase=`lint`); this route is read + transition only.
+app.use("/api/lint", setupGate);
+app.use("/api/lint/*", setupGate);
+app.route("/api/lint", lintRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);

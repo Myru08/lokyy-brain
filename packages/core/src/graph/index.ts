@@ -26,3 +26,9 @@ export {
   type PPROptions,
   type PPRHit,
 } from "./ppr.js";
+
+export {
+  detectCommunities,
+  type CommunityDetectionOpts,
+  type CommunityResult,
+} from "./community.js";

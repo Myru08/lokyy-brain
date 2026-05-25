@@ -10,3 +10,6 @@ export * from "./embeddingsMigration.js";
 export * from "./noteScoring.js";
 export * from "./retrievalTraces.js";
 export * from "./sleepAgentRuns.js";
+export * from "./mem0ReviewQueue.js";
+export * from "./edgeWeights.js";
+export * from "./lintFindings.js";

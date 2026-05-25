@@ -8,6 +8,10 @@ import {
 } from "../db/schema/sleepAgentRuns.js";
 import { importanceRecomputePass } from "./passes/importanceRecompute.js";
 import { spacingEffectPass } from "./passes/spacingEffect.js";
+import { topicSynthesisPass } from "./passes/topicSynthesis.js";
+import { mem0ClassifierPass } from "./passes/mem0Classifier.js";
+import { synapticPruningPass } from "./passes/synapticPruning.js";
+import { lintPass } from "./passes/lint.js";
 import type {
   SleepPass,
   SleepPhase,
@@ -36,8 +40,12 @@ import type {
 const ALL_PASSES: SleepPass[] = [
   importanceRecomputePass,
   spacingEffectPass,
+  topicSynthesisPass,
+  mem0ClassifierPass,
+  synapticPruningPass,
+  lintPass,
   // Future: multiChunkReEmbedPass, multiTraceConsolidationPass,
-  // synapticPruningPass, topicSynthesisPass, lintPass, …
+  // lintPass, …
 ];
 
 const TERMINAL_STATUSES: ReadonlySet<SleepStatus> = new Set([

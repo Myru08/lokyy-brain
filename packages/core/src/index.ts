@@ -49,6 +49,18 @@ export {
   type TagSummary,
 } from "./graph/graphService.js";
 
+// ─── Edge-Weights / Synaptic-Pruning (Phase C Wave C1 / Story 4) ────────
+// Sidecar table tracking the "synaptic strength" of each wikilink edge.
+// The NREM `synaptic-pruning` pass writes; retrieval + HTTP reads.
+export {
+  getActiveEdgeWeight,
+  listPrunedEdges,
+  listEdgesForNote,
+  resurrectEdge,
+  type PrunedEdge,
+  type EdgeWeightRow,
+} from "./graph/edgeWeights.js";
+
 // ─── Personalized PageRank (Phase B Wave B1 / Story 1) ──────────────────
 // HippoRAG-style spreading activation über den Wikilink-Graph.
 export {
@@ -60,6 +72,15 @@ export {
   type PPROptions,
   type PPRHit,
 } from "./graph/ppr.js";
+
+// ─── Community Detection (Phase C Wave C1 / Story 2) ────────────────────
+// Label-propagation over the Wikilink graph, feeds the topic-synthesis
+// sleep pass. See packages/core/src/graph/community.ts.
+export {
+  detectCommunities,
+  type CommunityDetectionOpts,
+  type CommunityResult,
+} from "./graph/community.js";
 
 // ─── notesService (Story 1.4) ───────────────────────────────────────────
 export {
@@ -252,6 +273,41 @@ export {
   type SleepPass,
   type SleepPassResult,
 } from "./sleep-agent/index.js";
+
+// ─── Mem0 Review Queue (Phase C Wave C1 / Story 1) ──────────────────────
+// REM-sleep classifier surfaces ADD/UPDATE/DELETE/NOOP candidates into
+// `mem0_review_queue`; the user accepts/rejects via `/api/mem0/review/*`.
+// The schema export above (`db/schema/index.js`) already re-exports the
+// Drizzle table; we re-pin the operation/status helpers here so the server
+// route imports stay short.
+export {
+  MEM0_OPERATIONS,
+  MEM0_REVIEW_STATUSES,
+  isMem0Operation,
+  isMem0ReviewStatus,
+  type Mem0Operation,
+  type Mem0ReviewStatus,
+  type Mem0ReviewQueueRow,
+  type NewMem0ReviewQueueRow,
+} from "./db/schema/mem0ReviewQueue.js";
+
+// ─── Karpathy-Lint Findings (Phase C Wave C1 / Story 3) ─────────────────
+// The `karpathy-lint` sleep-pass (phase=`lint`) writes findings to
+// `lint_findings`; `/api/lint/*` is read + status-transition only. Schema
+// re-export already covers the Drizzle table; the helpers below are the
+// short-form imports the server route + future MCP tools use.
+export {
+  LINT_KINDS,
+  LINT_SEVERITIES,
+  LINT_STATUSES,
+  isLintKind,
+  isLintStatus,
+  type LintKind,
+  type LintSeverity,
+  type LintStatus,
+  type LintFindingRow,
+  type NewLintFindingRow,
+} from "./db/schema/lintFindings.js";
 
 // ─── End-to-End Retrieval-Pipeline (Phase B Wave B3 / Story 2) ──────────
 // Orchestrates the eight cognitive-loop stages (rewrite → intent → hybrid

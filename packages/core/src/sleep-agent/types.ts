@@ -50,6 +50,14 @@ export interface SleepRun {
 export interface SleepPassResult {
   processed: number;
   errors: number;
+  /**
+   * Optional free-form diagnostic string persisted alongside the counts in
+   * `sleep_agent_runs.passStats[passName].notes`. Useful for passes whose
+   * "what happened" can't be reduced to a single integer — e.g. the
+   * topic-synthesis pass writes the cluster count and graph modularity here
+   * so post-hoc inspection doesn't require re-running the algorithm.
+   */
+  notes?: string;
 }
 
 /**
