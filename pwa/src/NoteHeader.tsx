@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { C, FONT } from "./theme.js";
+import { useIsMobile } from "./responsive.js";
 
 /**
  * NoteHeader — compact header strip above the editor pane.
@@ -144,13 +145,17 @@ function buildAiPrompt(title: string, ulid: string, path: string): string {
 const HEADER_STYLE: CSSProperties = {
   display: "flex",
   alignItems: "center",
-  gap: 12,
-  padding: "6px 14px",
+  gap: 8,
+  padding: "6px 10px",
   background: C.panel,
   borderBottom: `1px solid ${C.border}`,
   flexShrink: 0,
   minHeight: 36,
   fontFamily: FONT.ui,
+  // Phase D Wave D1 — narrow header would otherwise force overflow on
+  // mobile; allow the row to wrap so AI-Prompt + Forget stay on one line
+  // and the title can ellipsize without pushing buttons off-screen.
+  flexWrap: "wrap",
 };
 
 /**
@@ -192,6 +197,20 @@ const AI_BUTTON_STYLE: CSSProperties = {
   fontWeight: 600,
   fontFamily: FONT.ui,
   letterSpacing: "0.02em",
+  minHeight: 32,
+};
+
+/**
+ * Phase D Wave D1 — mobile-bigger variant. The default pill (32px tall)
+ * stays for desktop; on phones we bump to 40px tall and pad to give the
+ * thumb a real target. The button label stays the same so users don't
+ * lose orientation switching between viewports.
+ */
+const AI_BUTTON_STYLE_MOBILE: CSSProperties = {
+  ...AI_BUTTON_STYLE,
+  fontSize: 13,
+  padding: "8px 14px",
+  minHeight: 40,
 };
 
 const ID_BADGE_STYLE: CSSProperties = {
@@ -278,6 +297,11 @@ export function NoteHeader({
   const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+  // Phase D Wave D1 — collapse the ID-badge on mobile (it dominates a
+  // 375px header and the AI-Prompt button already encodes the ULID in the
+  // copy payload) and grow the remaining buttons to 40px tall.
+  const isMobile = useIsMobile();
+  const aiButtonStyle = isMobile ? AI_BUTTON_STYLE_MOBILE : AI_BUTTON_STYLE;
 
   // Clean up any pending toast timeout on unmount / note-switch.
   useEffect(() => {
@@ -365,7 +389,7 @@ export function NoteHeader({
       <button
         type="button"
         onClick={() => void handleCopyPrompt()}
-        style={AI_BUTTON_STYLE}
+        style={aiButtonStyle}
         title="AI-Prompt mit ID + Pfad + MCP-Tool-Hint kopieren"
         aria-label="Copy AI prompt"
       >
@@ -378,7 +402,11 @@ export function NoteHeader({
             <button
               type="button"
               onClick={() => onUnforget(noteId)}
-              style={UNFORGET_BUTTON_STYLE}
+              style={
+                isMobile
+                  ? { ...UNFORGET_BUTTON_STYLE, padding: "8px 14px", minHeight: 40, fontSize: 13 }
+                  : UNFORGET_BUTTON_STYLE
+              }
               title="Diese Note wieder in Suchen anzeigen"
               aria-label="Unforget note — re-enable retrieval"
             >
@@ -390,7 +418,11 @@ export function NoteHeader({
             <button
               type="button"
               onClick={() => onForget(noteId)}
-              style={FORGET_BUTTON_STYLE}
+              style={
+                isMobile
+                  ? { ...FORGET_BUTTON_STYLE, padding: "8px 14px", minHeight: 40, fontSize: 13 }
+                  : FORGET_BUTTON_STYLE
+              }
               title="Diese Note aus Suchen ausblenden (bleibt im Vault)"
               aria-label="Forget note — hide from retrieval, keep in vault"
             >
@@ -398,16 +430,21 @@ export function NoteHeader({
               Forget
             </button>
           )}
-      <button
-        type="button"
-        onClick={() => void handleCopyId()}
-        style={ID_BADGE_STYLE}
-        title={`Click to copy ULID: ${ulid}`}
-        aria-label={`Copy ULID ${ulid}`}
-      >
-        <span>{truncateUlid(ulid)}</span>
-        <span aria-hidden="true">📎</span>
-      </button>
+      {/* ID badge is desktop-only — the same ULID is embedded in the
+          AI-Prompt copy payload, so mobile users still get the data they
+          need without losing 90+ px of header chrome. */}
+      {!isMobile && (
+        <button
+          type="button"
+          onClick={() => void handleCopyId()}
+          style={ID_BADGE_STYLE}
+          title={`Click to copy ULID: ${ulid}`}
+          aria-label={`Copy ULID ${ulid}`}
+        >
+          <span>{truncateUlid(ulid)}</span>
+          <span aria-hidden="true">📎</span>
+        </button>
+      )}
     </div>
   );
 }

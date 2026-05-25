@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { api } from "./api.js";
 import { C, FONT } from "./theme.js";
+import { useIsMobile } from "./responsive.js";
 
 const FALLBACK_FOLDER = "30_captures";
 
@@ -79,6 +80,9 @@ const STATUS: Record<
 };
 
 export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
+  // Phase D Wave D1 — Slide-over goes full-width on phones; the type-grid
+  // and folder browser inside the panel become unusable below ~340px wide.
+  const isMobile = useIsMobile();
   const [url, setUrl] = useState("");
   const [type, setType] = useState<PipeType | "auto">("auto");
   const [jobs, setJobs] = useState<PipeJob[]>([]);
@@ -207,10 +211,10 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
           top: 0,
           right: 0,
           bottom: 0,
-          width: 360,
-          maxWidth: "90vw",
+          width: isMobile ? "100vw" : 360,
+          maxWidth: "100vw",
           background: C.panel,
-          borderLeft: `1px solid ${C.border}`,
+          borderLeft: isMobile ? "none" : `1px solid ${C.border}`,
           transform: open ? "translateX(0)" : "translateX(100%)",
           transition: "transform 0.22s ease",
           zIndex: 41,
@@ -241,14 +245,20 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
             aria-label="Schließen"
             style={{
               display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
               border: "none",
               background: "transparent",
               color: C.textDim,
               cursor: "pointer",
-              padding: 4,
+              // Phase D Wave D1 — bump close affordance to 44×44 on mobile
+              // so the thumb has a real target.
+              width: isMobile ? 44 : 28,
+              height: isMobile ? 44 : 28,
+              padding: 0,
             }}
           >
-            <X size={16} />
+            <X size={isMobile ? 22 : 16} />
           </button>
         </header>
 

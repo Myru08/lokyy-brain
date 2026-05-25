@@ -15,6 +15,7 @@ import { lintPass } from "./passes/lint.js";
 import { entityExtractionPass } from "./passes/entityExtraction.js";
 import { biTemporalValidationPass } from "./passes/biTemporalValidation.js";
 import { peerProfileUpdatePass } from "./passes/peerProfileUpdate.js";
+import { ulidBackfillPass } from "./passes/ulidBackfill.js";
 import type {
   SleepPass,
   SleepPhase,
@@ -53,6 +54,11 @@ const ALL_PASSES: SleepPass[] = [
   // REM-phase pass; refreshes relationship_strength + ongoing_topics +
   // last_interaction from entity_mentions for every `type: peer` note.
   peerProfileUpdatePass,
+  // Phase D Wave D1 / Story 1 — ULID-Backfill for legacy notes.
+  // NREM-phase pass; picks up to 50 ULID-less notes per run, injects an
+  // id + type + updated frontmatter and writes back via saveNote (which
+  // commits, syncs BM25, refreshes temporal-edges, drops the ULID cache).
+  ulidBackfillPass,
   // Future: multiChunkReEmbedPass, multiTraceConsolidationPass, …
 ];
 

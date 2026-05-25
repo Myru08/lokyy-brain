@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Check, X, Loader2, Copy, ExternalLink } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { AiProviderSettings } from "./AiProviderSettings.js";
+import { api } from "./api.js";
 
 /**
  * Settings Page (Story 1.12). Four sections per user requirement:
@@ -96,6 +97,19 @@ export function Settings({ onClose }: { onClose: () => void }) {
   >("idle");
   const [integrationsSaveError, setIntegrationsSaveError] = useState<string>();
 
+  // Vault maintenance — ULID-backfill (Phase D Wave D1 / Story 1)
+  const [backfillStatus, setBackfillStatus] = useState<{
+    totalNotes: number;
+    scanned: number;
+    withoutUlid: number;
+    scanLimited: boolean;
+  } | null>(null);
+  const [backfillState, setBackfillState] = useState<
+    "idle" | "running" | "ok" | "fail"
+  >("idle");
+  const [backfillError, setBackfillError] = useState<string>();
+  const [backfillLastRun, setBackfillLastRun] = useState<string | null>(null);
+
   async function load() {
     const [sRes, statusRes, mcpRes, skillRes] = await Promise.all([
       fetch("/api/admin/system-settings").then((r) => r.json()) as Promise<SystemSettings>,
@@ -115,6 +129,39 @@ export function Settings({ onClose }: { onClose: () => void }) {
     setSupadataInput(sRes.integrations.supadataApiKeyMasked ?? "");
     setSupadataTouched(false);
     setImportFolderInput(sRes.integrations.defaultImportFolder);
+
+    // Backfill status — fetched separately so a slow scan can't block the
+    // rest of the Settings render. Errors here are non-fatal.
+    void loadBackfillStatus();
+  }
+
+  async function loadBackfillStatus() {
+    try {
+      const status = await api.getBackfillStatus();
+      setBackfillStatus(status);
+    } catch {
+      setBackfillStatus(null);
+    }
+  }
+
+  async function runBackfill() {
+    setBackfillState("running");
+    setBackfillError(undefined);
+    try {
+      const result = await api.runBackfill();
+      if (!result.ok) {
+        setBackfillState("fail");
+        setBackfillError(result.error ?? "Backfill fehlgeschlagen");
+        return;
+      }
+      setBackfillState("ok");
+      setBackfillLastRun(new Date().toISOString());
+      // Refresh the pending count after the run.
+      await loadBackfillStatus();
+    } catch (err) {
+      setBackfillState("fail");
+      setBackfillError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   useEffect(() => {
@@ -486,6 +533,90 @@ export function Settings({ onClose }: { onClose: () => void }) {
             </code>
           </div>
         ))}
+      </Section>
+
+      {/* ───── Vault-Wartung (Phase D Wave D1 / Story 1 — ULID-Backfill) ───── */}
+      <Section title="Vault-Wartung">
+        <p style={{ color: C.textDim, fontSize: 13, margin: "0 0 12px 0" }}>
+          Bestehende Notes ohne <code style={{ color: C.gold }}>id:</code>-ULID
+          können nicht via AI-Prompt referenziert werden und tauchen nicht im
+          MCP-<code>resolve_by_id</code> auf. Der Backfill-Pass fügt fehlende
+          IDs hinzu — Inhalt bleibt unverändert, nur Frontmatter wird ergänzt.
+        </p>
+
+        {backfillStatus ? (
+          <div
+            style={{
+              padding: 10,
+              background: C.elevated,
+              borderRadius: 6,
+              marginBottom: 12,
+              fontSize: 13,
+              color: C.text,
+            }}
+          >
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+              <span>
+                <strong style={{ color: C.textDim }}>Notes gesamt:</strong>{" "}
+                {backfillStatus.totalNotes}
+              </span>
+              <span>
+                <strong style={{ color: C.textDim }}>Ohne ULID:</strong>{" "}
+                <span
+                  style={{
+                    color: backfillStatus.withoutUlid > 0 ? C.gold : C.ok,
+                  }}
+                >
+                  {backfillStatus.withoutUlid}
+                  {backfillStatus.scanLimited && "+ (gescannt: ersten 500)"}
+                </span>
+              </span>
+            </div>
+          </div>
+        ) : (
+          <p style={{ color: C.textDim, fontSize: 12, margin: "0 0 12px 0" }}>
+            Status laden …
+          </p>
+        )}
+
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={() => void runBackfill()}
+            disabled={
+              backfillState === "running" ||
+              (backfillStatus !== null && backfillStatus.withoutUlid === 0)
+            }
+            style={btn}
+          >
+            {backfillState === "running" && <Loader2 size={14} className="sw-spin" />}
+            ULID-Backfill jetzt starten
+            {backfillStatus && backfillStatus.withoutUlid > 0 && (
+              <span style={{ color: C.gold, marginLeft: 4 }}>
+                ({backfillStatus.withoutUlid} betroffen)
+              </span>
+            )}
+          </button>
+          <button onClick={() => void loadBackfillStatus()} style={btn}>
+            Status neu laden
+          </button>
+          {backfillState === "ok" && (
+            <span style={{ color: C.ok, fontSize: 13 }}>
+              <Check size={14} /> Backfill abgeschlossen
+            </span>
+          )}
+          {backfillState === "fail" && (
+            <span style={{ color: C.err, fontSize: 13 }}>
+              <X size={14} /> {backfillError}
+            </span>
+          )}
+        </div>
+
+        <p style={{ color: C.textFaint, fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+          Pro Run werden bis zu 50 Notes verarbeitet — bei größeren Vaults
+          mehrmals klicken. Letzter Run: {backfillLastRun
+            ? new Date(backfillLastRun).toLocaleString("de-DE")
+            : "noch nie (manuell)"}.
+        </p>
       </Section>
 
       {/* ───── Runtime info (klein, unten) ───── */}

@@ -18,16 +18,25 @@ export default defineConfig({
     VitePWA({
       registerType: "autoUpdate",
       manifest: {
-        name: "lokyy-brain",
-        short_name: "lokyy-brain",
+        // Phase D Wave D1 / Story 3 — Manifest alignment with the brand
+        // palette (theme.ts) + the actually-shipped logo. Previous values
+        // pointed at icon-192.png / icon-512.png which never existed in
+        // pwa/public/, leaving the installable PWA without an icon. Using
+        // logo-large.png (a 512×512 PNG that already ships) for both
+        // declared sizes — browsers downsample as needed.
+        name: "Lokyy Brain",
+        short_name: "Lokyy",
         description: "Knowledge-Tool mit Forgejo als Wahrheit.",
-        theme_color: "#14110f",
-        background_color: "#14110f",
+        theme_color: "#13171D",
+        background_color: "#13171D",
         display: "standalone",
         start_url: "/",
+        scope: "/",
+        orientation: "portrait-primary",
         icons: [
-          { src: "/icon-192.png", sizes: "192x192", type: "image/png" },
-          { src: "/icon-512.png", sizes: "512x512", type: "image/png" },
+          { src: "/logo-large.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/logo-large.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/logo-large.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
         share_target: {
           action: "/api/pipes/share",

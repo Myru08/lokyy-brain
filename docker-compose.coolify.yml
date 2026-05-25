@@ -1,20 +1,25 @@
-# lokyy-brain — Coolify Compose. Kein Caddy, kein Port-Binding nach außen.
-# Coolify's vorgeschalteter Traefik macht TLS + Routing via SERVICE_FQDN magic vars.
+# lokyy-brain — Coolify Compose (Phase D / Wave D1).
+#
+# Coolify's Traefik handles TLS + routing via SERVICE_FQDN_* magic vars.
+# No `ports:` mappings here — every service is private to the compose net.
 #
 # Setup in Coolify UI:
 #   1. Project → "+ New Resource" → "Docker Compose"
-#   2. Repository: deine git url (lokyy-brain repo)
+#   2. Repository: git URL of this repo
 #   3. Compose File Path: docker-compose.coolify.yml
-#   4. Environment Variables (im Coolify-UI setzen — siehe .env.coolify.example):
-#        SERVICE_FQDN_LOKYYBRAIN_8787   (z.B. lokyy.deine-domain.tld)  ← Coolify generiert TLS + Route
-#        SERVICE_FQDN_LOKYYMCP_8788     (z.B. lokyy.deine-domain.tld:/mcp  ODER mcp.lokyy.deine-domain.tld)
-#        SERVICE_FQDN_FORGEJO_3000      (z.B. forgejo.lokyy.deine-domain.tld)
-#        POSTGRES_PASSWORD, LOKYY_MCP_TOKEN, GIT_REMOTE, LOKYY_VAULT_ID
-#   5. Deploy → Coolify pulled das Repo, baut die Images, startet alles, holt TLS-Cert.
+#   4. Environment Variables (see .env.coolify.example):
+#        SERVICE_FQDN_LOKYYBRAIN_8787      e.g. lokyy.example.tld   (server / REST API)
+#        SERVICE_FQDN_LOKYYPWA_80          e.g. lokyy.example.tld   (PWA static)
+#        SERVICE_FQDN_LOKYYMCP_8788        e.g. mcp.lokyy.example.tld
+#        SERVICE_FQDN_FORGEJO_3000         e.g. forgejo.lokyy.example.tld
+#        POSTGRES_PASSWORD, LOKYY_MCP_TOKEN, GIT_REMOTE, LOKYY_VAULT_ID, ...
+#   5. Deploy → Coolify pulls repo, builds, starts, fetches TLS certs.
 #
-# Für claude.ai Custom Connector: URL = https://<SERVICE_FQDN_LOKYYMCP>/mcp, Bearer = LOKYY_MCP_TOKEN.
+# claude.ai Custom Connector → URL = https://<SERVICE_FQDN_LOKYYMCP_8788>/mcp,
+# Auth = Bearer ${LOKYY_MCP_TOKEN}.
 
 services:
+  # ── Server (Hono REST API + setup wizard backend) ──────────────────────
   lokyy-brain:
     build:
       context: .
@@ -26,7 +31,7 @@ services:
       forgejo:
         condition: service_started
     environment:
-      # Coolify-Magic: rewrites zu echter FQDN + setzt Traefik-Labels auto.
+      # Coolify magic-var → rewritten to public FQDN + Traefik labels auto-added.
       - SERVICE_FQDN_LOKYYBRAIN_8787
       - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
@@ -37,9 +42,35 @@ services:
       - OLLAMA_HOST=http://ollama:11434
       - SUPADATA_API_KEY=${SUPADATA_API_KEY:-}
       - PORT=8787
+      - NODE_ENV=production
     volumes:
       - vault-data:/var/lokyy/vault
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8787/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
 
+  # ── PWA (nginx-served static build) ────────────────────────────────────
+  lokyy-pwa:
+    build:
+      context: .
+      dockerfile: pwa/Dockerfile
+    restart: unless-stopped
+    environment:
+      - SERVICE_FQDN_LOKYYPWA_80
+    depends_on:
+      lokyy-brain:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ── MCP HTTP transport (claude.ai Custom-Connector endpoint) ───────────
   lokyy-mcp:
     build:
       context: .
@@ -49,7 +80,7 @@ services:
       postgres:
         condition: service_healthy
       lokyy-brain:
-        condition: service_started
+        condition: service_healthy
     environment:
       - SERVICE_FQDN_LOKYYMCP_8788
       - LOKYY_DB_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
@@ -60,10 +91,19 @@ services:
       - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
       - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
       - LOKYY_MCP_HTTP_PORT=8788
+      - NODE_ENV=production
     volumes:
       - vault-data:/var/lokyy/vault
     command: ["node", "/app/mcp/dist/binHttp.js"]
+    healthcheck:
+      # MCP HTTP exposes /mcp/health (200 OK, no auth) for liveness probes.
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8788/mcp/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
 
+  # ── Forgejo (Vault git remote) ─────────────────────────────────────────
   forgejo:
     image: codeberg.org/forgejo/forgejo:9
     restart: unless-stopped
@@ -74,10 +114,15 @@ services:
       - FORGEJO__database__DB_TYPE=sqlite3
     volumes:
       - forgejo-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
+  # ── Postgres (ParadeDB: pgvector + pg_search bundled) ──────────────────
   postgres:
-    # ParadeDB drop-in Postgres image — ships pg_search (Tantivy BM25) AND
-    # pgvector. Required for Phase A Wave A1 / Story 2 hybrid retrieval.
     image: paradedb/paradedb:latest
     restart: unless-stopped
     environment:
@@ -89,25 +134,36 @@ services:
       test: ["CMD-SHELL", "pg_isready -U postgres -d lokyy_brain"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 12
 
+  # ── Ollama (embeddings + optional local chat) ──────────────────────────
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
     volumes:
       - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
+  # One-shot init: pull embedding + chat models.
   ollama-init:
     image: ollama/ollama:latest
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     entrypoint:
       - /bin/sh
       - -c
       - |
-        sleep 5 &&
-        OLLAMA_HOST=http://ollama:11434 ollama pull nomic-embed-text &&
-        echo "[ollama-init] nomic-embed-text ready"
+        OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text} && \
+        if [ "${OLLAMA_PULL_CHAT:-false}" = "true" ]; then \
+          OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_CHAT_MODEL:-llama3.1:8b}; \
+        fi && \
+        echo "[ollama-init] models ready"
     restart: "no"
 
 volumes:

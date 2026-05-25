@@ -744,4 +744,52 @@ export const api = {
       throw new ApiError(res.status, err.error ?? "mark-fixed failed");
     }
   },
+
+  /* ──── ULID-Backfill (Phase D Wave D1 / Story 1) ──── */
+
+  /**
+   * Pending-count of legacy notes that still lack a frontmatter `id:`. The
+   * server caps the scan at 500 notes — `scanLimited: true` signals that
+   * `totalNotes` exceeded that cap and `withoutUlid` is only a lower bound.
+   */
+  getBackfillStatus: (): Promise<{
+    totalNotes: number;
+    scanned: number;
+    withoutUlid: number;
+    scanLimited: boolean;
+  }> =>
+    fetch(`${BASE}/backfill/status`, { credentials: "include" }).then(
+      json<{
+        totalNotes: number;
+        scanned: number;
+        withoutUlid: number;
+        scanLimited: boolean;
+      }>,
+    ),
+
+  /**
+   * Manually trigger the NREM sleep phase (which includes the
+   * ulid-backfill pass). Caps at 50 commits per run — re-trigger for
+   * larger vaults. Returns 409 with `ok: false` when another sleep-run
+   * is already in flight.
+   */
+  runBackfill: async (): Promise<{ ok: boolean; error?: string }> => {
+    const res = await fetch(`${BASE}/backfill/ulid`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (res.status === 409) {
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      return { ok: false, error: data.error ?? "sleep-agent already running" };
+    }
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      throw new ApiError(res.status, data.error ?? "backfill failed");
+    }
+    return { ok: true };
+  },
 };

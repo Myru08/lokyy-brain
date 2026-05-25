@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9.0.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm -r build
+
+      - name: Test
+        run: pnpm -r --if-present test
+
+  compose-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Coolify compose
+        run: |
+          # Stub out Coolify magic-vars so `compose config` doesn't choke
+          export SERVICE_FQDN_LOKYYBRAIN_8787=https://lokyy.example.test
+          export SERVICE_FQDN_LOKYYPWA_80=https://lokyy.example.test
+          export SERVICE_FQDN_LOKYYMCP_8788=https://mcp.example.test
+          export SERVICE_FQDN_FORGEJO_3000=https://forgejo.example.test
+          export POSTGRES_PASSWORD=stub
+          export LOKYY_MCP_TOKEN=stub
+          export LOKYY_VAULT_ID=stub
+          export GIT_REMOTE=https://forgejo.example.test/x/y
+          docker compose -f docker-compose.coolify.yml config >/dev/null

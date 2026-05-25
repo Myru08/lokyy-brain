@@ -44,6 +44,7 @@ import { agentReviewRoutes } from "./routes/agent-review.js";
 import { entitiesRoutes } from "./routes/entities.js";
 import { peersRoutes } from "./routes/peers.js";
 import { forgetRoutes } from "./routes/forget.js";
+import { backfillRoutes } from "./routes/backfill.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -117,6 +118,14 @@ app.route("/api/traces", tracesRoutes);
 app.use("/api/sleep-agent", setupGate);
 app.use("/api/sleep-agent/*", setupGate);
 app.route("/api/sleep-agent", sleepAgentRoutes);
+
+// Phase D Wave D1 / Story 1 — ULID-Backfill for legacy notes.
+//   POST /api/backfill/ulid     manual trigger (delegates to sleepAgent).
+//   GET  /api/backfill/status   pending count (notes without ULID).
+// The PWA Settings page mounts a "Vault-Wartung" section that hits these.
+app.use("/api/backfill", setupGate);
+app.use("/api/backfill/*", setupGate);
+app.route("/api/backfill", backfillRoutes);
 
 // Phase C Wave C1 / Story 1 — Mem0 review queue.
 // Lists/accepts/rejects ADD/UPDATE/DELETE/NOOP decisions emitted by the

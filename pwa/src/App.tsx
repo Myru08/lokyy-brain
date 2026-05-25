@@ -1,6 +1,7 @@
 import { lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
 import type { Note, TreeNode } from "@lokyy/shared";
-import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot } from "lucide-react";
+import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot, Menu as MenuIcon, X as XIcon } from "lucide-react";
+import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
 import { AgentReviewPanel } from "./AgentReviewPanel.js";
 import { Settings } from "./Settings.js";
 import { CommandPalette } from "./CommandPalette.js";
@@ -114,6 +115,18 @@ export function App() {
     min: 140,
     max: 420,
   });
+
+  // Phase D Wave D1 — Mobile drawer state. On viewports < 640px the sidebar
+  // (FileTree + TagPane) collapses behind a hamburger to give the editor the
+  // full screen width. Desktop keeps the always-visible aside.
+  const isMobile = useIsMobile();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Auto-close the drawer when navigating into a note (mobile UX: tap a note
+  // → drawer slides out, full-screen editor remains).
+  function openAndCloseDrawer(id: string) {
+    void open(id);
+    if (isMobile) setSidebarOpen(false);
+  }
 
   const saveTimer = useRef<number | null>(null);
   const dirtyBody = useRef<string>("");
@@ -513,101 +526,149 @@ export function App() {
       {/* Topbar */}
       <header
         style={{
-          height: 44,
+          // Phase D Wave D1 — taller header on mobile so each tap target
+          // can hit the 44px Apple-HIG / WCAG 2.5.5 minimum without the
+          // chevrons being clipped.
+          height: isMobile ? 52 : 44,
           display: "flex",
           alignItems: "center",
-          gap: 10,
-          padding: "0 14px",
+          gap: isMobile ? 6 : 10,
+          // Allow header to scroll horizontally on tablets if a user has
+          // enough buttons that they'd overflow — no clipping mid-button.
+          padding: isMobile ? "0 8px" : "0 14px",
           background: C.panel,
           borderBottom: `1px solid ${C.border}`,
           flexShrink: 0,
+          overflow: "hidden",
         }}
       >
+        {/* Mobile: hamburger opens the sidebar drawer. Desktop: not needed
+            because the aside is always visible. */}
+        {isMobile && (
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+            aria-label={sidebarOpen ? "Sidebar schließen" : "Sidebar öffnen"}
+            title="Vault"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: TOUCH_TARGET_MIN,
+              height: TOUCH_TARGET_MIN,
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 7,
+              cursor: "pointer",
+              color: C.text,
+              flexShrink: 0,
+            }}
+          >
+            <MenuIcon size={22} style={{ color: C.accent }} />
+          </button>
+        )}
         <img
           src="/logo-header.png"
           alt="Lokyy Brain"
-          style={{ height: 44, width: "auto", verticalAlign: "middle" }}
+          style={{
+            height: isMobile ? 36 : 44,
+            width: "auto",
+            verticalAlign: "middle",
+            flexShrink: 0,
+          }}
         />
         <span style={{ flex: 1 }} />
         <DailyNoteButton onOpenNote={(id) => void openNoteById(id)} />
-        <button
-          onClick={() => setTemplatePickerOpen(true)}
-          title="Aus Vorlage anlegen"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: C.elevated,
-            border: `1px solid ${C.border}`,
-            borderRadius: 7,
-            padding: "5px 10px",
-            cursor: "pointer",
-            color: C.text,
-            fontSize: 13,
-            fontFamily: FONT.ui,
-          }}
-        >
-          <span aria-hidden="true" style={{ fontSize: 20, lineHeight: 1 }}>📄</span>
-          Vorlagen
-        </button>
-        <button
-          onClick={() => setAgentReviewOpen(true)}
-          title="Agent-Review"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: C.elevated,
-            border: `1px solid ${C.border}`,
-            borderRadius: 7,
-            padding: "5px 10px",
-            cursor: "pointer",
-            color: C.text,
-            fontSize: 13,
-            fontFamily: FONT.ui,
-            position: "relative",
-          }}
-        >
-          <Bot size={18} style={{ color: C.accent }} />
-          Review
-          {pendingCount > 0 && (
-            <span
+        {/* Phase D Wave D1 — non-essential text buttons (Vorlagen, Review,
+            Import) are dropped on mobile to keep the toolbar from
+            horizontal-scrolling. They remain reachable via Settings + the
+            slide-over panels are unchanged; the future mobile FAB story
+            promotes the most-used "Capture" affordance. */}
+        {!isMobile && (
+          <>
+            <button
+              onClick={() => setTemplatePickerOpen(true)}
+              title="Aus Vorlage anlegen"
               style={{
-                background: C.accent,
-                color: "#1a1110",
-                borderRadius: 10,
-                padding: "0 6px",
-                fontSize: 10.5,
-                fontWeight: 700,
-                fontFamily: FONT.mono,
-                minWidth: 16,
-                textAlign: "center",
-                lineHeight: 1.6,
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                padding: "5px 10px",
+                cursor: "pointer",
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                minHeight: 36,
               }}
             >
-              {pendingCount > 99 ? "99+" : pendingCount}
-            </span>
-          )}
-        </button>
-        <button
-          onClick={() => setImportOpen(true)}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 6,
-            background: C.elevated,
-            border: `1px solid ${C.border}`,
-            borderRadius: 7,
-            padding: "5px 10px",
-            cursor: "pointer",
-            color: C.text,
-            fontSize: 13,
-            fontFamily: FONT.ui,
-          }}
-        >
-          <ArrowUpRight size={20} style={{ color: C.accent }} />
-          Import
-        </button>
+              <span aria-hidden="true" style={{ fontSize: 20, lineHeight: 1 }}>📄</span>
+              Vorlagen
+            </button>
+            <button
+              onClick={() => setAgentReviewOpen(true)}
+              title="Agent-Review"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                padding: "5px 10px",
+                cursor: "pointer",
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                position: "relative",
+                minHeight: 36,
+              }}
+            >
+              <Bot size={18} style={{ color: C.accent }} />
+              Review
+              {pendingCount > 0 && (
+                <span
+                  style={{
+                    background: C.accent,
+                    color: "#1a1110",
+                    borderRadius: 10,
+                    padding: "0 6px",
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    fontFamily: FONT.mono,
+                    minWidth: 16,
+                    textAlign: "center",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {pendingCount > 99 ? "99+" : pendingCount}
+                </span>
+              )}
+            </button>
+            <button
+              onClick={() => setImportOpen(true)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                padding: "5px 10px",
+                cursor: "pointer",
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                minHeight: 36,
+              }}
+            >
+              <ArrowUpRight size={20} style={{ color: C.accent }} />
+              Import
+            </button>
+          </>
+        )}
         <button
           onClick={() => setPaletteOpen(true)}
           title="Suche · Cmd/Ctrl+K"
@@ -618,79 +679,182 @@ export function App() {
             background: C.elevated,
             border: `1px solid ${C.border}`,
             borderRadius: 7,
-            padding: "5px 10px",
+            padding: isMobile ? "0" : "5px 10px",
+            width: isMobile ? TOUCH_TARGET_MIN : undefined,
+            height: isMobile ? TOUCH_TARGET_MIN : undefined,
+            justifyContent: isMobile ? "center" : undefined,
             cursor: "pointer",
             color: C.text,
             fontSize: 13,
             fontFamily: FONT.ui,
+            minHeight: 36,
+            flexShrink: 0,
           }}
         >
           <SearchIcon size={20} style={{ color: C.accent }} />
-          Suche
-          <kbd style={{ fontSize: 10, color: C.textDim, marginLeft: 4, padding: "1px 4px", background: C.bg, borderRadius: 3, fontFamily: FONT.mono }}>
-            ⌘K
-          </kbd>
+          {!isMobile && (
+            <>
+              Suche
+              <kbd style={{ fontSize: 10, color: C.textDim, marginLeft: 4, padding: "1px 4px", background: C.bg, borderRadius: 3, fontFamily: FONT.mono }}>
+                ⌘K
+              </kbd>
+            </>
+          )}
         </button>
-        <button
-          onClick={() => setGraphOpen(true)}
-          title="Wissensgraph"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            background: C.elevated,
-            border: `1px solid ${C.border}`,
-            borderRadius: 7,
-            padding: "6px 9px",
-            cursor: "pointer",
-            color: C.text,
-          }}
-        >
-          <NetworkIcon size={20} style={{ color: C.accent }} />
-        </button>
+        {!isMobile && (
+          <button
+            onClick={() => setGraphOpen(true)}
+            title="Wissensgraph"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 7,
+              padding: "6px 9px",
+              cursor: "pointer",
+              color: C.text,
+              minHeight: 36,
+            }}
+          >
+            <NetworkIcon size={20} style={{ color: C.accent }} />
+          </button>
+        )}
         <button
           onClick={() => setSettingsOpen(true)}
           title="Einstellungen"
           style={{
             display: "flex",
             alignItems: "center",
+            justifyContent: "center",
             background: C.elevated,
             border: `1px solid ${C.border}`,
             borderRadius: 7,
-            padding: "6px 9px",
+            padding: isMobile ? "0" : "6px 9px",
+            width: isMobile ? TOUCH_TARGET_MIN : undefined,
+            height: isMobile ? TOUCH_TARGET_MIN : undefined,
             cursor: "pointer",
             color: C.text,
+            minHeight: 36,
+            flexShrink: 0,
           }}
         >
           <SettingsIcon size={20} style={{ color: C.accent }} />
         </button>
-        <span
-          style={{
-            fontSize: 11,
-            fontFamily: FONT.mono,
-            color: status.color,
-          }}
-        >
-          ● forgejo · {status.text}
-        </span>
+        {/* Phase D Wave D1 — sync status text is informational and hidden
+            on narrow viewports. The status colour-dot is still represented
+            through the saving/conflict notifications elsewhere. */}
+        {!isMobile && (
+          <span
+            style={{
+              fontSize: 11,
+              fontFamily: FONT.mono,
+              color: status.color,
+            }}
+          >
+            ● forgejo · {status.text}
+          </span>
+        )}
       </header>
 
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        {/* Datei-Baum + Tag-Pane */}
+      <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
+        {/* Mobile drawer backdrop. Sits behind the aside, tap-to-close. */}
+        {isMobile && sidebarOpen && (
+          <div
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+            style={{
+              position: "fixed",
+              inset: 0,
+              top: 52, // below the mobile header
+              background: "rgba(0,0,0,0.55)",
+              zIndex: 38,
+            }}
+          />
+        )}
+        {/* Datei-Baum + Tag-Pane.
+            On desktop: always-visible static aside.
+            On mobile: fixed slide-over drawer behind a hamburger button.
+            The drawer state is controlled by `sidebarOpen`; opening a note
+            auto-closes it (see `openAndCloseDrawer`). */}
         <aside
-          style={{
-            width: filetreeWidth,
-            background: C.panel,
-            flexShrink: 0,
-            display: "flex",
-            flexDirection: "column",
-            minHeight: 0,
-          }}
+          style={
+            isMobile
+              ? {
+                  position: "fixed",
+                  top: 52,
+                  bottom: 0,
+                  left: 0,
+                  width: "min(320px, 85vw)",
+                  background: C.panel,
+                  borderRight: `1px solid ${C.border}`,
+                  transform: sidebarOpen ? "translateX(0)" : "translateX(-105%)",
+                  transition: "transform 0.22s ease",
+                  zIndex: 39,
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                  boxShadow: sidebarOpen ? "0 10px 30px rgba(0,0,0,0.5)" : "none",
+                }
+              : {
+                  width: filetreeWidth,
+                  background: C.panel,
+                  flexShrink: 0,
+                  display: "flex",
+                  flexDirection: "column",
+                  minHeight: 0,
+                }
+          }
         >
+          {/* Mobile drawer header — close affordance + label. */}
+          {isMobile && (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "6px 10px",
+                borderBottom: `1px solid ${C.border}`,
+                minHeight: TOUCH_TARGET_MIN,
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: C.gold,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.04em",
+                }}
+              >
+                Vault
+              </span>
+              <button
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                aria-label="Sidebar schließen"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: TOUCH_TARGET_MIN,
+                  height: TOUCH_TARGET_MIN,
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: C.textDim,
+                }}
+              >
+                <XIcon size={22} />
+              </button>
+            </div>
+          )}
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 8px" }}>
             <FileTree
               tree={tree}
               activeId={active?.id ?? null}
-              onOpen={(id) => void open(id)}
+              onOpen={openAndCloseDrawer}
               onCreate={handleCreate}
               onRename={handleRename}
               onMove={handleMove}
@@ -714,12 +878,16 @@ export function App() {
             />
           </div>
         </aside>
-        <DragHandle
-          side="left"
-          getWidth={() => filetreeWidth}
-          setWidth={setFiletreeWidth}
-          onReset={() => setFiletreeWidth(248)}
-        />
+        {/* Resizable drag handle: desktop only — touch dragging a thin
+            handle on mobile is hostile UX. */}
+        {!isMobile && (
+          <DragHandle
+            side="left"
+            getWidth={() => filetreeWidth}
+            setWidth={setFiletreeWidth}
+            onReset={() => setFiletreeWidth(248)}
+          />
+        )}
 
         {/* Editor + Tabs + Backlinks */}
         <main style={{ flex: 1, minWidth: 0, background: C.bg, display: "flex", flexDirection: "column" }}>
@@ -763,15 +931,22 @@ export function App() {
                   refreshSignal={backlinksRefresh}
                 />
               </div>
-              <DragHandle
-                side="right"
-                getWidth={() => outlineWidth}
-                setWidth={setOutlineWidth}
-                onReset={() => setOutlineWidth(220)}
-              />
-              <div style={{ width: outlineWidth, flexShrink: 0, display: "flex" }}>
-                <Outline body={active.body} onJump={(line) => setScrollToLine(line)} />
-              </div>
+              {/* Outline + drag handle — desktop only. The outline is a
+                  navigation aid that's redundant with full-screen scroll on
+                  mobile and would otherwise eat ~200px of editor width. */}
+              {!isMobile && (
+                <>
+                  <DragHandle
+                    side="right"
+                    getWidth={() => outlineWidth}
+                    setWidth={setOutlineWidth}
+                    onReset={() => setOutlineWidth(220)}
+                  />
+                  <div style={{ width: outlineWidth, flexShrink: 0, display: "flex" }}>
+                    <Outline body={active.body} onJump={(line) => setScrollToLine(line)} />
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div

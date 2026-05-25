@@ -23,6 +23,7 @@ import {
   type TopicNoteItem,
 } from "./api.js";
 import { C, FONT } from "./theme.js";
+import { useIsMobile } from "./responsive.js";
 
 /**
  * Phase C Wave C3 / Story 1 — Agent-Review Panel.
@@ -96,6 +97,10 @@ export function AgentReviewPanel({
       setLoading(false);
     }
   }, [onCountChange]);
+
+  // Phase D Wave D1 — slide-over goes full-width on mobile so the action
+  // buttons inside each review row aren't squeezed into a 50%-screen pane.
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (open) void refresh();
@@ -181,10 +186,10 @@ export function AgentReviewPanel({
           top: 0,
           right: 0,
           bottom: 0,
-          width: 480,
-          maxWidth: "95vw",
+          width: isMobile ? "100vw" : 480,
+          maxWidth: "100vw",
           background: C.panel,
-          borderLeft: `1px solid ${C.border}`,
+          borderLeft: isMobile ? "none" : `1px solid ${C.border}`,
           transform: open ? "translateX(0)" : "translateX(100%)",
           transition: "transform 0.22s ease",
           zIndex: 41,

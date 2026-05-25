@@ -321,6 +321,14 @@ export {
   type SleepPassResult,
 } from "./sleep-agent/index.js";
 
+// ─── ULID-Backfill (Phase D Wave D1 / Story 1) ──────────────────────────
+// NREM-phase sleep pass that picks up to 50 legacy notes without a `id:`
+// frontmatter field per run, injects a ULID + inferred type + updated
+// timestamp, and saves via gitService. Exported so server routes + future
+// MCP tools can address it by name; the pass is also auto-registered in
+// `ALL_PASSES` so the normal sleep-agent schedule runs it on its own.
+export { ulidBackfillPass } from "./sleep-agent/passes/ulidBackfill.js";
+
 // ─── Mem0 Review Queue (Phase C Wave C1 / Story 1) ──────────────────────
 // REM-sleep classifier surfaces ADD/UPDATE/DELETE/NOOP candidates into
 // `mem0_review_queue`; the user accepts/rejects via `/api/mem0/review/*`.
