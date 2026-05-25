@@ -214,17 +214,24 @@ export class Tier2Provider implements MemoryProvider {
     const generation = await this.activeGeneration();
     // Over-fetch so dedupe-by-note still produces `limit` distinct hits.
     const overFetch = Math.max(limit * 4, 40);
+    // Phase C Wave C3 / Story 2 — Cognee `forget()` primitive: LEFT JOIN
+    // note_search and drop rows whose backing note is forgotten. LEFT JOIN
+    // (not INNER) so notes that have an embedding row but not yet a
+    // note_search row stay searchable during the early-indexing window.
     const rows = await database().execute<{
       note_id: string;
       chunk_type: string;
       chunk_idx: number;
       distance: number;
     }>(sql`
-      SELECT note_id, chunk_type, chunk_idx, embedding <=> ${v}::vector AS distance
-      FROM note_embeddings
-      WHERE vault_id = ${this.vaultId}
-        AND generation = ${generation}
-      ORDER BY embedding <=> ${v}::vector ASC
+      SELECT ne.note_id, ne.chunk_type, ne.chunk_idx,
+             ne.embedding <=> ${v}::vector AS distance
+      FROM note_embeddings ne
+      LEFT JOIN note_search ns ON ns.note_id = ne.note_id
+      WHERE ne.vault_id = ${this.vaultId}
+        AND ne.generation = ${generation}
+        AND (ns.forgotten IS NULL OR ns.forgotten = FALSE)
+      ORDER BY ne.embedding <=> ${v}::vector ASC
       LIMIT ${overFetch}
     `);
 
@@ -260,18 +267,23 @@ export class Tier2Provider implements MemoryProvider {
     const v = this.toPgVector(vec);
     const generation = await this.activeGeneration();
     const overFetch = Math.max(limit * 4, 40);
+    // Same forgotten-filter as `search` — apply at the dense layer so the
+    // chunk-typed advanced UI hides forgotten notes too.
     const rows = await database().execute<{
       note_id: string;
       chunk_type: string;
       chunk_idx: number;
       distance: number;
     }>(sql`
-      SELECT note_id, chunk_type, chunk_idx, embedding <=> ${v}::vector AS distance
-      FROM note_embeddings
-      WHERE vault_id = ${this.vaultId}
-        AND generation = ${generation}
-        AND chunk_type = ${chunkType}
-      ORDER BY embedding <=> ${v}::vector ASC
+      SELECT ne.note_id, ne.chunk_type, ne.chunk_idx,
+             ne.embedding <=> ${v}::vector AS distance
+      FROM note_embeddings ne
+      LEFT JOIN note_search ns ON ns.note_id = ne.note_id
+      WHERE ne.vault_id = ${this.vaultId}
+        AND ne.generation = ${generation}
+        AND ne.chunk_type = ${chunkType}
+        AND (ns.forgotten IS NULL OR ns.forgotten = FALSE)
+      ORDER BY ne.embedding <=> ${v}::vector ASC
       LIMIT ${overFetch}
     `);
 
@@ -290,6 +302,11 @@ export class Tier2Provider implements MemoryProvider {
    * Related notes — finds notes whose best-matching chunk is closest to
    * the target note's title chunk (falls back to body_full or the first
    * available chunk if no title row exists yet).
+   *
+   * Forgotten notes are skipped on the candidate side (the target note
+   * may itself be forgotten — the user is asking "related to this", so we
+   * still pull its embedding as the seed). Only `ne.note_id != target`
+   * results are filtered against `note_search.forgotten`.
    */
   async relatedNotes(noteId: string, opts: RelatedOpts = {}): Promise<SearchHit[]> {
     const limit = opts.limit ?? 5;
@@ -319,9 +336,11 @@ export class Tier2Provider implements MemoryProvider {
       SELECT ne.note_id, ne.chunk_type, ne.chunk_idx,
              ne.embedding <=> (SELECT embedding FROM target) AS distance
       FROM note_embeddings ne
+      LEFT JOIN note_search ns ON ns.note_id = ne.note_id
       WHERE ne.vault_id = ${this.vaultId}
         AND ne.generation = ${generation}
         AND ne.note_id != ${noteId}
+        AND (ns.forgotten IS NULL OR ns.forgotten = FALSE)
       ORDER BY ne.embedding <=> (SELECT embedding FROM target) ASC
       LIMIT ${overFetch}
     `);

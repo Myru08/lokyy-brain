@@ -35,6 +35,14 @@ export interface NoteHeaderProps {
   title: string;
   /** Full markdown including frontmatter — we extract `id:` from it. */
   body: string;
+  /**
+   * Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+   * Toggle the note's `forgotten:` frontmatter field. App.tsx owns the
+   * API call + reload-after-toggle so the editor sees the updated body.
+   * Optional — if omitted, the forget affordance is hidden.
+   */
+  onForget?: (noteId: string) => void;
+  onUnforget?: (noteId: string) => void;
 }
 
 /** Strip a top-level YAML scalar value. No nested mapping support needed. */
@@ -49,6 +57,33 @@ function extractFrontmatterUlid(body: string): string | null {
     return /^[0-9A-HJKMNP-TV-Z]{26}$/.test(raw) ? raw : null;
   }
   return null;
+}
+
+/**
+ * Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+ *
+ * Extract the `forgotten:` value from the YAML frontmatter. Returns:
+ *   - `true`           — `forgotten: true` (boolean) or a non-empty
+ *                        ISO-timestamp string the server wrote.
+ *   - `false`          — `forgotten: false`, empty string, or absent.
+ *
+ * The schema accepts both boolean and string variants; both resolve to
+ * the same boolean visible-state here. The PWA does not distinguish
+ * between "user-forgot-now" and "user-forgot-six-months-ago" — both look
+ * identical in the editor.
+ */
+function extractFrontmatterForgotten(body: string): boolean {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);
+  if (!m) return false;
+  const block = m[1] ?? "";
+  for (const line of block.split(/\r?\n/)) {
+    const km = /^forgotten\s*:\s*(.+?)\s*$/.exec(line);
+    if (!km) continue;
+    const raw = (km[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (raw === "" || raw === "false") return false;
+    return true;
+  }
+  return false;
 }
 
 /** Middle-truncate so first 8 + last 4 chars stay legible. */
@@ -118,6 +153,20 @@ const HEADER_STYLE: CSSProperties = {
   fontFamily: FONT.ui,
 };
 
+/**
+ * Phase C Wave C3 / Story 2 — forgotten-state override.
+ *
+ * When the note carries `forgotten: true` (or an ISO timestamp), we tint
+ * the header strip with a subtle red wash so the user always sees the
+ * state at a glance. The body editor is untouched — the user can still
+ * read + edit a forgotten note; only retrieval ignores it.
+ */
+const HEADER_STYLE_FORGOTTEN: CSSProperties = {
+  ...HEADER_STYLE,
+  background: "rgba(200, 74, 50, 0.05)",
+  borderBottom: "1px solid rgba(200, 74, 50, 0.25)",
+};
+
 const TITLE_STYLE: CSSProperties = {
   flex: 1,
   minWidth: 0,
@@ -167,8 +216,66 @@ const TOAST_STYLE: CSSProperties = {
   marginLeft: 4,
 };
 
-export function NoteHeader({ noteId, title, body }: NoteHeaderProps) {
+/**
+ * Phase C Wave C3 / Story 2 — Forget button. Same shape as the AI-Prompt
+ * pill but softer (lower opacity, neutral red); the affordance is meant
+ * to be present without competing with the primary AI-Prompt CTA.
+ */
+const FORGET_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "rgba(200, 74, 50, 0.08)",
+  border: "1px solid rgba(200, 74, 50, 0.30)",
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: "rgba(239, 68, 68, 0.75)",
+  fontSize: 12,
+  fontWeight: 500,
+  fontFamily: FONT.ui,
+  letterSpacing: "0.02em",
+  opacity: 0.7,
+};
+
+/**
+ * Phase C Wave C3 / Story 2 — Unforget button. Brighter / more confident
+ * than the forget button because reactivation is the recovery action and
+ * we want the user to see it immediately on a forgotten note.
+ */
+const UNFORGET_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "rgba(127, 163, 122, 0.15)",
+  border: "1px solid rgba(127, 163, 122, 0.5)",
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: C.ok,
+  fontSize: 12,
+  fontWeight: 600,
+  fontFamily: FONT.ui,
+  letterSpacing: "0.02em",
+};
+
+const FORGOTTEN_SUBTITLE_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: "rgba(239, 68, 68, 0.65)",
+  fontFamily: FONT.ui,
+  fontStyle: "italic",
+  marginLeft: 8,
+};
+
+export function NoteHeader({
+  noteId,
+  title,
+  body,
+  onForget,
+  onUnforget,
+}: NoteHeaderProps) {
   const ulid = useMemo(() => extractFrontmatterUlid(body), [body]);
+  const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
 
@@ -209,10 +316,21 @@ export function NoteHeader({ noteId, title, body }: NoteHeaderProps) {
   // render the title — they just don't get the copy affordances.
   if (!ulid) {
     return (
-      <div style={HEADER_STYLE}>
-        <span style={TITLE_STYLE} title={title}>
+      <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
+        <span
+          style={{
+            ...TITLE_STYLE,
+            opacity: forgotten ? 0.6 : 1,
+          }}
+          title={title}
+        >
           {title || noteId}
         </span>
+        {forgotten && (
+          <span style={FORGOTTEN_SUBTITLE_STYLE}>
+            Forgotten — not visible in search
+          </span>
+        )}
         <span
           style={{
             fontSize: 10,
@@ -228,10 +346,21 @@ export function NoteHeader({ noteId, title, body }: NoteHeaderProps) {
   }
 
   return (
-    <div style={HEADER_STYLE}>
-      <span style={TITLE_STYLE} title={title}>
+    <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
+      <span
+        style={{
+          ...TITLE_STYLE,
+          opacity: forgotten ? 0.6 : 1,
+        }}
+        title={title}
+      >
         {title || noteId}
       </span>
+      {forgotten && (
+        <span style={FORGOTTEN_SUBTITLE_STYLE}>
+          Forgotten — not visible in search
+        </span>
+      )}
       {toast && <span style={TOAST_STYLE}>{toast}</span>}
       <button
         type="button"
@@ -243,6 +372,32 @@ export function NoteHeader({ noteId, title, body }: NoteHeaderProps) {
         <span aria-hidden="true">📋</span>
         AI-Prompt
       </button>
+      {/* Phase C Wave C3 / Story 2 — Cognee forget()/unforget() toggle. */}
+      {forgotten
+        ? onUnforget && (
+            <button
+              type="button"
+              onClick={() => onUnforget(noteId)}
+              style={UNFORGET_BUTTON_STYLE}
+              title="Diese Note wieder in Suchen anzeigen"
+              aria-label="Unforget note — re-enable retrieval"
+            >
+              <span aria-hidden="true">⮌</span>
+              Unforget
+            </button>
+          )
+        : onForget && (
+            <button
+              type="button"
+              onClick={() => onForget(noteId)}
+              style={FORGET_BUTTON_STYLE}
+              title="Diese Note aus Suchen ausblenden (bleibt im Vault)"
+              aria-label="Forget note — hide from retrieval, keep in vault"
+            >
+              <span aria-hidden="true">🗑️</span>
+              Forget
+            </button>
+          )}
       <button
         type="button"
         onClick={() => void handleCopyId()}

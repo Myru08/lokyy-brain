@@ -40,8 +40,10 @@ import { encodingRoutes } from "./routes/encoding.js";
 import { edgesRoutes } from "./routes/edges.js";
 import { temporalEdgesRoutes } from "./routes/temporal-edges.js";
 import { lintRoutes } from "./routes/lint.js";
+import { agentReviewRoutes } from "./routes/agent-review.js";
 import { entitiesRoutes } from "./routes/entities.js";
 import { peersRoutes } from "./routes/peers.js";
+import { forgetRoutes } from "./routes/forget.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -194,6 +196,15 @@ app.use("/api/lint", setupGate);
 app.use("/api/lint/*", setupGate);
 app.route("/api/lint", lintRoutes);
 
+// Phase C Wave C3 / Story 1 — Aggregated user-acceptance dashboard.
+//   GET  /api/agent-review/queue                   pending mem0 + lint + topic-notes
+//   POST /api/agent-review/topic-note/:id/accept   move to user folder, mark curated
+//   POST /api/agent-review/topic-note/:id/reject   delete the auto-generated note
+// Backed by mem0_review_queue + lint_findings + 70_pai/topics/auto-* on disk.
+app.use("/api/agent-review", setupGate);
+app.use("/api/agent-review/*", setupGate);
+app.route("/api/agent-review", agentReviewRoutes);
+
 // Phase C Wave C2 / Story 2 — Entity-Extraction-Pipeline.
 //   GET /api/entities?type=person&limit=50&minMentions=2
 //   GET /api/entities/by-note/:noteId
@@ -218,6 +229,15 @@ app.route("/api/entities", entitiesRoutes);
 app.use("/api/peers", setupGate);
 app.use("/api/peers/*", setupGate);
 app.route("/api/peers", peersRoutes);
+
+// Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+//   POST /api/notes/:id/forget    → set frontmatter.forgotten = ISO-ts
+//   POST /api/notes/:id/unforget  → remove frontmatter.forgotten
+// MUST be registered BEFORE `app.route("/api/notes", notesRoutes)` so the
+// literal `/forget` and `/unforget` suffixes win over the catch-all
+// `/:id{.+}` PUT inside notesRoutes. Hono dispatches in registration
+// order. Already covered by the `/api/notes/*` setupGate above.
+app.route("/api", forgetRoutes);
 
 app.use("/api/search", setupGate);
 app.use("/api/dataview", setupGate);

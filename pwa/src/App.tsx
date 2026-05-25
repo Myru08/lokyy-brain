@@ -1,6 +1,7 @@
 import { lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
 import type { Note, TreeNode } from "@lokyy/shared";
-import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon } from "lucide-react";
+import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot } from "lucide-react";
+import { AgentReviewPanel } from "./AgentReviewPanel.js";
 import { Settings } from "./Settings.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { BacklinksPanel } from "./BacklinksPanel.js";
@@ -86,6 +87,13 @@ export function App() {
   const [quickSwitcherOpen, setQuickSwitcherOpen] = useState(false);
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [defaultImportFolder, setDefaultImportFolder] = useState<string>("");
+  // Phase C Wave C3 / Story 1 — Agent-Review aggregated queue.
+  // `pendingCount` mirrors the server's `totalPending` so the toolbar badge
+  // updates without keeping the panel mounted. We refresh on mount + every
+  // 5 minutes (idle poll) and AgentReviewPanel pushes the latest count back
+  // via `onCountChange` after every accept/reject/dismiss action.
+  const [agentReviewOpen, setAgentReviewOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState<number>(0);
   const sessionUser = useContext(SessionUserContext);
   // SessionUserContext is non-null at App-render time (AuthGate gates this
   // tree) but the type allows null — fall back gracefully without crashing.
@@ -126,6 +134,25 @@ export function App() {
       .getImportDefaults()
       .then((d) => setDefaultImportFolder(d.defaultImportFolder))
       .catch(() => {});
+  }, []);
+
+  // Phase C Wave C3 / Story 1 — Pending-count poll for the agent-review
+  // badge. Fire-and-forget; never surface errors (the badge is informational
+  // and a failed poll just means the count is briefly stale).
+  useEffect(() => {
+    let alive = true;
+    const tick = () => {
+      api
+        .getAgentReviewQueue(30)
+        .then((q) => alive && setPendingCount(q.totalPending))
+        .catch(() => {});
+    };
+    tick();
+    const iv = window.setInterval(tick, 5 * 60 * 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(iv);
+    };
   }, []);
 
   // Global Cmd/Ctrl+K opens Command Palette
@@ -310,6 +337,48 @@ export function App() {
   }
 
   /**
+   * Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+   *
+   * Both handlers flush any pending edit first (the server writes new
+   * frontmatter, so a debounced edit in flight would race), then call
+   * the API and reload the active note so the editor and PropertiesPanel
+   * pick up the toggled frontmatter. The reload is needed even though
+   * the API returns the saved note — passing it directly via setActive
+   * would skip the body-diff path the editor relies on.
+   */
+  async function handleForget(targetNoteId: string) {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      await flush();
+    }
+    try {
+      const updated = await api.forgetNote(targetNoteId);
+      dirtyBody.current = updated.body;
+      setActive(updated);
+      setBacklinksRefresh((n) => n + 1);
+    } catch (err) {
+      console.error("forgetNote failed", err);
+    }
+  }
+
+  async function handleUnforget(targetNoteId: string) {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+      await flush();
+    }
+    try {
+      const updated = await api.unforgetNote(targetNoteId);
+      dirtyBody.current = updated.body;
+      setActive(updated);
+      setBacklinksRefresh((n) => n + 1);
+    } catch (err) {
+      console.error("unforgetNote failed", err);
+    }
+  }
+
+  /**
    * Wikilink mit Cmd/Ctrl+Klick → ins Sekundär-Pane. Auflösung mirrort
    * `onOpenLink`, aber landet bei `setSecondaryNoteId` statt `open`.
    * Falls bereits eine Secondary-Pane offen ist und die selbst einen
@@ -482,6 +551,45 @@ export function App() {
           Vorlagen
         </button>
         <button
+          onClick={() => setAgentReviewOpen(true)}
+          title="Agent-Review"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: C.elevated,
+            border: `1px solid ${C.border}`,
+            borderRadius: 7,
+            padding: "5px 10px",
+            cursor: "pointer",
+            color: C.text,
+            fontSize: 13,
+            fontFamily: FONT.ui,
+            position: "relative",
+          }}
+        >
+          <Bot size={18} style={{ color: C.accent }} />
+          Review
+          {pendingCount > 0 && (
+            <span
+              style={{
+                background: C.accent,
+                color: "#1a1110",
+                borderRadius: 10,
+                padding: "0 6px",
+                fontSize: 10.5,
+                fontWeight: 700,
+                fontFamily: FONT.mono,
+                minWidth: 16,
+                textAlign: "center",
+                lineHeight: 1.6,
+              }}
+            >
+              {pendingCount > 99 ? "99+" : pendingCount}
+            </span>
+          )}
+        </button>
+        <button
           onClick={() => setImportOpen(true)}
           style={{
             display: "flex",
@@ -628,6 +736,8 @@ export function App() {
                   noteId={active.id}
                   title={active.title || active.id}
                   body={active.body}
+                  onForget={(id) => void handleForget(id)}
+                  onUnforget={(id) => void handleUnforget(id)}
                 />
                 <PropertiesPanel
                   body={active.body}
@@ -756,6 +866,17 @@ export function App() {
         onImported={(id) => {
           void refreshTree().then(() => open(id));
         }}
+      />
+
+      {/* Agent-Review Panel (🤖 Review Toolbar-Button, Phase C Wave C3) */}
+      <AgentReviewPanel
+        open={agentReviewOpen}
+        onClose={() => setAgentReviewOpen(false)}
+        onOpenNote={(id) => {
+          setAgentReviewOpen(false);
+          void openNoteById(id);
+        }}
+        onCountChange={setPendingCount}
       />
     </div>
   );

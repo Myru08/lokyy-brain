@@ -11,6 +11,7 @@ import {
 } from "../graph/graphService.js";
 import {
   generateUlid,
+  isForgotten,
   parseFrontmatter,
   serializeFrontmatter,
   validateFrontmatter,
@@ -192,12 +193,18 @@ export async function saveNote(id: string, body: string): Promise<Note> {
   // 6. Fire-and-forget BM25 index refresh (Phase A Wave A1 / Story 2).
   //    Mirrors the existing Tier-2 embedding hook — never blocks the save
   //    path, errors are logged only.
+  //
+  //    Phase C Wave C3 / Story 2 — Cognee `forget()` primitive: the merged
+  //    frontmatter's `forgotten` field is mirrored into the search corpus
+  //    so the next query naturally hides this note. The frontmatter is
+  //    still the source of truth; the DB column is the index.
   queueSearchIndexRefresh(
     DEFAULT_VAULT_ID,
     saved.id,
     saved.title,
     saved.body,
     saved.tags,
+    isForgotten(merged),
   );
   // 7. Phase C Wave C2 / Story 1 — bi-temporal-edge sync. Fire-and-forget;
   //    git commit already succeeded, this is derived index maintenance.
@@ -346,12 +353,18 @@ export async function createNote(
   // note's ULID immediately resolves via findByUlid.
   invalidateUlidCache();
   // Phase A Wave A1 / Story 2 — keep the BM25 corpus in sync.
+  //
+  // Phase C Wave C3 / Story 2 — pass the just-written `forgotten` flag from
+  // the frontmatter (newly created notes are almost always not forgotten,
+  // but `opts.extra` could in principle carry the field e.g. for a pipe
+  // that imports archived material).
   queueSearchIndexRefresh(
     DEFAULT_VAULT_ID,
     created.id,
     created.title,
     created.body,
     created.tags,
+    isForgotten(frontmatter),
   );
   // Phase C Wave C2 / Story 1 — bi-temporal-edge sync (fire-and-forget).
   queueTemporalEdgeSync(created.id, created.links, new Date(created.updatedAt));
@@ -394,12 +407,21 @@ export async function moveEntry(
     const newAbs = join(c.vaultDir, ...to.split("/")) + ".md";
     try {
       const moved = await readNoteFile(newAbs);
+      // Phase C Wave C3 / Story 2 — carry the `forgotten` flag across the
+      // rename. Parse the moved file's frontmatter on the fly.
+      let movedForgotten = false;
+      try {
+        movedForgotten = isForgotten(parseFrontmatter(moved.body).data);
+      } catch {
+        movedForgotten = false;
+      }
       queueSearchIndexRefresh(
         DEFAULT_VAULT_ID,
         moved.id,
         moved.title,
         moved.body,
         moved.tags,
+        movedForgotten,
       );
     } catch {
       // Note disappeared between move and read — ignore.

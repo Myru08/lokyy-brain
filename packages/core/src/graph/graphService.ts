@@ -3,6 +3,8 @@ import { join, relative, sep } from "node:path";
 import type { GraphData, GraphEdge, GraphNode } from "@lokyy/shared";
 import { coreConfig } from "../util/coreConfig.js";
 import { pull } from "../git/gitService.js";
+import { parseFrontmatter } from "../frontmatter/index.js";
+import { isForgotten } from "../frontmatter/types.js";
 
 /** Re-exports — used by backlinks() below to traverse the vault. */
 
@@ -94,6 +96,13 @@ async function walk(dir: string, acc: string[] = []): Promise<string[]> {
  * Kompletten Graphen bauen. Wikilinks zeigen meist auf Titel — wir lösen
  * sowohl gegen Titel als auch gegen die id auf, damit beide Schreibweisen
  * funktionieren.
+ *
+ * Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive: notes whose
+ * frontmatter has `forgotten: true` (or an ISO-timestamp string) are
+ * skipped entirely. They produce neither a node nor an outgoing edge, and
+ * incoming edges from non-forgotten notes pointing at them are dropped
+ * via the `byId` membership check below. PPR/spreading-activation
+ * therefore behaves as if forgotten notes never existed.
  */
 export async function buildGraph(): Promise<GraphData> {
   await pull();
@@ -120,6 +129,18 @@ export async function buildGraph(): Promise<GraphData> {
     const id = relPath.replace(/\.md$/, "");
     const folder = id.includes("/") ? id.slice(0, id.lastIndexOf("/")) : "";
     const body = await readFile(abs, "utf8");
+
+    // Cognee `forget()` — skip forgotten notes before they touch any lookup
+    // map. Errors during frontmatter parse fall through as "not forgotten"
+    // so a malformed file never silently disappears from the graph.
+    let forgotten = false;
+    try {
+      forgotten = isForgotten(parseFrontmatter(body).data);
+    } catch {
+      forgotten = false;
+    }
+    if (forgotten) continue;
+
     const title = parseTitle(body, relPath);
     nodes.push({ id, title, tags: parseTags(body) });
     byTitle.set(title.toLowerCase(), id);

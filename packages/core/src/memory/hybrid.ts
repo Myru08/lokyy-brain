@@ -76,7 +76,12 @@ export async function hybridSearch(
   // Dense leg always runs (pgvector is mandatory in the image). BM25 leg
   // is conditionally included via UNION ALL — when disabled, we use a
   // single CTE that emits zero rows for it.
-  const denseVaultClause = vaultId ? sql`AND vault_id = ${vaultId}` : sql``;
+  //
+  // Dense vault clause is qualified to `ne.` because the leg now joins
+  // `note_embeddings` (ne) with `note_search` (ns) for the forgotten-
+  // filter — vault_id lives on both tables so the unqualified column
+  // would be ambiguous.
+  const denseVaultClause = vaultId ? sql`AND ne.vault_id = ${vaultId}` : sql``;
   const bm25VaultClause = vaultId ? sql`AND vault_id = ${vaultId}` : sql``;
 
   // Active-embeddings generation — read inline. Falls back to 'default' if
@@ -86,6 +91,11 @@ export async function hybridSearch(
     'default'
   )`;
 
+  // Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+  // Both legs must skip notes whose user marked them as forgotten.
+  //   - BM25 leg: column lives on `note_search`, simple WHERE filter.
+  //   - Dense leg: column lives on `note_search` (single source of truth).
+  //     Inner-join to filter, then dedupe via the standard ORDER BY.
   const bm25Cte = bm25Enabled
     ? sql`
       bm25 AS (
@@ -94,6 +104,7 @@ export async function hybridSearch(
                ROW_NUMBER() OVER (ORDER BY paradedb.score(note_id) DESC) AS r
         FROM note_search
         WHERE note_id @@@ ${query}
+          AND forgotten = FALSE
           ${bm25VaultClause}
         ORDER BY paradedb.score(note_id) DESC
         LIMIT ${perLeg}
@@ -106,17 +117,23 @@ export async function hybridSearch(
       )
     `;
 
+  // Dense leg — JOIN to note_search filters embeddings whose backing note
+  // is forgotten. LEFT JOIN with IS NOT TRUE keeps the leg working for
+  // notes that have an embedding row but not yet a note_search row
+  // (e.g. early in the indexing lifecycle on a fresh vault).
   const fullSql = sql`
     WITH
     ${bm25Cte},
     dense AS (
-      SELECT note_id AS id,
-             1 - (embedding <=> ${v}::vector) AS s,
-             ROW_NUMBER() OVER (ORDER BY embedding <=> ${v}::vector ASC) AS r
-      FROM note_embeddings
-      WHERE generation = ${generationExpr}
+      SELECT ne.note_id AS id,
+             1 - (ne.embedding <=> ${v}::vector) AS s,
+             ROW_NUMBER() OVER (ORDER BY ne.embedding <=> ${v}::vector ASC) AS r
+      FROM note_embeddings ne
+      LEFT JOIN note_search ns ON ns.note_id = ne.note_id
+      WHERE ne.generation = ${generationExpr}
+        AND (ns.forgotten IS NULL OR ns.forgotten = FALSE)
         ${denseVaultClause}
-      ORDER BY embedding <=> ${v}::vector ASC
+      ORDER BY ne.embedding <=> ${v}::vector ASC
       LIMIT ${perLeg}
     )
     SELECT

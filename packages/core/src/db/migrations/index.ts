@@ -18,6 +18,7 @@ import { migration0010LintFindings } from "./0010_lint_findings.js";
 import { migration0011BiTemporalEdges } from "./0011_bi_temporal_edges.js";
 import { migration0012Entities } from "./0012_entities.js";
 import { migration0013PeerProfiles } from "./0013_peer_profiles.js";
+import { migration0014NoteSearchForgotten } from "./0014_note_search_forgotten.js";
 
 export interface Migration {
   name: string;
@@ -39,4 +40,5 @@ export const MIGRATIONS: Migration[] = [
   { name: "0011_bi_temporal_edges", sql: migration0011BiTemporalEdges },
   { name: "0012_entities", sql: migration0012Entities },
   { name: "0013_peer_profiles", sql: migration0013PeerProfiles },
+  { name: "0014_note_search_forgotten", sql: migration0014NoteSearchForgotten },
 ];

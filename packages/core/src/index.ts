@@ -150,6 +150,8 @@ export {
   DOC_TYPES,
   PEER_TYPES,
   isPeerType,
+  // Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+  isForgotten,
   type DocType,
   type FrontmatterMap,
   type NotePrivacy,
@@ -231,6 +233,8 @@ export {
   getTier1BM25,
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
+  // Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+  queueForgottenToggle,
 } from "./memory/index.js";
 
 // ─── Model-Agnostic LLM Layer (Phase 0) ─────────────────────────────────

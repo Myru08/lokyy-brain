@@ -193,6 +193,45 @@ export interface BaseFrontmatter {
   privacy?: NotePrivacy;
   /** Optional encoding-context block — see `EncodedContext`. */
   encoded?: EncodedContext;
+  /**
+   * Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+   *
+   * When `true` (or an ISO-timestamp string marking when the user invoked
+   * forget), the note is excluded from active retrieval across every
+   * search layer (Tier1-BM25, Tier2-embeddings, hybrid-RRF, PPR). The
+   * note itself stays in the vault for audit + recovery; an explicit
+   * unforget() drops the field.
+   *
+   * Absent = not forgotten. Backwards-compatible with legacy notes.
+   */
+  forgotten?: boolean | string;
+}
+
+/**
+ * Phase C Wave C3 / Story 2 — Cognee `forget()` primitive.
+ *
+ * Returns true when the supplied frontmatter has an active "forgotten"
+ * marker. Accepts both shapes the schema allows:
+ *
+ *   - `forgotten: true`           — legacy / fast-path boolean
+ *   - `forgotten: "2026-05-25T…"` — ISO-timestamp; truthy non-empty string
+ *
+ * Falsy values (`false`, empty string, missing field) → not forgotten.
+ *
+ * Input is intentionally typed as `{ forgotten?: unknown }` so the
+ * function accepts both the strict `BaseFrontmatter`/`PeerFrontmatter`
+ * (where `forgotten` is `boolean | string | undefined`) and the loose
+ * `FrontmatterMap` index signature (where it's `unknown`) without an
+ * explicit cast at every call-site.
+ */
+export function isForgotten(
+  data: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!data) return false;
+  const v = data.forgotten;
+  if (v === true) return true;
+  if (typeof v === "string" && v.trim().length > 0) return true;
+  return false;
 }
 
 /** Ajv-style validation result wrapper. */

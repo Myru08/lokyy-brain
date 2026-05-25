@@ -68,6 +68,10 @@ export function getTier1BM25(): Tier1BM25 {
  * Fire-and-forget upsert into the `note_search` BM25 corpus (Phase A Wave A1
  * / Story 2). Call after every successful saveNote with the freshly read
  * note (title + body + parsed tags). Never blocks the save path.
+ *
+ * `forgotten` (Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive)
+ * defaults to `false` so existing call-sites stay compatible. notesService
+ * passes the live value derived from the frontmatter's `forgotten:` field.
  */
 export function queueSearchIndexRefresh(
   vaultId: string,
@@ -75,14 +79,37 @@ export function queueSearchIndexRefresh(
   title: string,
   body: string,
   tags: string[],
+  forgotten = false,
 ): void {
   void Promise.resolve().then(async () => {
     try {
-      await tier1Bm25Singleton.upsert(noteId, vaultId, title, body, tags);
+      await tier1Bm25Singleton.upsert(noteId, vaultId, title, body, tags, forgotten);
     } catch (err) {
       console.error("[memory] note_search upsert failed (non-blocking)", {
         vaultId,
         noteId,
+        err,
+      });
+    }
+  });
+}
+
+/**
+ * Phase C Wave C3 / Story 2 — Fire-and-forget toggle of the `forgotten`
+ * flag on the existing `note_search` row. Used by the forget/unforget
+ * route after the note's frontmatter has been updated on disk. Returns
+ * immediately. If the row is missing (e.g. BM25 first-index has not yet
+ * run after a fresh import) the update is a no-op and the next normal
+ * BM25 upsert will reconcile the column from the frontmatter.
+ */
+export function queueForgottenToggle(noteId: string, forgotten: boolean): void {
+  void Promise.resolve().then(async () => {
+    try {
+      await tier1Bm25Singleton.setForgotten(noteId, forgotten);
+    } catch (err) {
+      console.error("[memory] note_search forgotten toggle failed (non-blocking)", {
+        noteId,
+        forgotten,
         err,
       });
     }

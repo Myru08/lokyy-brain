@@ -118,6 +118,75 @@ export interface DataviewQuery {
 
 export type DataviewRow = Record<string, string | number | boolean | null>;
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Agent-Review aggregated queue (Phase C Wave C3 / Story 1).
+ *
+ * Three pending-review streams the server stitches into one response:
+ *   - mem0           Mem0 classifier suggestions awaiting accept/reject
+ *   - lint           Karpathy-lint findings still in `status=open`
+ *   - topicNotes     Topic-synthesis notes from `70_pai/topics/auto-*`
+ *                    with frontmatter `origin: agent`
+ *
+ * Keep shapes in lockstep with `server/src/routes/agent-review.ts`.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export type Mem0Operation = "ADD" | "UPDATE" | "DELETE" | "NOOP";
+export type Mem0ReviewStatus = "pending" | "accepted" | "rejected" | "applied";
+
+export interface Mem0ReviewItem {
+  id: string;
+  noteId: string;
+  operation: Mem0Operation;
+  targetNoteId: string | null;
+  confidence: number;
+  reasoning: string;
+  payload: Record<string, unknown> | null;
+  status: Mem0ReviewStatus;
+  createdAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+}
+
+export type LintKind =
+  | "orphan"
+  | "contradiction"
+  | "missing_link"
+  | "schema_drift"
+  | "duplicate";
+
+export type LintSeverity = "info" | "warning" | "error";
+
+export type LintStatus = "open" | "acknowledged" | "fixed" | "dismissed";
+
+export interface LintFindingItem {
+  id: string;
+  kind: LintKind;
+  noteIds: string[];
+  severity: LintSeverity;
+  message: string;
+  evidence: Record<string, unknown> | null;
+  status: LintStatus;
+  detectedAt: string;
+  resolvedAt: string | null;
+}
+
+export interface TopicNoteItem {
+  id: string;
+  title: string;
+  confidence: number | null;
+  sourceNotes: string[];
+  bodyPreview: string;
+  generatedAt: string | null;
+  communityId: string | null;
+}
+
+export interface AgentReviewQueue {
+  mem0: Mem0ReviewItem[];
+  lint: LintFindingItem[];
+  topicNotes: TopicNoteItem[];
+  totalPending: number;
+}
+
 /**
  * API-Client. Dünne fetch-Wrapper. Der Server pullt vor jedem Lesen selbst —
  * der Client muss sich um Git nicht kümmern.
@@ -291,6 +360,35 @@ export const api = {
       }
       throw err;
     }
+  },
+
+  /**
+   * Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
+   *
+   * `forgetNote` sets `frontmatter.forgotten` to an ISO-timestamp; the
+   * server's search-layer filters (Tier1-BM25, Tier2-embeddings, hybrid,
+   * PPR) then skip the note. `unforgetNote` removes the field. The note
+   * itself stays in the vault — neither call deletes anything from disk.
+   *
+   * Both calls are idempotent: re-forgetting refreshes the timestamp,
+   * unforgetting an already-active note is a no-op.
+   */
+  forgetNote: async (noteId: string): Promise<Note> => {
+    const res = await fetch(`${BASE}/notes/${noteId}/forget`, {
+      method: "POST",
+      credentials: "include",
+    });
+    const data = await json<{ ok: true; noteId: string; note: Note }>(res);
+    return data.note;
+  },
+
+  unforgetNote: async (noteId: string): Promise<Note> => {
+    const res = await fetch(`${BASE}/notes/${noteId}/unforget`, {
+      method: "POST",
+      credentials: "include",
+    });
+    const data = await json<{ ok: true; noteId: string; note: Note }>(res);
+    return data.note;
   },
 
   graph: () => fetch(`${BASE}/graph`).then(json<GraphData>),
@@ -545,5 +643,105 @@ export const api = {
     es.addEventListener("done", () => close());
     es.addEventListener("error", () => close());
     return close;
+  },
+
+  /* ──── Agent-Review (Phase C Wave C3 / Story 1) ──── */
+
+  /**
+   * Aggregated pending-review queue. Limit is a per-stream cap, NOT a global
+   * one — the server returns up to `limit` rows from each of mem0, lint and
+   * topic-notes (so the total can be up to `limit * 3`).
+   */
+  getAgentReviewQueue: (limit = 30): Promise<AgentReviewQueue> =>
+    fetch(`${BASE}/agent-review/queue?limit=${limit}`, {
+      credentials: "include",
+    }).then(json<AgentReviewQueue>),
+
+  /** Apply a pending Mem0 classifier decision (ADD/UPDATE/DELETE/NOOP). */
+  acceptMem0Review: async (id: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/mem0/review/${encodeURIComponent(id)}/accept`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "accept failed");
+    }
+  },
+
+  /** Reject a pending Mem0 classifier decision. */
+  rejectMem0Review: async (id: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/mem0/review/${encodeURIComponent(id)}/reject`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "reject failed");
+    }
+  },
+
+  /**
+   * Promote an auto-generated topic note to a user-curated one. Updates the
+   * frontmatter (origin → curated, confidence → 1.0) and moves the file out
+   * of `70_pai/topics/auto-*` into the user-visible topics folder.
+   */
+  acceptTopicNote: async (noteId: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/agent-review/topic-note/${noteId}/accept`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "accept failed");
+    }
+  },
+
+  /** Delete an auto-generated topic note. */
+  rejectTopicNote: async (noteId: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/agent-review/topic-note/${noteId}/reject`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "reject failed");
+    }
+  },
+
+  /** Move a lint finding from `open` → `acknowledged`. */
+  acknowledgeLintFinding: async (id: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/lint/findings/${encodeURIComponent(id)}/acknowledge`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "acknowledge failed");
+    }
+  },
+
+  /** Move a lint finding from `open` → `dismissed`. */
+  dismissLintFinding: async (id: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/lint/findings/${encodeURIComponent(id)}/dismiss`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "dismiss failed");
+    }
+  },
+
+  /** Move a lint finding from `open` → `fixed`. */
+  markLintFindingFixed: async (id: string): Promise<void> => {
+    const res = await fetch(
+      `${BASE}/lint/findings/${encodeURIComponent(id)}/mark-fixed`,
+      { method: "POST", credentials: "include" },
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new ApiError(res.status, err.error ?? "mark-fixed failed");
+    }
   },
 };

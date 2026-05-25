@@ -35,6 +35,10 @@
       "default": "default",
       "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
     },
+    "forgotten": {
+      "type": ["boolean", "string"],
+      "description": "Cognee-style forget() primitive (Phase C Wave C3 / Story 2). If true (or an ISO-timestamp string marking when the user invoked forget()), this note is excluded from active retrieval (Tier1-BM25, Tier2-embeddings, hybrid-RRF, PPR-spreading-activation). The note remains on disk for audit / recovery; an explicit unforget() removes the field. Absent = not forgotten (backwards-compat with legacy notes)."
+    },
     "encoded": {
       "type": "object",
       "additionalProperties": true,

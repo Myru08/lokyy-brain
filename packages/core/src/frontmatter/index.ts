@@ -129,7 +129,7 @@ function toDetails(errs: ErrorObject[] | null | undefined): ValidationErrorDetai
   }));
 }
 
-export { DOC_TYPES, PEER_TYPES, isPeerType } from "./types.js";
+export { DOC_TYPES, PEER_TYPES, isPeerType, isForgotten } from "./types.js";
 export type {
   DocType,
   FrontmatterMap,
