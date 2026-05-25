@@ -8,9 +8,11 @@ import {
   initCore,
   initDb,
   ensureRepo,
+  findByUlid,
   getNote,
   getTree,
   createNote,
+  isUlid,
   saveNote,
   getMemoryProvider,
   type CoreConfig,
@@ -96,6 +98,22 @@ export async function buildServer(
         },
       },
       {
+        name: "resolve_by_id",
+        description:
+          "Resolve a Lokyy-Brain note by its stable 26-character ULID (the value of `id:` in the note's frontmatter). Use this when the user pastes an 'AI prompt' block copied from the editor — the block carries the ULID, which survives renames/moves whereas the path does not. Returns the full markdown (with frontmatter), the current path, the title, and the parsed frontmatter map. If the ULID is malformed or no note matches, returns an `error` field.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            id: {
+              type: "string",
+              description:
+                "ULID — 26 chars, Crockford base32 (no I/L/O/U). Example: '01KSFC0T2J8XG91RV6Z6D825X9'.",
+            },
+          },
+          required: ["id"],
+        },
+      },
+      {
         name: "search_vault",
         description:
           "Search Lokyy-Brain (Tier 1 full-text + Tier 2 semantic embeddings, merged). CALL FIRST whenever the user asks 'what do we know about X', 'have we covered Y', 'where did we discuss Z', or before stating anything about the user's projects/workflows/history. Multi-token queries are scored per-word with title-bonus — use 1–4 keyword tokens for best results. Returns scored hits with snippets and noteIds.",
@@ -171,6 +189,20 @@ export async function buildServer(
           const note = await getNote(path);
           if (!note) return text({ error: "not-found", path });
           return text(note);
+        }
+        case "resolve_by_id": {
+          const id = String(args.id ?? "");
+          if (!isUlid(id)) {
+            return text({ error: "invalid-ulid-format", id });
+          }
+          const resolved = await findByUlid(id);
+          if (!resolved) return text({ error: "not-found", id });
+          // Apply the same scope-read gate path-based read_note uses, so a
+          // shared ULID cannot bypass an agent's read-scope restrictions.
+          if (!canRead(`${resolved.path}.md`)) {
+            throw new ScopeViolation("read", resolved.path);
+          }
+          return text(resolved);
         }
         case "search_vault": {
           const query = String(args.query ?? "");

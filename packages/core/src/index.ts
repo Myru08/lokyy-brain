@@ -119,6 +119,19 @@ export {
   deleteEntry,
 } from "./notes/notesService.js";
 
+// ─── findByUlid (ID-Badge / AI-Prompt feature) ──────────────────────────
+// Resolve a note by its stable frontmatter ULID. Used by:
+//   - server route GET /api/notes/by-id/:ulid
+//   - MCP tool resolve_by_id
+//   - any AI client receiving an "AI prompt copy" from the editor
+// Cache is in-process (60s TTL); notesService writes invalidate it.
+export {
+  findByUlid,
+  invalidateUlidCache,
+  isUlid,
+  type ResolvedNote,
+} from "./notes/findByUlid.js";
+
 // ─── pipeQueue (Story 1.4) ──────────────────────────────────────────────
 export {
   registerHandler,

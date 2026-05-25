@@ -19,6 +19,7 @@ import { FileTree } from "./FileTree.js";
 import { ImportPanel } from "./ImportPanel.js";
 import { TagPane } from "./TagPane.js";
 import { PropertiesPanel } from "./PropertiesPanel.js";
+import { NoteHeader } from "./NoteHeader.js";
 import { QuickSwitcher } from "./QuickSwitcher.js";
 import { DailyNoteButton } from "./DailyNoteButton.js";
 import { TemplatePicker } from "./TemplatePicker.js";
@@ -623,6 +624,11 @@ export function App() {
           {active ? (
             <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
               <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+                <NoteHeader
+                  noteId={active.id}
+                  title={active.title || active.id}
+                  body={active.body}
+                />
                 <PropertiesPanel
                   body={active.body}
                   onUpdateBody={handleUpdateBody}

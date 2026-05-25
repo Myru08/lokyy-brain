@@ -24,6 +24,7 @@ import {
   queueSearchIndexRemove,
 } from "../memory/index.js";
 import { syncWikilinksToTemporalEdges } from "../graph/temporalEdges.js";
+import { invalidateUlidCache } from "./findByUlid.js";
 
 /**
  * Default vault id used by the BM25 search-index hooks. The Story-2 hybrid
@@ -183,6 +184,10 @@ export async function saveNote(id: string, body: string): Promise<Note> {
   const content = serializeFrontmatter(merged, bodyText);
   await save(relPath, content, `notiz: ${id}`);
   const saved = await readNoteFile(abs);
+  // ID-Badge / AI-Prompt feature — drop the ULID cache so a freshly
+  // saved note's path (or a renamed id field, defensive) is resolvable
+  // immediately on the next findByUlid call.
+  invalidateUlidCache();
 
   // 6. Fire-and-forget BM25 index refresh (Phase A Wave A1 / Story 2).
   //    Mirrors the existing Tier-2 embedding hook — never blocks the save
@@ -337,6 +342,9 @@ export async function createNote(
   const content = serializeFrontmatter(frontmatter, noteBody);
   await save(id + ".md", content, `notiz angelegt: ${id}`);
   const created = await readNoteFile(abs);
+  // ID-Badge / AI-Prompt feature — drop the ULID cache so the new
+  // note's ULID immediately resolves via findByUlid.
+  invalidateUlidCache();
   // Phase A Wave A1 / Story 2 — keep the BM25 corpus in sync.
   queueSearchIndexRefresh(
     DEFAULT_VAULT_ID,
@@ -372,6 +380,10 @@ export async function moveEntry(
   const fromRel = kind === "note" ? `${from}.md` : from;
   const toRel = kind === "note" ? `${to}.md` : to;
   await move(fromRel, toRel, `${kind} verschoben: ${from} -> ${to}`);
+  // ID-Badge / AI-Prompt feature — drop the ULID cache so the moved
+  // note's new path is what findByUlid returns. The ULID itself is
+  // stable across moves; only the cached `path` field becomes stale.
+  invalidateUlidCache();
 
   // Phase A Wave A1 / Story 2 — keep BM25 corpus in sync on rename/move.
   // The note id == path-without-".md", so a move changes the id. Remove the
@@ -406,4 +418,7 @@ export async function deleteEntry(
     // Phase A Wave A1 / Story 2 — drop the BM25 row.
     queueSearchIndexRemove(path);
   }
+  // ID-Badge / AI-Prompt feature — drop the ULID cache so a deleted
+  // note stops resolving via findByUlid.
+  invalidateUlidCache();
 }
