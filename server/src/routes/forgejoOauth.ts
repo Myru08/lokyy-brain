@@ -174,7 +174,7 @@ forgejoOauthRoutes.get("/callback", async (c) => {
     ).toString(),
     {
       headers: {
-        Authorization: `token ${tokenJson.access_token}`,
+        Authorization: `Bearer ${tokenJson.access_token}`,
         Accept: "application/json",
       },
     },
@@ -253,7 +253,7 @@ forgejoApiRoutes.get("/repos", async (c) => {
 
   const res = await forgejoFetch(reposUrl.toString(), {
     headers: {
-      Authorization: `token ${token.accessToken}`,
+      Authorization: `Bearer ${token.accessToken}`,
       Accept: "application/json",
     },
   });
@@ -297,7 +297,7 @@ forgejoApiRoutes.post("/repos", async (c) => {
   const res = await forgejoFetch(createUrl.toString(), {
     method: "POST",
     headers: {
-      Authorization: `token ${token.accessToken}`,
+      Authorization: `Bearer ${token.accessToken}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
