@@ -231,6 +231,34 @@ forgejoApiRoutes.get("/connection", async (c) => {
 });
 
 /**
+ * DELETE /api/forgejo/connection
+ *
+ * Forgets the stored Forgejo OAuth token(s) for the current user. Used by
+ * the UI when the operator wants to re-authenticate (expired JWT, scope
+ * change, account switch). Deletes all `forgejo_oauth_tokens` rows for the
+ * user, then sweeps any leftover `forgejo_oauth_state` rows for the same
+ * user. Tokens first, state second — order matters if anything depends on
+ * cascade behavior, which we don't rely on.
+ */
+forgejoApiRoutes.delete("/connection", async (c) => {
+  const user = await requireUser(c);
+  if (!user) return c.json({ ok: false, error: "unauthenticated" }, 401);
+
+  try {
+    await database()
+      .delete(forgejoOauthTokens)
+      .where(eq(forgejoOauthTokens.userId, user.id));
+    await database()
+      .delete(forgejoOauthState)
+      .where(eq(forgejoOauthState.userId, user.id));
+    return c.json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ ok: false, error: message }, 500);
+  }
+});
+
+/**
  * GET /api/forgejo/repos
  *
  * Lists the authenticated user's repos on the Forgejo instance, sorted by

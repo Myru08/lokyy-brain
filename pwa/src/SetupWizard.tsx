@@ -137,6 +137,8 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
   const [newRepoBusy, setNewRepoBusy] = useState(false);
   const [newRepoErr, setNewRepoErr] = useState<string | undefined>(undefined);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [disconnectBusy, setDisconnectBusy] = useState(false);
+  const [disconnectErr, setDisconnectErr] = useState<string | undefined>(undefined);
 
   const stepIdx = STEP_ORDER.indexOf(s.step);
 
@@ -232,6 +234,42 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         gitBranch: repo.default_branch || "main",
       },
     }));
+  }
+
+  async function disconnectForgejo() {
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(
+        "Forgejo-Verbindung wirklich trennen? Du musst dich danach neu authentifizieren.",
+      );
+      if (!ok) return;
+    }
+    setDisconnectBusy(true);
+    setDisconnectErr(undefined);
+    try {
+      const res = await fetch("/api/forgejo/connection", { method: "DELETE" });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `HTTP ${res.status}`);
+      }
+      // Reset all forgejo-related state to its initial shape.
+      setForgejoPhase("not-connected");
+      setForgejoConn({ connected: false });
+      setForgejoRepos([]);
+      setForgejoSelected(null);
+      setS((p) => ({
+        ...p,
+        forgejo: {
+          ...p.forgejo,
+          gitRemote: { value: "", testStatus: "idle" },
+        },
+      }));
+      // Refetch to let the UI naturally reflect the now-disconnected state.
+      void loadForgejoStatus();
+    } catch (err) {
+      setDisconnectErr(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDisconnectBusy(false);
+    }
   }
 
   async function copyToClipboard(text: string, key: string) {
@@ -477,6 +515,9 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 newRepoBusy={newRepoBusy}
                 newRepoErr={newRepoErr}
                 onCreate={createForgejoRepo}
+                onDisconnect={disconnectForgejo}
+                disconnectBusy={disconnectBusy}
+                disconnectErr={disconnectErr}
               />
             )}
 
@@ -1063,6 +1104,9 @@ function RepoPicker({
   newRepoBusy,
   newRepoErr,
   onCreate,
+  onDisconnect,
+  disconnectBusy,
+  disconnectErr,
 }: {
   conn: ForgejoConnection;
   repos: ForgejoRepo[] | null;
@@ -1080,19 +1124,47 @@ function RepoPicker({
   newRepoBusy: boolean;
   newRepoErr?: string;
   onCreate: () => void;
+  onDisconnect: () => void;
+  disconnectBusy: boolean;
+  disconnectErr?: string;
 }) {
   return (
     <div style={{ marginTop: 4 }}>
       <h3 style={{ fontFamily: FONT.serif, fontSize: 18, margin: 0, color: C.text }}>
         Repository auswählen
       </h3>
-      <p style={{ color: C.textDim, marginTop: 6, marginBottom: 16, fontSize: 13 }}>
+      <p style={{ color: C.textDim, marginTop: 6, marginBottom: 8, fontSize: 13 }}>
         Verbunden als{" "}
         <span style={{ color: C.text, fontFamily: FONT.mono, fontSize: 12 }}>
           {conn.forgejoUserLogin ?? "?"}
         </span>{" "}
         ({conn.baseUrl ?? "?"}).
       </p>
+      <div style={{ marginBottom: 16 }}>
+        <button
+          type="button"
+          onClick={onDisconnect}
+          disabled={disconnectBusy}
+          style={{
+            background: "transparent",
+            border: "none",
+            padding: 0,
+            color: C.textDim,
+            fontFamily: FONT.ui,
+            fontSize: 12,
+            textDecoration: "underline",
+            cursor: disconnectBusy ? "default" : "pointer",
+            opacity: disconnectBusy ? 0.6 : 1,
+          }}
+        >
+          {disconnectBusy ? "Trenne …" : "Forgejo trennen"}
+        </button>
+        {disconnectErr && (
+          <div style={{ marginTop: 6, color: C.err, fontSize: 12 }}>
+            Trennen fehlgeschlagen: {disconnectErr}
+          </div>
+        )}
+      </div>
 
       <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
         <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13, cursor: "pointer" }}>
