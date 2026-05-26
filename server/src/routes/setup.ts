@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import postgres from "postgres";
+import { eq } from "drizzle-orm";
 import {
   isSetupComplete,
   markSetupComplete,
@@ -159,13 +160,51 @@ setupRoutes.post("/admin", async (c) => {
   if (!email || !password || !name) {
     return c.json({ error: "email, password, name required" }, 400);
   }
-  // Hash via bcrypt — skip crypto strength for Story 1.10; Epic 3 hardens this.
-  // Use scrypt from node:crypto as a stand-in until bcrypt lands in Epic 3.
-  const { scryptSync, randomBytes } = await import("node:crypto");
+
+  const { scryptSync, randomBytes, timingSafeEqual } = await import("node:crypto");
+
+  // Existing user with this email?
+  const existing = await database()
+    .select()
+    .from(users)
+    .where(eq(users.email, email))
+    .limit(1);
+
+  if (existing.length > 0) {
+    const u = existing[0];
+    // Verify password matches the stored scrypt hash
+    const parts = (u.passwordHash ?? "").split(":");
+    if (parts.length !== 3 || parts[0] !== "scrypt") {
+      return c.json(
+        { error: "existing-user-bad-hash", message: "Vorhandener User hat unleserlichen Passwort-Hash." },
+        500,
+      );
+    }
+    const [, salt, expectedHex] = parts;
+    const actual = scryptSync(password, salt, 64);
+    const expected = Buffer.from(expectedHex, "hex");
+    const same =
+      actual.length === expected.length && timingSafeEqual(actual, expected);
+    if (!same) {
+      return c.json(
+        { error: "wrong-password", message: "Email existiert bereits, das Passwort stimmt aber nicht." },
+        401,
+      );
+    }
+    // Upgrade to admin if not already
+    if (u.role !== "admin") {
+      await database()
+        .update(users)
+        .set({ role: "admin" })
+        .where(eq(users.id, u.id));
+    }
+    return c.json({ userId: u.id, reused: true });
+  }
+
+  // No existing — create as today
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(password, salt, 64).toString("hex");
   const passwordHash = `scrypt:${salt}:${hash}`;
-
   const id = generateUlid();
   await database().insert(users).values({
     id,
