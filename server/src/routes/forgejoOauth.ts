@@ -445,7 +445,7 @@ function detectOrigin(c: Context): string {
   const fwdHost = c.req.header("x-forwarded-host");
   const fwdProto = c.req.header("x-forwarded-proto");
   if (fwdHost) {
-    const proto = fwdProto ?? "https";
+    const proto = fwdProto || "https";
     return `${proto}://${fwdHost.split(",")[0]?.trim()}`;
   }
   const host = c.req.header("host");
