@@ -99,6 +99,14 @@ Server + PWA laufen auf jedem kleinen Linux-VPS. Server braucht ein
 installiertes `git` und SSH-Key/Token-Zugriff auf das Forgejo-Repo. PWA als
 statisches Build hinter dem Server oder einem Reverse-Proxy.
 
+Für Coolify gibt es drei dokumentierte Pfade:
+
+| Pfad | Wann nehmen | Doc |
+|------|-------------|-----|
+| **Lean** | Forgejo läuft extern (anderer Host) — nur App + Postgres + Ollama auf der Coolify-Box | [docs/DEPLOY-LEAN.md](docs/DEPLOY-LEAN.md) |
+| **Resources + App** | Alles auf einer Box, aber Postgres/Ollama/Forgejo als separate Coolify-Resources (saubere Backups, getrennte Lifecycles) | [docs/DEPLOY-RESOURCES.md](docs/DEPLOY-RESOURCES.md) |
+| **All-in-One** | Sechs Services in einer Coolify-Application (braucht Build-Host ≥6 GB RAM) | [docs/DEPLOY.md](docs/DEPLOY.md) |
+
 ## Status
 
 Gerüst, typgeprüft, PWA baut sauber durch. Funktional angelegt:
