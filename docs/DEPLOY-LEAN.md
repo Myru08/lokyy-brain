@@ -117,7 +117,17 @@ ID, nicht die Container-Instance-ID.
    ~270 MB Download. Kein Chat-Modell — Chat läuft über Cloud-Provider (siehe
    Phase 2.3).
 
-**Interner Hostname:** `ollama` · **App-URL:** `http://ollama:11434`
+**Interner Hostname (NICHT `ollama`!):**
+Wie bei Postgres greift im shared `coolify`-Netz Container-Namensauflösung,
+nicht Compose-Service-Namen. `ollama` resolvet entweder ins Leere oder zu
+einem anderen Container. Nimm den Container-Namen der Ollama-Resource:
+
+```bash
+docker ps --format "{{.Names}}" | grep -i ollama
+# → ollama-<RESOURCE-UUID>
+```
+
+**App-URL:** `http://ollama-<RESOURCE-UUID>:11434`
 
 ---
 
@@ -154,7 +164,8 @@ Application → **Environment**:
 # Stattdessen den Container-Namen der ParadeDB-Resource: postgres-<RESOURCE-UUID>.
 # UUID findest du via: docker ps --format "{{.Names}}" | grep -i postgres
 DATABASE_URL=postgres://postgres:<postgres-password>@postgres-<PARADEDB-UUID>:5432/lokyy_brain
-OLLAMA_HOST=http://ollama:11434
+# Auch OLLAMA_HOST muss auf den Container-Namen zeigen, nicht auf "ollama"!
+OLLAMA_HOST=http://ollama-<OLLAMA-UUID>:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
 
 # Forgejo-Anbindung läuft jetzt über OAuth (Setup-Wizard Step 1).
