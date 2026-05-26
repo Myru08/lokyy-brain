@@ -157,13 +157,13 @@ DATABASE_URL=postgres://postgres:<postgres-password>@postgres-<PARADEDB-UUID>:54
 OLLAMA_HOST=http://ollama:11434
 OLLAMA_EMBED_MODEL=nomic-embed-text
 
-# Externes Forgejo — Auth per Token im URL.
-# Token: Forgejo → User Settings → Applications → Generate New Token
-#        Scope: repo:write. Den Token im URL URL-encoden, falls Sonderzeichen.
-GIT_REMOTE=https://<forgejo-user>:<forgejo-token>@vault.example.tld/oliver/lokyy-vault
-GIT_BRANCH=main
-GIT_AUTHOR_NAME=lokyy-brain
-GIT_AUTHOR_EMAIL=lokyy-brain@example.tld
+# Forgejo-Anbindung läuft jetzt über OAuth (Setup-Wizard Step 1).
+# Lege in deinem Forgejo unter User Settings → Applications → OAuth2 Applications
+# eine App mit Redirect URI = https://<deine-pwa-domain>/api/auth/forgejo/callback
+# an, kopiere Client-ID + Secret hierher:
+FORGEJO_BASE_URL=https://vault.example.tld
+FORGEJO_OAUTH_CLIENT_ID=<forgejo-client-id>
+FORGEJO_OAUTH_CLIENT_SECRET=<forgejo-client-secret>
 
 # MCP — Bearer-Token, mit dem claude.ai sich authentifiziert
 LOKYY_MCP_TOKEN=<openssl rand -hex 32>
@@ -209,15 +209,19 @@ den Vault-Pull:
 
 1. Öffne `https://lokyy.example.tld` — Setup-Wizard erscheint
    (`setup_complete=false` in DB).
-2. **Schritt 1:** Admin-User anlegen (email + Passwort).
-3. **Schritt 2:** Forgejo-Verbindung — gib `GIT_REMOTE` ein (denselben Wert
-   wie in Phase 2.3, inkl. Token). Der Wizard ruft `git ls-remote` auf — wenn
-   das grün ist, ist die Auth okay.
-4. **Schritt 3:** Vault-Init — der Server klont den existierenden Vault nach
-   `/var/lokyy/vault` (`ensureRepo()` in `packages/core/src/git/gitService.ts`).
-   Bestehende Inhalte werden **nicht** überschrieben; der Wizard scaffold nur
-   die DB-Row.
-5. Finish → `setup_complete=true`.
+2. **Schritt 1 — Forgejo:** Button "Mit Forgejo verbinden" klicken. Browser
+   wird zu Forgejo umgeleitet, du autorisierst die OAuth-App, kommst zurück.
+   Repo-Picker erscheint — vorhandenes Repo wählen oder neues anlegen.
+3. **Schritt 2 — Postgres:** Status-Panel zeigt Verbindung + Extensions
+   (`vector`, `pg_search`). Kein Input — Server nutzt `DATABASE_URL` aus
+   Env. Weiter.
+4. **Schritt 3 — Ollama:** Status-Panel zeigt Host + ob `nomic-embed-text`
+   verfügbar ist. Auch read-only. Weiter.
+5. **Schritt 4 — Admin:** Email + Passwort + Name → Admin-User wird angelegt.
+6. **Schritt 5 — Vault:** Name + Slug für die Vault-DB-Row. Beim Anlegen
+   klont der Server das gewählte Forgejo-Repo nach `/var/lokyy/vault` mit
+   dem OAuth-Token aus Schritt 1.
+7. **Schritt 6 — Fertig:** "Setup abschließen" → `setup_complete=true`.
 
 ### Vault-ULID auslesen + MCP aktivieren
 
@@ -276,6 +280,7 @@ Neu setzen, one-liner, kein Trailing-Newline.
   bleiben unangetastet.
 - **Postgres-Major-Upgrade:** Resource → Settings → Image-Tag ändern. Vorher
   Volume-Snapshot in Coolify aktivieren.
-- **Externes Forgejo umgezogen:** `GIT_REMOTE` updaten, `lokyy-brain` redeployen.
-  Beim nächsten Start macht der Service `git remote set-url` implizit über den
-  neuen Clone (nur falls `VAULT_DIR` leer ist — sonst manuell im Container).
+- **Externes Forgejo umgezogen:** OAuth-App im neuen Forgejo neu anlegen,
+  `FORGEJO_BASE_URL` + `FORGEJO_OAUTH_CLIENT_ID` + `FORGEJO_OAUTH_CLIENT_SECRET`
+  in Coolify updaten, `lokyy-brain` redeployen. Im Setup-Wizard oder Settings
+  Forgejo neu verbinden — der Token in der DB wird aktualisiert.

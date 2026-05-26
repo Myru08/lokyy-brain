@@ -42,13 +42,6 @@ type WizardState = {
     gitRemote: FieldState;
     gitBranch: string;
   };
-  postgres: {
-    databaseUrl: FieldState;
-  };
-  ollama: {
-    ollamaUrl: FieldState;
-    hasNomic?: boolean;
-  };
   admin: {
     email: string;
     password: string;
@@ -72,15 +65,19 @@ const initialState: WizardState = {
     gitRemote: { value: "", testStatus: "idle" },
     gitBranch: "main",
   },
-  postgres: {
-    databaseUrl: { value: "postgres://postgres:lokyy@localhost:5432/lokyy_brain", testStatus: "idle" },
-  },
-  ollama: {
-    ollamaUrl: { value: "http://localhost:11434", testStatus: "idle" },
-  },
   admin: { email: "", password: "", name: "", submitState: "idle" },
   vault: { name: "Mein Vault", slug: "mein-vault", submitState: "idle" },
 };
+
+type PgStatus =
+  | { phase: 'loading' }
+  | { phase: 'ok'; pgVersion: string; vector: boolean; pgSearch: boolean }
+  | { phase: 'fail'; error: string };
+
+type OllamaStatus =
+  | { phase: 'loading' }
+  | { phase: 'ok'; host: string; hasNomic: boolean; models: string[] }
+  | { phase: 'fail'; error: string; host: string };
 
 const SETUP_BASE = "/api/setup";
 
@@ -122,6 +119,9 @@ type ForgejoMode = "existing" | "new";
 
 export function SetupWizard({ onDone }: { onDone: () => void }) {
   const [s, setS] = useState<WizardState>(initialState);
+
+  const [pg, setPg] = useState<PgStatus>({ phase: 'loading' });
+  const [ollama, setOllama] = useState<OllamaStatus>({ phase: 'loading' });
 
   const [forgejoPhase, setForgejoPhase] = useState<ForgejoPhase>("loading");
   const [forgejoInfo, setForgejoInfo] = useState<ForgejoInfo | null>(null);
@@ -259,46 +259,62 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function testPostgres() {
-    setS((p) => ({
-      ...p,
-      postgres: { databaseUrl: { ...p.postgres.databaseUrl, testStatus: "testing" } },
-    }));
-    const res = await postJson<{ ok: boolean; error?: string; pgvectorAvailable?: boolean }>("/test-postgres", {
-      databaseUrl: s.postgres.databaseUrl.value,
-    });
-    setS((p) => ({
-      ...p,
-      postgres: {
-        databaseUrl: {
-          ...p.postgres.databaseUrl,
-          testStatus: res.ok ? "ok" : "fail",
-          testMessage: res.error ?? (res.pgvectorAvailable ? "pgvector verfügbar" : "pgvector fehlt"),
-        },
-      },
-    }));
+  async function loadPgStatus() {
+    setPg({ phase: 'loading' });
+    try {
+      const res = await fetch('/api/setup/verify-postgres');
+      const data = await res.json();
+      if (data.ok) {
+        setPg({
+          phase: 'ok',
+          pgVersion: data.pgVersion,
+          vector: !!data.extensions?.vector,
+          pgSearch: !!data.extensions?.pg_search,
+        });
+      } else {
+        setPg({ phase: 'fail', error: data.error || 'unknown' });
+      }
+    } catch (err) {
+      setPg({ phase: 'fail', error: err instanceof Error ? err.message : 'fetch failed' });
+    }
   }
 
-  async function testOllama() {
-    setS((p) => ({
-      ...p,
-      ollama: { ...p.ollama, ollamaUrl: { ...p.ollama.ollamaUrl, testStatus: "testing" } },
-    }));
-    const res = await postJson<{ ok: boolean; error?: string; hasNomicEmbed?: boolean }>("/test-ollama", {
-      ollamaUrl: s.ollama.ollamaUrl.value,
-    });
-    setS((p) => ({
-      ...p,
-      ollama: {
-        ollamaUrl: {
-          ...p.ollama.ollamaUrl,
-          testStatus: res.ok ? "ok" : "fail",
-          testMessage: res.error,
-        },
-        hasNomic: res.hasNomicEmbed,
-      },
-    }));
+  async function loadOllamaStatus() {
+    setOllama({ phase: 'loading' });
+    try {
+      const res = await fetch('/api/setup/verify-ollama');
+      const data = await res.json();
+      if (data.ok) {
+        setOllama({
+          phase: 'ok',
+          host: data.host,
+          hasNomic: !!data.hasNomicEmbed,
+          models: Array.isArray(data.models) ? data.models : [],
+        });
+      } else {
+        setOllama({
+          phase: 'fail',
+          error: data.error || 'unknown',
+          host: data.host || '',
+        });
+      }
+    } catch (err) {
+      setOllama({
+        phase: 'fail',
+        error: err instanceof Error ? err.message : 'fetch failed',
+        host: '',
+      });
+    }
   }
+
+  useEffect(() => {
+    if (s.step === 'postgres') {
+      void loadPgStatus();
+    } else if (s.step === 'ollama') {
+      void loadOllamaStatus();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.step]);
 
   async function submitAdmin() {
     setS((p) => ({ ...p, admin: { ...p.admin, submitState: "submitting" } }));
@@ -453,60 +469,73 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         )}
 
         {s.step === "postgres" && (
-          <StepShell title="Postgres (Sessions, Vault-Metadaten, Embeddings)" description="pgvector-fähiges Postgres. Docker-Compose-Setup liefert das automatisch.">
-            <Field
-              label="DATABASE_URL"
-              value={s.postgres.databaseUrl.value}
-              onChange={(v) =>
-                setS((p) => ({
-                  ...p,
-                  postgres: { databaseUrl: { value: v, testStatus: "idle" } },
-                }))
-              }
-            />
-            <TestRow
-              status={s.postgres.databaseUrl.testStatus}
-              message={s.postgres.databaseUrl.testMessage}
-              onTest={testPostgres}
-            />
+          <StepShell
+            title="Postgres-Verbindung"
+            description="Der Server nutzt die DATABASE_URL aus der Container-Umgebung. Wir prüfen die Verbindung und ob die nötigen Erweiterungen installiert sind."
+          >
+            {pg.phase === 'loading' && <Note color={C.textDim}>Verbindung wird geprüft…</Note>}
+            {pg.phase === 'ok' && (
+              <Note color={C.ok}>
+                ✓ Verbunden — <code style={{ fontFamily: FONT.mono, fontSize: 12 }}>{pg.pgVersion.split(' on ')[0]}</code>
+                <div style={{ marginTop: 8, fontSize: 13 }}>
+                  Erweiterungen:{' '}
+                  <span style={{ color: pg.vector ? C.ok : C.err }}>vector {pg.vector ? '✓' : '✗'}</span>{' · '}
+                  <span style={{ color: pg.pgSearch ? C.ok : C.err }}>pg_search {pg.pgSearch ? '✓' : '✗'}</span>
+                </div>
+              </Note>
+            )}
+            {pg.phase === 'fail' && (
+              <Note color={C.err}>
+                ✗ Verbindung fehlgeschlagen: {pg.error}
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  Stelle sicher, dass <code>DATABASE_URL</code> in den Container-Env-Vars korrekt gesetzt ist
+                  und Postgres im Coolify-Netz erreichbar ist. Nach Korrektur Container neu starten.
+                </div>
+              </Note>
+            )}
             <NextRow
-              enabled={s.postgres.databaseUrl.testStatus === "ok"}
-              onNext={() => setStep("ollama")}
+              enabled={pg.phase === 'ok'}
+              onNext={() => setStep('ollama')}
             />
           </StepShell>
         )}
 
         {s.step === "ollama" && (
           <StepShell
-            title="Ollama (Semantic Search)"
-            description="Lokales Ollama mit nomic-embed-text Modell. Wird für Tier-2-Search verwendet."
+            title="Ollama-Verbindung"
+            description="Lokales Embedding-Modell für Tier-2-Suche. Der Server nutzt OLLAMA_HOST aus der Container-Umgebung."
           >
-            <Field
-              label="OLLAMA_HOST"
-              value={s.ollama.ollamaUrl.value}
-              onChange={(v) =>
-                setS((p) => ({
-                  ...p,
-                  ollama: { ...p.ollama, ollamaUrl: { value: v, testStatus: "idle" } },
-                }))
-              }
-            />
-            <TestRow
-              status={s.ollama.ollamaUrl.testStatus}
-              message={s.ollama.ollamaUrl.testMessage}
-              onTest={testOllama}
-            />
-            {s.ollama.ollamaUrl.testStatus === "ok" && s.ollama.hasNomic === false && (
-              <Note color={C.gold}>
-                Ollama erreicht — aber `nomic-embed-text` fehlt. Führ aus:
-                <code style={{ display: "block", marginTop: 6, padding: 8, background: C.elevated, fontFamily: FONT.mono, fontSize: 12 }}>
-                  ollama pull nomic-embed-text
-                </code>
+            {ollama.phase === 'loading' && <Note color={C.textDim}>Verbindung wird geprüft…</Note>}
+            {ollama.phase === 'ok' && (
+              <Note color={ollama.hasNomic ? C.ok : C.gold}>
+                ✓ Verbunden — <code style={{ fontFamily: FONT.mono, fontSize: 12 }}>{ollama.host}</code>
+                <div style={{ marginTop: 8, fontSize: 13 }}>
+                  {ollama.hasNomic
+                    ? <>Modell <code style={{ fontFamily: FONT.mono }}>nomic-embed-text</code> verfügbar ✓</>
+                    : (
+                      <>
+                        Modell <code style={{ fontFamily: FONT.mono }}>nomic-embed-text</code> fehlt. Auf dem Host ausführen:
+                        <code style={{ display: 'block', marginTop: 6, padding: 8, background: C.elevated, fontFamily: FONT.mono, fontSize: 12 }}>
+                          docker exec &lt;ollama-container&gt; ollama pull nomic-embed-text
+                        </code>
+                      </>
+                    )
+                  }
+                </div>
+              </Note>
+            )}
+            {ollama.phase === 'fail' && (
+              <Note color={C.err}>
+                ✗ Verbindung fehlgeschlagen: {ollama.error}
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  Geprüfter Host: <code style={{ fontFamily: FONT.mono }}>{ollama.host}</code>.
+                  Setze <code>OLLAMA_HOST</code> korrekt in den Container-Env-Vars.
+                </div>
               </Note>
             )}
             <NextRow
-              enabled={s.ollama.ollamaUrl.testStatus === "ok"}
-              onNext={() => setStep("admin")}
+              enabled={ollama.phase === 'ok'}
+              onNext={() => setStep('admin')}
             />
           </StepShell>
         )}

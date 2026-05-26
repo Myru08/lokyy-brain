@@ -89,6 +89,65 @@ setupRoutes.post("/test-ollama", async (c) => {
   }
 });
 
+// GET /api/setup/verify-postgres
+// Backend-driven verification: server already booted with config.databaseUrl,
+// so this PROVES the connection works and reports pgvector/pg_search availability.
+setupRoutes.get("/verify-postgres", async (c) => {
+  let sql: ReturnType<typeof postgres> | null = null;
+  try {
+    sql = postgres(config.databaseUrl, { max: 1, idle_timeout: 2 });
+    const result = await sql<{ version: string }[]>`SELECT version()`;
+    const exts = await sql<{ name: string }[]>`
+      SELECT name FROM pg_available_extensions WHERE name IN ('vector', 'pg_search')
+    `;
+    const extNames = new Set(exts.map((e) => e.name));
+    return c.json({
+      ok: true,
+      pgVersion: result[0]?.version,
+      extensions: {
+        vector: extNames.has("vector"),
+        pg_search: extNames.has("pg_search"),
+      },
+    });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    if (sql) await sql.end();
+  }
+});
+
+// GET /api/setup/verify-ollama
+// Backend-driven verification: uses server's own config.ollamaHost.
+setupRoutes.get("/verify-ollama", async (c) => {
+  const host = config.ollamaHost;
+  try {
+    const res = await fetch(`${host}/api/tags`, {
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      return c.json({ ok: false, error: `HTTP ${res.status}`, host });
+    }
+    const data = (await res.json()) as { models?: { name: string }[] };
+    const models = data.models?.map((m) => m.name) ?? [];
+    const hasNomicEmbed = models.some((n) => n.startsWith("nomic-embed-text"));
+    return c.json({
+      ok: true,
+      host,
+      hasNomicEmbed,
+      models,
+    });
+  } catch (err) {
+    return c.json({
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      host,
+    });
+  }
+});
+
 // POST /api/setup/admin  { email, password, name }
 setupRoutes.post("/admin", async (c) => {
   if (await isSetupComplete()) return c.json({ error: "already setup" }, 400);

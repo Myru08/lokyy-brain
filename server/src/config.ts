@@ -29,6 +29,8 @@ export const config = {
   supadataApiKey: process.env.SUPADATA_API_KEY ?? "",
   /** Postgres DSN — required for sessions, vault metadata, embeddings. */
   databaseUrl: req("DATABASE_URL"),
+  /** Ollama host — local LLM/embedding runtime. */
+  ollamaHost: process.env.OLLAMA_HOST ?? "http://localhost:11434",
   /** Forgejo OAuth (setup-wizard). Empty when the operator hasn't wired an OAuth app yet. */
   forgejoBaseUrl: process.env.FORGEJO_BASE_URL ?? "",
   forgejoOauthClientId: process.env.FORGEJO_OAUTH_CLIENT_ID ?? "",
