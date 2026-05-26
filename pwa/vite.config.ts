@@ -57,6 +57,10 @@ export default defineConfig({
       },
       workbox: {
         // API-Calls nicht aggressiv cachen — Forgejo ist die Wahrheit.
+        // Top-level navigations to /api/** (e.g. OAuth start redirects) must
+        // bypass the SPA's navigateFallback so the browser hits the network
+        // and receives the backend's 302 instead of a cached index.html.
+        navigateFallbackDenylist: [/^\/api\//],
         runtimeCaching: [
           {
             urlPattern: /\/api\/notes/,
