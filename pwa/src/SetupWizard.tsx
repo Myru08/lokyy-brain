@@ -224,17 +224,20 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         minHeight: "100vh",
         display: "flex",
         flexDirection: "column",
+        alignItems: "center",
         background: C.bg,
         color: C.text,
         fontFamily: FONT.ui,
         padding: 32,
       }}
     >
-      <header style={{ marginBottom: 32 }}>
-        <h1 style={{ fontFamily: FONT.serif, fontSize: 32, margin: 0, color: C.accent }}>
-          lokyy-brain Setup
-        </h1>
-        <p style={{ color: C.textDim, marginTop: 8 }}>
+      <header style={{ marginBottom: 32, textAlign: "center" }}>
+        <img
+          src="/logo-header.png"
+          alt="lokyy-brain Setup"
+          style={{ display: "block", margin: "0 auto 8px", maxWidth: 180, width: "100%", height: "auto" }}
+        />
+        <p style={{ color: C.textDim, marginTop: 8, margin: 0 }}>
           Erstinstallation in fünf Schritten.
         </p>
       </header>
