@@ -45,6 +45,10 @@ import { entitiesRoutes } from "./routes/entities.js";
 import { peersRoutes } from "./routes/peers.js";
 import { forgetRoutes } from "./routes/forget.js";
 import { backfillRoutes } from "./routes/backfill.js";
+import {
+  forgejoApiRoutes,
+  forgejoOauthRoutes,
+} from "./routes/forgejoOauth.js";
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
@@ -71,6 +75,13 @@ app.get("/health", (c) => c.json({ ok: true }));
 // and register/login obviously can't sit behind setupGate).
 app.route("/api/setup", setupRoutes);
 app.route("/api/auth", authRoutes);
+
+// Forgejo OAuth (setup-wizard). Not setupGate-protected — the whole point
+// is to run BEFORE setup is complete. The /api/forgejo/* helpers also stay
+// open here so the wizard can list/create repos before flipping the setup
+// flag; they enforce their own session check + token-present check.
+app.route("/api/auth/forgejo", forgejoOauthRoutes);
+app.route("/api/forgejo", forgejoApiRoutes);
 
 // Data + admin routes — gated by setup state.
 app.use("/api/notes/*", setupGate);
@@ -282,7 +293,18 @@ async function main() {
     console.error("[lokyy-brain] DB init failed — server cannot start:", err);
     process.exit(1);
   }
-  await ensureRepo();
+  // Skip the initial clone when the operator hasn't wired a remote yet —
+  // the Forgejo OAuth wizard will provision the working-copy via
+  // `setupVaultFromForgejo` when the user picks/creates a repo. ensureRepo
+  // also no-ops internally on an empty remote, but logging at this layer
+  // keeps the startup banner explicit about why the vault is empty.
+  if (config.gitRemote === "") {
+    console.log(
+      "[lokyy-brain] GIT_REMOTE not set — vault clone deferred to setup wizard.",
+    );
+  } else {
+    await ensureRepo();
+  }
 
   // ── LLM registry init (Phase-0 Wave C-Backend) ─────────────────────────
   // Read persisted provider configs and instantiate the runtime registry.

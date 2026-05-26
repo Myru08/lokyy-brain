@@ -33,6 +33,7 @@ export {
   remove,
   move,
   lastModified,
+  setupVaultFromForgejo,
   type GitConfig,
 } from "./git/gitService.js";
 
