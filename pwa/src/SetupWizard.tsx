@@ -316,6 +316,25 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.step]);
 
+  // Auto-prefill vault Name/Slug from the Forgejo repo selected in Step 1.
+  // The DB row in `vaults` is just metadata pointing at that repo — the user
+  // shouldn't have to invent a second identity. Skip if the user has already
+  // typed something non-default.
+  useEffect(() => {
+    if (s.step !== "vault") return;
+    const url = s.forgejo.gitRemote.value;
+    if (!url) return;
+    if (s.vault.name && s.vault.name !== "Mein Vault" && s.vault.name !== "") return;
+    const lastSegment = url.split("/").pop() ?? "";
+    const repoName = lastSegment.replace(/\.git$/i, "");
+    if (!repoName) return;
+    setS((p) => ({
+      ...p,
+      vault: { ...p.vault, name: repoName, slug: repoName },
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [s.step, s.forgejo.gitRemote.value]);
+
   async function submitAdmin() {
     setS((p) => ({ ...p, admin: { ...p.admin, submitState: "submitting" } }));
     try {
@@ -560,7 +579,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         )}
 
         {s.step === "vault" && (
-          <StepShell title="Erster Vault" description="Wird dem Admin-Nutzer als Personal-Vault zugewiesen.">
+          <StepShell title="Vault-Verknüpfung" description="Dieser Vault verknüpft das in Schritt 1 gewählte Forgejo-Repo mit deinem Admin-Account. Name und Slug sind nur Anzeige-Metadaten — der Repo-Inhalt bleibt unverändert.">
             <Field label="Vault-Name" value={s.vault.name} onChange={(v) => setS((p) => ({ ...p, vault: { ...p.vault, name: v } }))} />
             <Field label="Slug (URL-tauglich)" value={s.vault.slug} onChange={(v) => setS((p) => ({ ...p, vault: { ...p.vault, slug: v } }))} />
             <Note color={C.textDim}>
