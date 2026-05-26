@@ -65,8 +65,12 @@ export function Login({ onAuthed }: { onAuthed: () => void }) {
           borderRadius: 12,
         }}
       >
-        <h1 style={{ fontFamily: FONT.serif, fontSize: 28, margin: 0, color: C.accent }}>lokyy-brain</h1>
-        <p style={{ color: C.textDim, marginTop: 4, marginBottom: 24, fontSize: 13 }}>
+        <img
+          src="/logo-header.png"
+          alt="lokyy-brain"
+          style={{ display: "block", margin: "0 auto 4px", maxWidth: 140, width: "100%", height: "auto" }}
+        />
+        <p style={{ color: C.textDim, marginTop: 4, marginBottom: 24, fontSize: 13, textAlign: "center" }}>
           {mode === "login" ? "Anmelden" : "Account anlegen"}
         </p>
 
