@@ -103,6 +103,31 @@ export interface MigrationProgress {
 }
 
 /**
+ * Runtime/operator-visible settings — single source of truth for what
+ * env-vars the running server is actually using (DB host, Ollama host,
+ * MCP public URL) plus the active vault row from Postgres.
+ *
+ * Backed by `GET /api/settings/runtime`. The endpoint may not exist yet
+ * (older server build) — callers should treat 404 as "fall back to
+ * legacy fields" and never crash on a missing payload.
+ */
+export interface RuntimeSettings {
+  vault: {
+    id: string;
+    name: string;
+    slug: string;
+    gitRemote: string;
+    gitBranch: string;
+  } | null;
+  env: {
+    databaseHost: string;
+    ollamaHost: string;
+    /** Public MCP URL — e.g. "https://mcp.example.de/mcp". Empty string when not set. */
+    mcpPublicUrl: string;
+  };
+}
+
+/**
  * Dataview query shape — kept in sync with `@lokyy/core`'s `DataviewQuery`.
  * Defined here (not imported) because `@lokyy/core` has node-only deps and
  * is forbidden from the PWA bundle.

@@ -180,7 +180,17 @@ function progressColor(pct: number): string {
 
 // ───────────────────────── Component ─────────────────────────
 
-export function AiProviderSettings() {
+/**
+ * Props:
+ *   runtimeOllamaHost — actual `OLLAMA_HOST` value from the backend env.
+ *     Used to display the real host (e.g. `http://ollama-<uuid>:11434`)
+ *     instead of the static `http://localhost:11434` placeholder. May be
+ *     undefined when the backend isn't reachable; in that case we fall
+ *     back to the static placeholder.
+ */
+export function AiProviderSettings({
+  runtimeOllamaHost,
+}: { runtimeOllamaHost?: string } = {}) {
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [routing, setRouting] = useState<LlmRoutingConfig>({
     roles: {},
@@ -496,10 +506,17 @@ export function AiProviderSettings() {
         const isDirty = dirtyKeys.has(key);
         const testKey = key;
         const test = testResults[testKey];
+        // For the Ollama row we want the real backend host (from runtime),
+        // not the static `http://localhost:11434` placeholder. Falls back to
+        // the static placeholder when runtime info is unavailable.
+        const effectivePlaceholder =
+          meta.name === "ollama" && runtimeOllamaHost
+            ? runtimeOllamaHost
+            : meta.placeholder;
         const value =
           meta.field === "apiKey"
             ? (cfg.apiKey ?? "")
-            : (cfg.baseUrl ?? meta.placeholder);
+            : (cfg.baseUrl ?? effectivePlaceholder);
         const hasStored = meta.field === "apiKey" && isMaskedKey(cfg.apiKey);
 
         return (
@@ -517,7 +534,7 @@ export function AiProviderSettings() {
             <input
               type={meta.field === "apiKey" ? "password" : "text"}
               value={value}
-              placeholder={meta.placeholder}
+              placeholder={effectivePlaceholder}
               onChange={(e) => {
                 if (meta.field === "apiKey") {
                   updateProviderField(meta.name, undefined, { apiKey: e.target.value });

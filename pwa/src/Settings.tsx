@@ -74,11 +74,46 @@ interface SkillInfo {
   worksWith?: string[];
 }
 
+/**
+ * Source-of-truth runtime view that the backend exposes at
+ * `GET /api/settings/runtime`. Used to fix three display issues that the
+ * legacy `/api/admin/system-settings` payload can't (or doesn't) cover:
+ *
+ *  - vault.gitRemote — DB column may be empty even after a successful
+ *    `setupVaultFromForgejo` flow; the runtime endpoint reads it directly.
+ *  - env.ollamaHost — actual `OLLAMA_HOST` value (e.g. `http://ollama-<UUID>:11434`)
+ *    instead of the static `localhost:11434` placeholder.
+ *  - env.mcpPublicUrl — built from `SERVICE_FQDN_LOKYY_MCP`, so the Remote-HTTP
+ *    snippet points at the publicly reachable URL, not `localhost:8788/mcp`.
+ *
+ * Gracefully degrades to `null` when the endpoint is not yet deployed (404).
+ */
+interface RuntimeInfo {
+  vault: {
+    id: string;
+    name: string;
+    slug: string;
+    gitRemote: string;
+    gitBranch: string;
+  } | null;
+  env: {
+    databaseHost: string;
+    ollamaHost: string;
+    mcpPublicUrl: string;
+  };
+}
+
 export function Settings({ onClose }: { onClose: () => void }) {
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [status, setStatus] = useState<StatusResult | null>(null);
   const [mcp, setMcp] = useState<McpInfo | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
+  /**
+   * `runtime` is the canonical source for vault.gitRemote, ollamaHost, and
+   * mcpPublicUrl. Stays `null` if the backend endpoint isn't deployed yet —
+   * in that case we fall through to whatever the legacy payload reports.
+   */
+  const [runtime, setRuntime] = useState<RuntimeInfo | null>(null);
 
   const [newRemote, setNewRemote] = useState("");
   const [newBranch, setNewBranch] = useState("main");
@@ -110,21 +145,43 @@ export function Settings({ onClose }: { onClose: () => void }) {
   const [backfillError, setBackfillError] = useState<string>();
   const [backfillLastRun, setBackfillLastRun] = useState<string | null>(null);
 
+  /**
+   * Fetch the canonical runtime view. The backend route is being built in
+   * parallel; until it ships, a 404 / network error returns `null` and the
+   * page falls back to the legacy payloads.
+   */
+  async function loadRuntime(): Promise<RuntimeInfo | null> {
+    try {
+      const res = await fetch("/api/settings/runtime", { credentials: "include" });
+      if (!res.ok) return null;
+      return (await res.json()) as RuntimeInfo;
+    } catch {
+      return null;
+    }
+  }
+
   async function load() {
-    const [sRes, statusRes, mcpRes, skillRes] = await Promise.all([
+    const [sRes, statusRes, mcpRes, skillRes, runtimeRes] = await Promise.all([
       fetch("/api/admin/system-settings").then((r) => r.json()) as Promise<SystemSettings>,
       fetch("/api/admin/status").then((r) => r.json()) as Promise<StatusResult>,
       fetch("/api/admin/mcp-info").then((r) => r.json()) as Promise<McpInfo>,
       fetch("/api/admin/skills").then((r) => r.json()) as Promise<{ skills: SkillInfo[] }>,
+      loadRuntime(),
     ]);
     setSettings(sRes);
     setStatus(statusRes);
     setMcp(mcpRes);
     setSkills(skillRes.skills);
-    if (sRes.vault) {
-      setNewRemote(sRes.vault.gitRemote);
-      setNewBranch(sRes.vault.gitBranch);
-    }
+    setRuntime(runtimeRes);
+    // Pre-fill the editable Vault-URL inputs. Prefer the runtime payload
+    // because the legacy `system-settings` row may be stale or empty even
+    // after a successful `setupVaultFromForgejo` flow.
+    const vaultRemote =
+      runtimeRes?.vault?.gitRemote || sRes.vault?.gitRemote || "";
+    const vaultBranch =
+      runtimeRes?.vault?.gitBranch || sRes.vault?.gitBranch || "main";
+    setNewRemote(vaultRemote);
+    setNewBranch(vaultBranch);
     // Pre-fill integrations with masked key / current folder.
     setSupadataInput(sRes.integrations.supadataApiKeyMasked ?? "");
     setSupadataTouched(false);
@@ -169,7 +226,10 @@ export function Settings({ onClose }: { onClose: () => void }) {
   }, []);
 
   async function changeVaultUrl() {
-    if (!settings?.vault) return;
+    // Vault-ID can come from either payload — runtime is preferred but the
+    // legacy field is a valid fallback when /api/settings/runtime isn't live.
+    const vaultId = runtime?.vault?.id ?? settings?.vault?.id;
+    if (!vaultId) return;
     setVaultSaveState("saving");
     setVaultSaveError(undefined);
     try {
@@ -177,7 +237,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          vaultId: settings.vault.id,
+          vaultId,
           gitRemote: newRemote,
           gitBranch: newBranch,
         }),
@@ -295,7 +355,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
       {/* ───── 2. Vault URL ändern ───── */}
       <Section title="Vault-URL (Forgejo Remote)">
-        <Field label="Vault-Name" value={settings.vault?.name ?? "—"} readOnly />
+        <Field
+          label="Vault-Name"
+          value={runtime?.vault?.name ?? settings.vault?.name ?? "—"}
+          readOnly
+        />
         <Field
           label="GIT_REMOTE"
           value={newRemote}
@@ -402,10 +466,29 @@ export function Settings({ onClose }: { onClose: () => void }) {
       </Section>
 
       {/* ───── 2c. AI Provider (Wave C-Frontend) ───── */}
-      <AiProviderSettings />
+      <AiProviderSettings
+        runtimeOllamaHost={runtime?.env.ollamaHost ?? settings.runtime.ollamaHost}
+      />
 
       {/* ───── 3. MCP-Endpoint für Claude Desktop ───── */}
       <Section title="MCP-Anbindung — drei Wege">
+        {/*
+          Vault-ID card — pinned at the very top of the MCP section so the
+          operator immediately sees the value they have to inject into
+          Coolify / docker-compose as `LOKYY_VAULT_ID`. Without it the
+          lokyy-mcp container crash-loops on startup. Status indicator is
+          derived from the existing `mcp.available` health flag.
+        */}
+        <VaultIdCard
+          vaultId={runtime?.vault?.id ?? settings.vault?.id ?? null}
+          mcpAvailable={mcp.available}
+          onCopy={() => {
+            const id = runtime?.vault?.id ?? settings.vault?.id;
+            if (id) copy("vault-id", id);
+          }}
+          copiedLabel={copied}
+        />
+
         <p style={{ color: C.ok, fontSize: 13, margin: "0 0 8px 0" }}>
           MCP-Server läuft. Tools: <code style={{ color: C.gold }}>{(mcp.tools ?? []).join(", ")}</code>
         </p>
@@ -413,7 +496,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
         {mcp.variants ? (
           <>
             {(["a_local_stdio", "b_npx", "c_remote_http"] as const).map((k) => {
-              const v = mcp.variants![k];
+              // Override the Remote-HTTP variant's URLs and snippet body when
+              // the runtime endpoint exposes a public FQDN — the legacy
+              // payload defaults to `localhost:8788`, which only works on
+              // the host itself.
+              const v = applyRuntimeOverrides(mcp.variants![k], k, runtime);
               return (
                 <div key={k} style={{ marginBottom: 18, padding: 12, background: C.elevated, borderRadius: 6, border: `1px solid ${C.border}` }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
@@ -622,9 +709,187 @@ export function Settings({ onClose }: { onClose: () => void }) {
       {/* ───── Runtime info (klein, unten) ───── */}
       <Section title="Runtime">
         <KV label="Vault-Dir (lokal)" value={settings.runtime.vaultDir} />
-        <KV label="DATABASE_URL" value={settings.runtime.databaseUrl} />
-        <KV label="OLLAMA_HOST" value={settings.runtime.ollamaHost} />
+        <KV
+          label="DATABASE_URL"
+          value={
+            // Prefer the (already redacted) host from the runtime endpoint —
+            // it reflects the env actually in use, not whatever the legacy
+            // payload thinks.
+            runtime?.env.databaseHost ?? settings.runtime.databaseUrl
+          }
+        />
+        <KV
+          label="OLLAMA_HOST"
+          value={runtime?.env.ollamaHost ?? settings.runtime.ollamaHost}
+        />
+        {runtime?.env.mcpPublicUrl && (
+          <KV label="MCP_PUBLIC_URL" value={runtime.env.mcpPublicUrl} />
+        )}
       </Section>
+    </div>
+  );
+}
+
+/**
+ * Returns the variant with Remote-HTTP URLs overridden by the runtime
+ * payload when available. Other variants (a_local_stdio, b_npx) pass
+ * through untouched. The snippet's third positional `args` slot is the
+ * URL passed to `mcp-remote` — we rewrite it here in lock-step with the
+ * `endpointUrl` so the copyable claude_desktop_config matches the
+ * displayed endpoint.
+ */
+function applyRuntimeOverrides(
+  variant: McpVariant,
+  key: "a_local_stdio" | "b_npx" | "c_remote_http",
+  runtime: RuntimeInfo | null,
+): McpVariant {
+  if (key !== "c_remote_http") return variant;
+  const publicUrl = runtime?.env.mcpPublicUrl?.trim();
+  if (!publicUrl) return variant;
+
+  // mcp-remote convention: health endpoint = endpoint + "/health"
+  const healthUrl = publicUrl.endsWith("/")
+    ? `${publicUrl}health`
+    : `${publicUrl}/health`;
+
+  // Patch the snippet so the copyable JSON points at the public URL too.
+  // Structure (from server admin route): { mcpServers: { "lokyy-brain": { args: [...] } } }
+  const patchedSnippet = JSON.parse(JSON.stringify(variant.snippet)) as Record<
+    string,
+    unknown
+  >;
+  try {
+    const servers = (patchedSnippet as { mcpServers?: Record<string, unknown> })
+      .mcpServers;
+    if (servers) {
+      for (const name of Object.keys(servers)) {
+        const entry = servers[name] as { args?: unknown[] } | undefined;
+        if (entry && Array.isArray(entry.args)) {
+          // args = ["-y", "mcp-remote", "<URL>", "--header", "Authorization:Bearer …"]
+          for (let i = 0; i < entry.args.length; i++) {
+            const a = entry.args[i];
+            if (typeof a === "string" && /^https?:\/\//.test(a)) {
+              entry.args[i] = publicUrl;
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch {
+    // If the snippet shape ever drifts, leave it untouched rather than crash.
+  }
+
+  return {
+    ...variant,
+    endpointUrl: publicUrl,
+    healthUrl,
+    snippet: patchedSnippet,
+  };
+}
+
+/**
+ * Prominent Vault-ID display for the MCP section. Coolify deployments
+ * crash-loop the `lokyy-mcp` container until the operator copies this ID
+ * into the env file and restarts the service, so we surface it loudly.
+ */
+function VaultIdCard({
+  vaultId,
+  mcpAvailable,
+  onCopy,
+  copiedLabel,
+}: {
+  vaultId: string | null;
+  mcpAvailable: boolean;
+  onCopy: () => void;
+  copiedLabel: string | null;
+}) {
+  const hasId = Boolean(vaultId);
+  return (
+    <div
+      style={{
+        marginBottom: 18,
+        padding: 14,
+        background: C.elevated,
+        border: `2px solid ${hasId ? C.accent : C.gold}`,
+        borderRadius: 8,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 8,
+          fontFamily: FONT.serif,
+          fontSize: 15,
+          color: C.text,
+        }}
+      >
+        <span aria-hidden style={{ fontSize: 18 }}>🆔</span>
+        <strong>Vault-ID für MCP-Konfiguration</strong>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          marginBottom: 10,
+          flexWrap: "wrap",
+        }}
+      >
+        <code
+          style={{
+            flex: "1 1 auto",
+            minWidth: 0,
+            padding: "8px 12px",
+            background: C.panel,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            fontFamily: FONT.mono,
+            fontSize: 14,
+            color: hasId ? C.gold : C.textFaint,
+            letterSpacing: 0.5,
+            wordBreak: "break-all",
+          }}
+        >
+          {vaultId ?? "— noch keine Vault konfiguriert —"}
+        </code>
+        <button
+          onClick={onCopy}
+          disabled={!hasId}
+          style={{
+            ...btn,
+            opacity: hasId ? 1 : 0.5,
+            cursor: hasId ? "pointer" : "not-allowed",
+          }}
+        >
+          <Copy size={12} />
+          {copiedLabel === "vault-id" ? "kopiert" : "Copy"}
+        </button>
+      </div>
+
+      <p style={{ color: C.textDim, fontSize: 12, margin: "0 0 8px 0" }}>
+        Trage diese ID in deinem Container-Orchestrator (Coolify /
+        docker-compose) als <code style={{ color: C.text }}>LOKYY_VAULT_ID</code>{" "}
+        ein und starte den <code style={{ color: C.text }}>lokyy-mcp</code>-Service
+        neu.
+      </p>
+
+      <div style={{ fontSize: 12, fontFamily: FONT.mono }}>
+        Status:{" "}
+        {mcpAvailable ? (
+          <span style={{ color: C.ok }}>
+            <Check size={11} /> MCP läuft
+          </span>
+        ) : (
+          <span style={{ color: C.err }}>
+            <X size={11} /> MCP startet nicht — LOKYY_VAULT_ID fehlt oder
+            falsch gesetzt
+          </span>
+        )}
+      </div>
     </div>
   );
 }
