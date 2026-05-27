@@ -48,6 +48,13 @@ interface McpVariant {
   title: string;
   when: string;
   precondition?: string | string[];
+  /**
+   * Optional callout shown ABOVE the snippets (yellow Note). Used by
+   * `c_native_http` to warn that the `claude mcp add` command needs to be
+   * run BEFORE starting a Claude Code session — a live session does not
+   * always reload the mcp-config cleanly.
+   */
+  instructions?: string;
   snippet: Record<string, unknown>;
   /**
    * Optional additional sub-snippets (e.g. a `claude mcp add` CLI form
@@ -1093,6 +1100,9 @@ export function Settings({ onClose }: { onClose: () => void }) {
                               </span>
                             )}
                           </div>
+                        )}
+                        {v.instructions && (
+                          <Note color={C.gold}>{v.instructions}</Note>
                         )}
                         <CodeBlock
                           label={`${v.title} — claude_desktop_config.json`}

@@ -433,6 +433,8 @@ adminRoutes.get("/mcp-info", async (c) => {
           `Start server: pnpm --filter @lokyy/mcp start:http   (env: LOKYY_MCP_TOKEN=<token>, LOKYY_MCP_HTTP_PORT=${httpPort})`,
           `Bei public ingress: HTTPS-Reverse-Proxy davor (Caddy/nginx/traefik).`,
         ],
+        instructions:
+          "⚠️ Wichtig: Befehl im Terminal ausführen BEVOR du Claude Code startest. In einer bereits laufenden Claude-Session wird die mcp-Config nicht immer sauber neu geladen.",
         snippet: {
           mcpServers: {
             "lokyy-brain": {
@@ -446,9 +448,14 @@ adminRoutes.get("/mcp-info", async (c) => {
         },
         extraSnippets: [
           {
-            label: "claude mcp add (CLI)",
+            label: "CLI — projektbezogen (in diesem Projekt-Verzeichnis ausführen)",
             language: "bash",
-            code: `claude mcp add --transport http lokyy-brain ${remoteEndpoint} \\\n  --header "Authorization: Bearer ${httpToken}"`,
+            code: `claude mcp add --transport http lokyy-brain ${remoteEndpoint} --header "Authorization: Bearer ${httpToken}"`,
+          },
+          {
+            label: "CLI — global (alle Projekte, in beliebigem Verzeichnis ausführen)",
+            language: "bash",
+            code: `claude mcp add --transport http --scope user lokyy-brain ${remoteEndpoint} --header "Authorization: Bearer ${httpToken}"`,
           },
         ],
         endpointUrl: remoteEndpoint,
