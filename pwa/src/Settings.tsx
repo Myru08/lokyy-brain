@@ -182,6 +182,32 @@ const VOICE_LANGUAGES: { value: string | null; label: string }[] = [
   { value: "it", label: "Italiano (it)" },
 ];
 
+/**
+ * Curated fallback list of common IANA timezones. Used when
+ * `Intl.supportedValuesOf("timeZone")` is not available (Firefox < 110,
+ * very old WebKit). Keep this list short and cover the most common
+ * deployment regions — the UI surfaces a "Limited list — Firefox-Browser"
+ * hint so the operator knows it's not the full ~600 zones.
+ */
+const TZ_FALLBACK_LIST: string[] = [
+  "UTC",
+  "Europe/Berlin",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Madrid",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "Asia/Tokyo",
+  "Asia/Shanghai",
+  "Asia/Singapore",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+];
+
 /** Seven top-level tabs. Order matches the visible tab bar. */
 type TabKey =
   | "system"
@@ -288,6 +314,27 @@ export function Settings({ onClose }: { onClose: () => void }) {
     "idle" | "saving" | "ok" | "fail"
   >("idle");
   const [voiceSaveError, setVoiceSaveError] = useState<string>();
+
+  // Timezone (System tab). Global IANA TZ persisted via
+  //   GET /api/system/timezone  →  { timezone: string }
+  //   PUT /api/system/timezone  ←  { timezone: string }
+  //
+  //   - `tzSaved`     is the last server snapshot, used to detect "dirty" so
+  //                   the Save button only enables on actual changes.
+  //   - `tzDraft`     is the currently-edited value (dropdown / auto-detect).
+  //   - `tzNow`       drives the live ticking clock; updated every 1s via
+  //                   setInterval while the System tab is mounted.
+  //   - `tzOptions`   is the full IANA list from Intl.supportedValuesOf, or
+  //                   the curated fallback for Firefox < 110.
+  //   - `tzFallback`  flag toggles the "Limited list — Firefox-Browser" hint.
+  const [tzSaved, setTzSaved] = useState<string | null>(null);
+  const [tzDraft, setTzDraft] = useState<string>("UTC");
+  const [tzNow, setTzNow] = useState<Date>(new Date());
+  const [tzSaveState, setTzSaveState] = useState<
+    "idle" | "saving" | "ok" | "fail"
+  >("idle");
+  const [tzSaveError, setTzSaveError] = useState<string>();
+  const [tzAutoDetected, setTzAutoDetected] = useState<string | null>(null);
 
   // Vault maintenance — ULID-Backfill (Phase D Wave D1 / Story 1)
   const [backfillStatus, setBackfillStatus] = useState<{
@@ -499,9 +546,72 @@ export function Settings({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /**
+   * Fetch the persisted global timezone. 404 / network errors leave the
+   * form on the browser-local TZ so the operator can still save.
+   */
+  async function loadTimezone() {
+    try {
+      const res = await fetch("/api/system/timezone", {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        console.debug("[Settings] /api/system/timezone →", res.status);
+        // Pre-fill with browser-local so the dropdown isn't empty.
+        const browserTz =
+          Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+        setTzDraft(browserTz);
+        return;
+      }
+      const data = (await res.json()) as { timezone?: string };
+      const tz =
+        data.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? "UTC";
+      setTzSaved(tz);
+      setTzDraft(tz);
+    } catch (err) {
+      console.debug("[Settings] /api/system/timezone failed", err);
+      const browserTz =
+        Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      setTzDraft(browserTz);
+    }
+  }
+
+  async function saveTimezone() {
+    setTzSaveState("saving");
+    setTzSaveError(undefined);
+    try {
+      const res = await fetch("/api/system/timezone", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ timezone: tzDraft }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setTzSaveState("fail");
+        setTzSaveError(
+          (data as { message?: string; error?: string }).message ??
+            (data as { error?: string }).error ??
+            "Ungültige IANA-Zeitzone",
+        );
+        return;
+      }
+      const updated =
+        (data as { timezone?: string }).timezone ?? tzDraft;
+      setTzSaved(updated);
+      setTzDraft(updated);
+      setTzSaveState("ok");
+      setTimeout(() => setTzSaveState("idle"), 2500);
+    } catch (err) {
+      setTzSaveState("fail");
+      setTzSaveError(err instanceof Error ? err.message : "Fehler");
+    }
+  }
+
   useEffect(() => {
     void load();
     void loadForgejoProbe();
+    void loadTimezone();
     // OAuth-callback flash: if we just landed back from
     // `/api/auth/forgejo/callback` (which 302'd us to
     // `/settings?forgejo=connected`), show a brief confirmation and
@@ -599,6 +709,16 @@ export function Settings({ onClose }: { onClose: () => void }) {
       void loadVoiceSettings();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Live clock ticker for the Timezone panel. Only ticks while the
+  // System tab is visible — cleanup cancels the interval on tab switch
+  // or unmount so we don't burn cycles on hidden panels.
+  useEffect(() => {
+    if (tab !== "system") return;
+    setTzNow(new Date());
+    const id = setInterval(() => setTzNow(new Date()), 1000);
+    return () => clearInterval(id);
   }, [tab]);
 
   async function changeVaultUrl() {
@@ -723,6 +843,39 @@ export function Settings({ onClose }: { onClose: () => void }) {
     };
   }, [mcp, runtime]);
 
+  // ── Timezone options. `Intl.supportedValuesOf("timeZone")` is the
+  //    canonical source (~600 zones). Firefox added it in 110 — older
+  //    builds throw, so we fall back to a curated common-zones list and
+  //    raise the `tzFallback` flag for the UI hint.
+  const tzCatalog = useMemo<{ list: string[]; fallback: boolean }>(() => {
+    try {
+      const fn = (
+        Intl as unknown as {
+          supportedValuesOf?: (k: string) => string[];
+        }
+      ).supportedValuesOf;
+      if (typeof fn === "function") {
+        const list = fn("timeZone");
+        if (Array.isArray(list) && list.length > 0) {
+          return { list: [...list].sort(), fallback: false };
+        }
+      }
+    } catch {
+      // fall through to fallback
+    }
+    return { list: [...TZ_FALLBACK_LIST].sort(), fallback: true };
+  }, []);
+
+  // Ensure the currently-saved TZ is selectable even if it's not in the
+  // catalog (custom IANA name, region the browser doesn't recognise).
+  const tzOptions = useMemo<string[]>(() => {
+    const base = tzCatalog.list;
+    if (tzDraft && !base.includes(tzDraft)) {
+      return [tzDraft, ...base];
+    }
+    return base;
+  }, [tzCatalog, tzDraft]);
+
   if (!settings || !status || !mcp) {
     return (
       <div
@@ -817,36 +970,60 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
       {/* ───── Tab: System ───── */}
       {tab === "system" && (
-        <Section title="System-Status">
-          <StatusBar
-            label="Forgejo"
-            ok={status.forgejo.ok}
-            detail={status.forgejo.error}
+        <>
+          <Section title="System-Status">
+            <StatusBar
+              label="Forgejo"
+              ok={status.forgejo.ok}
+              detail={status.forgejo.error}
+            />
+            <StatusBar
+              label="Postgres"
+              ok={status.postgres.ok}
+              detail={
+                status.postgres.error ??
+                (status.postgres.pgvector
+                  ? `pgvector v${status.postgres.pgvector}`
+                  : "pgvector fehlt")
+              }
+            />
+            <StatusBar
+              label="Ollama"
+              ok={status.ollama.ok}
+              detail={
+                status.ollama.error ??
+                (status.ollama.hasNomicEmbed
+                  ? "nomic-embed-text bereit"
+                  : "nomic-embed-text fehlt")
+              }
+            />
+            <button
+              onClick={() => void load()}
+              style={{ ...btn, marginTop: 12 }}
+            >
+              Status neu laden
+            </button>
+          </Section>
+
+          <TimezonePanel
+            tzDraft={tzDraft}
+            setTzDraft={setTzDraft}
+            tzSaved={tzSaved}
+            tzNow={tzNow}
+            tzOptions={tzOptions}
+            tzFallback={tzCatalog.fallback}
+            tzAutoDetected={tzAutoDetected}
+            onAutoDetect={() => {
+              const browserTz =
+                Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+              setTzDraft(browserTz);
+              setTzAutoDetected(browserTz);
+            }}
+            saveState={tzSaveState}
+            saveError={tzSaveError}
+            onSave={() => void saveTimezone()}
           />
-          <StatusBar
-            label="Postgres"
-            ok={status.postgres.ok}
-            detail={
-              status.postgres.error ??
-              (status.postgres.pgvector
-                ? `pgvector v${status.postgres.pgvector}`
-                : "pgvector fehlt")
-            }
-          />
-          <StatusBar
-            label="Ollama"
-            ok={status.ollama.ok}
-            detail={
-              status.ollama.error ??
-              (status.ollama.hasNomicEmbed
-                ? "nomic-embed-text bereit"
-                : "nomic-embed-text fehlt")
-            }
-          />
-          <button onClick={() => void load()} style={{ ...btn, marginTop: 12 }}>
-            Status neu laden
-          </button>
-        </Section>
+        </>
       )}
 
       {/* ───── Tab: Vault ───── */}
@@ -2694,6 +2871,295 @@ function VoiceTab({
         </div>
       </Section>
     </>
+  );
+}
+
+/**
+ * Compute the current UTC offset for an IANA zone via
+ * `Intl.DateTimeFormat(undefined, { timeZone, timeZoneName: "longOffset" })`.
+ * Returns the raw offset token (e.g. "GMT+01:00") or empty string when the
+ * browser can't honour the request (invalid zone name).
+ */
+function tzOffsetString(timeZone: string, at: Date): string {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, {
+      timeZone,
+      timeZoneName: "longOffset",
+    }).formatToParts(at);
+    const tn = parts.find((p) => p.type === "timeZoneName");
+    if (!tn) return "";
+    // Browsers emit "GMT+01:00" — normalise the prefix to "UTC" so the
+    // display reads "Europe/Berlin (UTC+01:00)" as spec'd.
+    return tn.value.replace(/^GMT/, "UTC");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * DST-aware long zone name, e.g. "Mitteleuropäische Sommerzeit". Falls
+ * back to empty string when the browser can't produce it. Uses the user's
+ * default locale via `undefined` so the label respects browser language.
+ */
+function tzLongName(timeZone: string, at: Date): string {
+  try {
+    const parts = new Intl.DateTimeFormat(undefined, {
+      timeZone,
+      timeZoneName: "long",
+    }).formatToParts(at);
+    const tn = parts.find((p) => p.type === "timeZoneName");
+    return tn?.value ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * "2026-05-27 09:12:34" in the supplied zone. Uses `en-CA` locale to
+ * coerce the date portion into ISO-like YYYY-MM-DD ordering regardless of
+ * the operator's browser locale; the time portion is forced 24h.
+ */
+function tzFormattedTime(timeZone: string, at: Date): string {
+  try {
+    const date = new Intl.DateTimeFormat("en-CA", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(at);
+    const time = new Intl.DateTimeFormat("en-GB", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(at);
+    return `${date} ${time}`;
+  } catch {
+    return "—";
+  }
+}
+
+/**
+ * Timezone configuration panel for the System tab. Pure presentation —
+ * the parent owns all state (draft, saved snapshot, ticking clock,
+ * options) and provides callbacks for auto-detect and save. The Save
+ * button mirrors the Voice-tab UX: disabled while clean or saving,
+ * success flashes for ~2.5s.
+ */
+function TimezonePanel({
+  tzDraft,
+  setTzDraft,
+  tzSaved,
+  tzNow,
+  tzOptions,
+  tzFallback,
+  tzAutoDetected,
+  onAutoDetect,
+  saveState,
+  saveError,
+  onSave,
+}: {
+  tzDraft: string;
+  setTzDraft: (v: string) => void;
+  tzSaved: string | null;
+  tzNow: Date;
+  tzOptions: string[];
+  tzFallback: boolean;
+  tzAutoDetected: string | null;
+  onAutoDetect: () => void;
+  saveState: "idle" | "saving" | "ok" | "fail";
+  saveError: string | undefined;
+  onSave: () => void;
+}) {
+  const offset = tzOffsetString(tzDraft, tzNow);
+  const longName = tzLongName(tzDraft, tzNow);
+  const formattedTime = tzFormattedTime(tzDraft, tzNow);
+  const dirty = tzSaved !== null && tzDraft !== tzSaved;
+  const canSave = dirty && saveState !== "saving" && tzDraft.length > 0;
+
+  return (
+    <Section title="Zeitzone">
+      {/* Aktuelle Zeitzone — prominent display */}
+      <div style={{ marginBottom: 14 }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: C.textDim,
+            marginBottom: 4,
+            fontFamily: FONT.mono,
+            letterSpacing: 0.5,
+          }}
+        >
+          AKTUELLE ZEITZONE
+        </div>
+        <code
+          style={{
+            display: "block",
+            padding: "10px 12px",
+            background: C.elevated,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            fontFamily: FONT.mono,
+            fontSize: 15,
+            color: C.gold,
+            letterSpacing: 0.3,
+            wordBreak: "break-all",
+          }}
+        >
+          {tzDraft}
+          {offset ? ` (${offset})` : ""}
+        </code>
+      </div>
+
+      {/* Aktuelle Zeit in dieser Zone — live ticker */}
+      <div style={{ marginBottom: 18 }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: C.textDim,
+            marginBottom: 4,
+            fontFamily: FONT.mono,
+            letterSpacing: 0.5,
+          }}
+        >
+          AKTUELLE ZEIT IN DIESER ZONE
+        </div>
+        <code
+          style={{
+            display: "block",
+            padding: "10px 12px",
+            background: C.elevated,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            fontFamily: FONT.mono,
+            fontSize: 14,
+            color: C.text,
+          }}
+        >
+          {formattedTime}
+          {longName ? ` (${longName})` : ""}
+        </code>
+      </div>
+
+      {/* Auto-erkennen */}
+      <div style={{ marginBottom: 18 }}>
+        <button onClick={onAutoDetect} style={btn}>
+          <RefreshCw size={13} /> Auto-erkennen (Browser)
+        </button>
+        {tzAutoDetected && (
+          <div
+            style={{
+              fontSize: 11,
+              color: C.textFaint,
+              marginTop: 6,
+              fontFamily: FONT.mono,
+            }}
+          >
+            Aus Browser übernommen: <code>{tzAutoDetected}</code>
+          </div>
+        )}
+      </div>
+
+      {/* Dropdown */}
+      <div style={{ marginBottom: 14 }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: C.textDim,
+            marginBottom: 4,
+            fontFamily: FONT.mono,
+          }}
+        >
+          IANA-ZEITZONE
+        </div>
+        <select
+          value={tzDraft}
+          onChange={(e) => setTzDraft(e.target.value)}
+          style={{
+            width: "100%",
+            padding: "8px 10px",
+            background: C.elevated,
+            border: `1px solid ${C.border}`,
+            borderRadius: 6,
+            color: C.text,
+            fontFamily: FONT.mono,
+            fontSize: 13,
+            outline: "none",
+          }}
+        >
+          {tzOptions.map((tz) => (
+            <option key={tz} value={tz}>
+              {tz}
+            </option>
+          ))}
+        </select>
+        <div
+          style={{
+            fontSize: 11,
+            color: C.textFaint,
+            marginTop: 4,
+          }}
+        >
+          {tzFallback
+            ? "Limited list — Firefox-Browser (Browser unterstützt Intl.supportedValuesOf nicht; nutze einen aktuellen Chromium/WebKit für die volle Auswahl)."
+            : "~600 Zonen (vollständige IANA-Liste aus dem Browser-Intl-API)."}
+        </div>
+      </div>
+
+      {/* Save */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+        }}
+      >
+        <button
+          onClick={onSave}
+          disabled={!canSave}
+          style={{
+            ...btn,
+            opacity: canSave ? 1 : 0.5,
+            cursor: canSave ? "pointer" : "not-allowed",
+          }}
+        >
+          {saveState === "saving" && (
+            <Loader2 size={14} className="sw-spin" />
+          )}
+          Speichern
+        </button>
+        {saveState === "ok" && (
+          <span style={{ color: C.ok, fontSize: 13 }}>
+            <Check size={14} /> gespeichert
+          </span>
+        )}
+        {saveState === "fail" && (
+          <span style={{ color: C.err, fontSize: 13 }}>
+            <X size={14} /> {saveError}
+          </span>
+        )}
+      </div>
+
+      {/* Below-panel note */}
+      <div
+        style={{
+          marginTop: 14,
+          padding: "10px 12px",
+          background: C.elevated,
+          border: `1px dashed ${C.border}`,
+          borderRadius: 6,
+          fontSize: 12,
+          color: C.textDim,
+          lineHeight: 1.5,
+        }}
+      >
+        Backend speichert Zeitstempel immer in UTC. Diese Einstellung
+        beeinflusst nur, wie Daten dir angezeigt werden — z.B.
+        Voice-Notiz-Titel, Daily-Note-Pfade, Logs.
+      </div>
+    </Section>
   );
 }
 
