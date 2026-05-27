@@ -49,6 +49,16 @@ interface McpVariant {
   when: string;
   precondition?: string | string[];
   snippet: Record<string, unknown>;
+  /**
+   * Optional additional sub-snippets (e.g. a `claude mcp add` CLI form
+   * alongside the `claude_desktop_config.json` JSON). Each gets its own
+   * Copy button in the UI. Used by `c_native_http`.
+   */
+  extraSnippets?: Array<{
+    label: string;
+    language: "bash" | "json";
+    code: string;
+  }>;
   endpointUrl?: string;
   healthUrl?: string;
   authNote?: string;
@@ -65,7 +75,10 @@ interface McpInfo {
   variants?: {
     a_local_stdio: McpVariant;
     b_npx: McpVariant;
-    c_remote_http: McpVariant;
+    /** Native HTTP transport — recommended for modern clients. */
+    c_native_http: McpVariant;
+    /** Legacy mcp-remote bridge — fallback for clients without native HTTP. */
+    d_mcp_remote_legacy: McpVariant;
   };
   // legacy single-snippet support:
   claudeDesktopConfigSnippet?: Record<string, unknown>;
@@ -158,7 +171,32 @@ export function Settings({ onClose }: { onClose: () => void }) {
     "idle" | "saving" | "ok" | "fail"
   >("idle");
   const [vaultSaveError, setVaultSaveError] = useState<string>();
+  // True when the last vault-URL test returned an auth-style failure
+  // (HTTP 401 or message that smells like an expired token). When set,
+  // the Vault tab surfaces the reconnect-affordance more prominently.
+  const [vaultAuthFailed, setVaultAuthFailed] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+
+  // Forgejo OAuth connection state, used by the Vault tab's reconnect
+  // affordance. `probeState` reflects the live `/api/forgejo/probe` call:
+  //   - 'connected'    → token is valid, /api/v1/user returned 200
+  //   - 'expired'      → token present but Forgejo returned 401/403
+  //   - 'none'         → no stored token (operator never connected)
+  //   - 'network'      → probe failed for non-auth reasons
+  //   - 'loading'      → probe in flight
+  type ForgejoProbeState =
+    | "loading"
+    | "connected"
+    | "expired"
+    | "none"
+    | "network";
+  const [forgejoProbe, setForgejoProbe] =
+    useState<ForgejoProbeState>("loading");
+  const [forgejoUser, setForgejoUser] = useState<string | null>(null);
+  // Flash-message shown above the Vault tab after a successful reconnect.
+  // Triggered by the `?forgejo=connected` query param the OAuth callback
+  // lands us on.
+  const [reconnectFlash, setReconnectFlash] = useState(false);
 
   // Integrations — Supadata key + default import folder
   const [supadataInput, setSupadataInput] = useState("");
@@ -249,6 +287,40 @@ export function Settings({ onClose }: { onClose: () => void }) {
     void loadBackfillStatus();
   }
 
+  /**
+   * Probe the live Forgejo connection. `/api/forgejo/probe` calls
+   * Forgejo's `/api/v1/user` with the stored token and tells us whether
+   * it still authenticates. This is the only reliable way to know that
+   * the OAuth JWT has not silently expired — the `connection` endpoint
+   * just checks DB presence.
+   */
+  async function loadForgejoProbe() {
+    setForgejoProbe("loading");
+    try {
+      const res = await fetch("/api/forgejo/probe", { credentials: "include" });
+      if (!res.ok) {
+        setForgejoProbe("network");
+        setForgejoUser(null);
+        return;
+      }
+      const data = (await res.json()) as
+        | { ok: true; forgejoUserLogin: string }
+        | { ok: false; reason: "expired" | "no-token" | "network" };
+      if (data.ok) {
+        setForgejoProbe("connected");
+        setForgejoUser(data.forgejoUserLogin);
+        return;
+      }
+      setForgejoUser(null);
+      if (data.reason === "no-token") setForgejoProbe("none");
+      else if (data.reason === "expired") setForgejoProbe("expired");
+      else setForgejoProbe("network");
+    } catch {
+      setForgejoProbe("network");
+      setForgejoUser(null);
+    }
+  }
+
   async function loadBackfillStatus() {
     try {
       const status = await api.getBackfillStatus();
@@ -280,7 +352,45 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     void load();
+    void loadForgejoProbe();
+    // OAuth-callback flash: if we just landed back from
+    // `/api/auth/forgejo/callback` (which 302'd us to
+    // `/settings?forgejo=connected`), show a brief confirmation and
+    // scrub the query param so a refresh doesn't re-trigger it.
+    if (
+      typeof window !== "undefined" &&
+      window.location.search.includes("forgejo=connected")
+    ) {
+      setReconnectFlash(true);
+      // Auto-jump to the Vault tab — that's where the affordance lives.
+      setTab("vault");
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("forgejo");
+        const search = url.searchParams.toString();
+        window.history.replaceState(
+          {},
+          "",
+          url.pathname + (search ? `?${search}` : "") + url.hash,
+        );
+      } catch {
+        // Older browsers — ignore, the user can refresh manually.
+      }
+      // Re-probe after the OAuth round-trip so the indicator goes green.
+      void loadForgejoProbe();
+      // Auto-hide the flash after a few seconds.
+      const t = setTimeout(() => setReconnectFlash(false), 4000);
+      return () => clearTimeout(t);
+    }
   }, []);
+
+  /** Navigate to the OAuth start endpoint with a same-origin `next`. */
+  function reconnectForgejo() {
+    const next = "/settings?forgejo=connected";
+    window.location.href = `/api/auth/forgejo/start?next=${encodeURIComponent(
+      next,
+    )}`;
+  }
 
   /**
    * Live MCP health probe (Bug-fix #2). The backend advertises
@@ -339,6 +449,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
     if (!vaultId) return;
     setVaultSaveState("saving");
     setVaultSaveError(undefined);
+    setVaultAuthFailed(false);
     try {
       const res = await fetch("/api/admin/system-settings/vault-url", {
         method: "PUT",
@@ -352,9 +463,26 @@ export function Settings({ onClose }: { onClose: () => void }) {
       const data = await res.json();
       if (!res.ok) {
         setVaultSaveState("fail");
-        setVaultSaveError(data.message ?? data.error ?? "Fehler");
+        const message = data.message ?? data.error ?? "Fehler";
+        setVaultSaveError(message);
+        // Heuristic for "token vermutlich abgelaufen": the admin route
+        // returns 400 with `error: 'remote-unreachable'` for almost any
+        // failure including auth. Treat a literal 401, or a 400 whose
+        // message mentions 401/auth/Unauthorized/permission, as an
+        // auth-failure and prompt for reconnect.
+        const looksLikeAuth =
+          res.status === 401 ||
+          (res.status === 400 &&
+            /\b(401|unauthorized|authentication|permission denied|access denied|invalid (?:token|credentials))\b/i.test(
+              String(message),
+            ));
+        setVaultAuthFailed(looksLikeAuth);
+        // Refresh the probe — Forgejo may have rejected the token
+        // server-side already.
+        if (looksLikeAuth) void loadForgejoProbe();
       } else {
         setVaultSaveState("ok");
+        setVaultAuthFailed(false);
         await load();
       }
     } catch (err) {
@@ -423,9 +551,14 @@ export function Settings({ onClose }: { onClose: () => void }) {
         runtime,
       ),
       b_npx: applyRuntimeOverrides(mcp.variants.b_npx, "b_npx", runtime),
-      c_remote_http: applyRuntimeOverrides(
-        mcp.variants.c_remote_http,
-        "c_remote_http",
+      c_native_http: applyRuntimeOverrides(
+        mcp.variants.c_native_http,
+        "c_native_http",
+        runtime,
+      ),
+      d_mcp_remote_legacy: applyRuntimeOverrides(
+        mcp.variants.d_mcp_remote_legacy,
+        "d_mcp_remote_legacy",
         runtime,
       ),
     };
@@ -560,7 +693,34 @@ export function Settings({ onClose }: { onClose: () => void }) {
       {/* ───── Tab: Vault ───── */}
       {tab === "vault" && (
         <>
+          {reconnectFlash && (
+            <div
+              style={{
+                marginBottom: 14,
+                padding: "10px 14px",
+                background: C.elevated,
+                border: `1px solid ${C.ok}`,
+                borderRadius: 6,
+                color: C.ok,
+                fontSize: 13,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <Check size={14} /> Forgejo-Verbindung erneuert
+            </div>
+          )}
           <Section title="Vault-URL (Forgejo Remote)">
+            {/* Connection-status line: probe live `/api/forgejo/probe`
+                so the operator can see at a glance whether the OAuth JWT
+                is still valid (Forgejo expires them after ~1h). */}
+            <ForgejoConnectionStatus
+              state={forgejoProbe}
+              forgejoUser={forgejoUser}
+              onReconnect={reconnectForgejo}
+              onRecheck={() => void loadForgejoProbe()}
+            />
             <Field label="Vault-Name" value={vaultName} readOnly />
             <Field
               label="GIT_REMOTE"
@@ -593,6 +753,62 @@ export function Settings({ onClose }: { onClose: () => void }) {
                   <X size={14} /> {vaultSaveError}
                 </span>
               )}
+            </div>
+            {/* Auth-failure escalation: when the test smelled like an
+                expired token, surface the reconnect-button inline
+                directly under the error so the operator isn't left to
+                guess at the root cause. */}
+            {vaultSaveState === "fail" && vaultAuthFailed && (
+              <div
+                style={{
+                  marginTop: 10,
+                  padding: 10,
+                  background: C.elevated,
+                  border: `1px solid ${C.gold}`,
+                  borderRadius: 6,
+                  fontSize: 13,
+                  color: C.text,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span style={{ color: C.gold }}>
+                  Token vermutlich abgelaufen.
+                </span>
+                <button
+                  onClick={reconnectForgejo}
+                  style={{
+                    ...btn,
+                    borderColor: C.gold,
+                    color: C.gold,
+                  }}
+                >
+                  <RefreshCw size={13} /> Forgejo neu verbinden
+                </button>
+              </div>
+            )}
+            <div style={{ marginTop: 8 }}>
+              <button
+                onClick={reconnectForgejo}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  padding: 0,
+                  color: C.textDim,
+                  fontFamily: FONT.ui,
+                  fontSize: 12,
+                  cursor: "pointer",
+                  textDecoration: "underline",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+                title="Öffnet den Forgejo-OAuth-Flow und kehrt danach in die Settings zurück."
+              >
+                <RefreshCw size={11} /> Forgejo-Verbindung erneuern
+              </button>
             </div>
           </Section>
 
@@ -754,9 +970,15 @@ export function Settings({ onClose }: { onClose: () => void }) {
               {patchedVariants ? (
                 <>
                   {(
-                    ["a_local_stdio", "b_npx", "c_remote_http"] as const
+                    [
+                      "a_local_stdio",
+                      "b_npx",
+                      "c_native_http",
+                      "d_mcp_remote_legacy",
+                    ] as const
                   ).map((k) => {
                     const v = patchedVariants[k];
+                    const isLegacy = k === "d_mcp_remote_legacy";
                     return (
                       <div
                         key={k}
@@ -765,7 +987,8 @@ export function Settings({ onClose }: { onClose: () => void }) {
                           padding: 12,
                           background: C.elevated,
                           borderRadius: 6,
-                          border: `1px solid ${C.border}`,
+                          border: `1px solid ${isLegacy ? C.border : C.border}`,
+                          opacity: isLegacy ? 0.85 : 1,
                         }}
                       >
                         <div
@@ -773,6 +996,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
                             display: "flex",
                             justifyContent: "space-between",
                             alignItems: "baseline",
+                            gap: 8,
                           }}
                         >
                           <strong
@@ -780,9 +1004,28 @@ export function Settings({ onClose }: { onClose: () => void }) {
                               color: C.accent,
                               fontFamily: FONT.serif,
                               fontSize: 14,
+                              display: "flex",
+                              alignItems: "center",
+                              gap: 8,
                             }}
                           >
                             {v.title}
+                            {isLegacy && (
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  color: C.textFaint,
+                                  fontFamily: FONT.mono,
+                                  letterSpacing: 0.5,
+                                  padding: "2px 6px",
+                                  border: `1px solid ${C.border}`,
+                                  borderRadius: 4,
+                                  textTransform: "uppercase",
+                                }}
+                              >
+                                Legacy
+                              </span>
+                            )}
                           </strong>
                           <span
                             style={{
@@ -857,6 +1100,15 @@ export function Settings({ onClose }: { onClose: () => void }) {
                           onCopy={(l, c) => copy(l, c)}
                           copiedLabel={copied}
                         />
+                        {v.extraSnippets?.map((sub, i) => (
+                          <CodeBlock
+                            key={`${k}-extra-${i}`}
+                            label={`${v.title} — ${sub.label}`}
+                            code={sub.code}
+                            onCopy={(l, c) => copy(l, c)}
+                            copiedLabel={copied}
+                          />
+                        ))}
                         {v.authNote && (
                           <Note color={C.textDim}>{v.authNote}</Note>
                         )}
@@ -1205,18 +1457,28 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
 /**
  * Returns the variant with Remote-HTTP URLs overridden by the runtime
- * payload when available. Other variants (a_local_stdio, b_npx) pass
- * through untouched. The snippet's third positional `args` slot is the
- * URL passed to `mcp-remote` — we rewrite it here in lock-step with the
- * `endpointUrl` so the copyable claude_desktop_config matches the
- * displayed endpoint.
+ * payload when available. Local variants (a_local_stdio, b_npx) pass
+ * through untouched.
+ *
+ * Two HTTP shapes are supported:
+ *   - native HTTP (`c_native_http`): snippet.mcpServers[name].url = "<URL>"
+ *   - mcp-remote bridge (`d_mcp_remote_legacy`):
+ *     snippet.mcpServers[name].args = ["-y","mcp-remote","<URL>", …]
+ *
+ * extraSnippets (e.g. the `claude mcp add` CLI form) also get their URLs
+ * rewritten via a regex pass so the copyable command matches the displayed
+ * endpoint.
  */
 function applyRuntimeOverrides(
   variant: McpVariant,
-  key: "a_local_stdio" | "b_npx" | "c_remote_http",
+  key:
+    | "a_local_stdio"
+    | "b_npx"
+    | "c_native_http"
+    | "d_mcp_remote_legacy",
   runtime: RuntimeInfo | null,
 ): McpVariant {
-  if (key !== "c_remote_http") return variant;
+  if (key !== "c_native_http" && key !== "d_mcp_remote_legacy") return variant;
   const publicUrl = runtime?.env.mcpPublicUrl?.trim();
   if (!publicUrl) return variant;
 
@@ -1226,7 +1488,6 @@ function applyRuntimeOverrides(
     : `${publicUrl}/health`;
 
   // Patch the snippet so the copyable JSON points at the public URL too.
-  // Structure (from server admin route): { mcpServers: { "lokyy-brain": { args: [...] } } }
   const patchedSnippet = JSON.parse(JSON.stringify(variant.snippet)) as Record<
     string,
     unknown
@@ -1236,9 +1497,18 @@ function applyRuntimeOverrides(
       .mcpServers;
     if (servers) {
       for (const name of Object.keys(servers)) {
-        const entry = servers[name] as { args?: unknown[] } | undefined;
-        if (entry && Array.isArray(entry.args)) {
-          // args = ["-y", "mcp-remote", "<URL>", "--header", "Authorization:Bearer …"]
+        const entry = servers[name] as
+          | { args?: unknown[]; url?: unknown }
+          | undefined;
+        if (!entry) continue;
+
+        // Native HTTP shape: { type: "http", url: "<URL>", headers: {...} }
+        if (typeof entry.url === "string" && /^https?:\/\//.test(entry.url)) {
+          entry.url = publicUrl;
+        }
+
+        // mcp-remote shape: args = ["-y","mcp-remote","<URL>","--header", …]
+        if (Array.isArray(entry.args)) {
           for (let i = 0; i < entry.args.length; i++) {
             const a = entry.args[i];
             if (typeof a === "string" && /^https?:\/\//.test(a)) {
@@ -1253,11 +1523,18 @@ function applyRuntimeOverrides(
     // If the snippet shape ever drifts, leave it untouched rather than crash.
   }
 
+  // Rewrite any URL occurrences in extraSnippets (e.g. the CLI command).
+  const patchedExtras = variant.extraSnippets?.map((sub) => ({
+    ...sub,
+    code: sub.code.replace(/https?:\/\/[^\s"']+/g, publicUrl),
+  }));
+
   return {
     ...variant,
     endpointUrl: publicUrl,
     healthUrl,
     snippet: patchedSnippet,
+    ...(patchedExtras ? { extraSnippets: patchedExtras } : {}),
   };
 }
 
@@ -1492,6 +1769,110 @@ function McpNotReadyBlock({
       <button onClick={onRecheck} style={btn}>
         <RefreshCw size={13} /> Status erneut prüfen
       </button>
+    </div>
+  );
+}
+
+/**
+ * One-line connection-status indicator for the Vault tab.
+ *
+ *   ✓ OAuth-Verbindung aktiv (Login: <user>)   – green   (probe ok)
+ *   ⚠ Token abgelaufen — Forgejo neu verbinden – yellow  (probe 401)
+ *   — nicht verbunden                          – gray    (no token)
+ *   ⚠ Verbindung ungeprüft (Netzwerkfehler)    – gray    (network/timeout)
+ *
+ * The Reconnect button is rendered inline when the state is "expired"
+ * or "none" so the operator doesn't have to scroll.
+ */
+function ForgejoConnectionStatus({
+  state,
+  forgejoUser,
+  onReconnect,
+  onRecheck,
+}: {
+  state: "loading" | "connected" | "expired" | "none" | "network";
+  forgejoUser: string | null;
+  onReconnect: () => void;
+  onRecheck: () => void;
+}) {
+  let icon: React.ReactNode;
+  let label: string;
+  let color: string;
+  let showReconnect = false;
+  switch (state) {
+    case "connected":
+      icon = <Check size={12} />;
+      label = forgejoUser
+        ? `OAuth-Verbindung aktiv (Login: ${forgejoUser})`
+        : "OAuth-Verbindung aktiv";
+      color = C.ok;
+      break;
+    case "expired":
+      icon = <X size={12} />;
+      label = "Token abgelaufen";
+      color = C.gold;
+      showReconnect = true;
+      break;
+    case "none":
+      icon = <span aria-hidden>—</span>;
+      label = "nicht verbunden";
+      color = C.textDim;
+      showReconnect = true;
+      break;
+    case "network":
+      icon = <X size={12} />;
+      label = "Verbindung ungeprüft (Netzwerkfehler)";
+      color = C.textDim;
+      break;
+    case "loading":
+    default:
+      icon = <Loader2 size={12} className="sw-spin" />;
+      label = "Verbindung wird geprüft …";
+      color = C.textDim;
+      break;
+  }
+  return (
+    <div
+      style={{
+        marginBottom: 14,
+        padding: "8px 12px",
+        background: C.elevated,
+        border: `1px solid ${C.border}`,
+        borderRadius: 6,
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        fontSize: 13,
+        flexWrap: "wrap",
+      }}
+    >
+      <span style={{ color, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        {icon}
+        {label}
+      </span>
+      <span style={{ marginLeft: "auto", display: "inline-flex", gap: 8 }}>
+        {showReconnect && (
+          <button
+            onClick={onReconnect}
+            style={{
+              ...btn,
+              padding: "4px 10px",
+              fontSize: 12,
+              borderColor: C.gold,
+              color: C.gold,
+            }}
+          >
+            <RefreshCw size={11} /> Forgejo neu verbinden
+          </button>
+        )}
+        <button
+          onClick={onRecheck}
+          style={{ ...btn, padding: "4px 10px", fontSize: 12 }}
+          title="Probe-Endpoint /api/forgejo/probe erneut aufrufen."
+        >
+          <RefreshCw size={11} /> Status erneut prüfen
+        </button>
+      </span>
     </div>
   );
 }

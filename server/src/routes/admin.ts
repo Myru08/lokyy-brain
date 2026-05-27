@@ -358,10 +358,11 @@ adminRoutes.get("/status", async (c) => {
 
 // GET /api/admin/mcp-info — connection info for Claude Desktop / other MCP clients (Story 1.12 + Epic 7)
 //
-// Liefert 3 Snippet-Varianten:
+// Liefert 4 Snippet-Varianten:
 //   A) local stdio (default, läuft NUR auf diesem Rechner)
 //   B) npm via npx (für andere Rechner ohne lokyy-brain checkout)
-//   C) Remote HTTP (überall einbindbar, braucht laufenden lokyy-mcp-http server + Token)
+//   C) Native HTTP — empfohlen für Claude Code / Claude Desktop (kein bridge, direkter HTTP-Transport)
+//   D) Legacy mcp-remote-Bridge (Fallback wenn der Client kein natives HTTP unterstützt)
 adminRoutes.get("/mcp-info", async (c) => {
   const projectRoot = process.env.LOKYY_PROJECT_ROOT ?? process.cwd().replace(/\/server$/, "");
   const vaultRows = await database().select().from(vaults).limit(1);
@@ -424,8 +425,41 @@ adminRoutes.get("/mcp-info", async (c) => {
         },
       },
 
-      c_remote_http: {
-        title: "Remote HTTP — überall einbindbar (auch via Internet)",
+      c_native_http: {
+        title: "Native HTTP — empfohlen für Claude Code / Claude Desktop",
+        when:
+          "Du willst von beliebigen Rechnern/Clients ohne lokyy-brain checkout connecten. Server (lokyy-mcp-http) muss laufen. Funktioniert mit Claude Code, Claude Desktop ≥ recent, claude.ai Custom Connector — alle unterstützen nativen HTTP-Transport.",
+        precondition: [
+          `Start server: pnpm --filter @lokyy/mcp start:http   (env: LOKYY_MCP_TOKEN=<token>, LOKYY_MCP_HTTP_PORT=${httpPort})`,
+          `Bei public ingress: HTTPS-Reverse-Proxy davor (Caddy/nginx/traefik).`,
+        ],
+        snippet: {
+          mcpServers: {
+            "lokyy-brain": {
+              type: "http",
+              url: remoteEndpoint,
+              headers: {
+                Authorization: `Bearer ${httpToken}`,
+              },
+            },
+          },
+        },
+        extraSnippets: [
+          {
+            label: "claude mcp add (CLI)",
+            language: "bash",
+            code: `claude mcp add --transport http lokyy-brain ${remoteEndpoint} \\\n  --header "Authorization: Bearer ${httpToken}"`,
+          },
+        ],
+        endpointUrl: remoteEndpoint,
+        healthUrl: remoteHealth,
+        authNote:
+          "Bearer-Token aus env LOKYY_MCP_TOKEN. Jeder Request muss `Authorization: Bearer <token>` mitschicken. Ohne Token startet der HTTP-Server gar nicht.",
+      },
+
+      d_mcp_remote_legacy: {
+        title:
+          "Legacy: mcp-remote-Bridge (falls dein Client kein natives HTTP unterstützt)",
         when:
           "Du willst von beliebigen Rechnern/Clients ohne lokyy-brain checkout connecten. Server (lokyy-mcp-http) muss laufen.",
         precondition: [
@@ -441,7 +475,7 @@ adminRoutes.get("/mcp-info", async (c) => {
                 "mcp-remote",
                 remoteEndpoint,
                 "--header",
-                `Authorization:Bearer ${httpToken}`,
+                `Authorization: Bearer ${httpToken}`,
               ],
             },
           },
