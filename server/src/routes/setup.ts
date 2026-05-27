@@ -2,14 +2,20 @@ import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import postgres from "postgres";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
   isSetupComplete,
   markSetupComplete,
   database,
   generateUlid,
+  setupVaultFromForgejo,
 } from "@lokyy/core";
-import { users, vaults, vaultMemberships } from "@lokyy/core";
+import {
+  users,
+  vaults,
+  vaultMemberships,
+  forgejoOauthTokens,
+} from "@lokyy/core";
 import { config } from "../config.js";
 
 const exec = promisify(execFile);
@@ -245,8 +251,84 @@ setupRoutes.post("/vault", async (c) => {
     vaultId: id,
     role: "admin",
   });
-  return c.json({ vaultId: id });
+
+  // If the owner completed the Forgejo OAuth flow, run the actual clone via
+  // `setupVaultFromForgejo` so the working-copy at `VAULT_DIR` is provisioned
+  // before the wizard finishes. Then UPSERT the vault row to lock in the
+  // canonical (untokenised) clone URL the wizard picked + the branch the
+  // helper actually used — never trust the frontend payload alone, which has
+  // been observed to be empty in race conditions and would otherwise leak
+  // `git_remote=''` to Settings + the MCP config snippets.
+  let cloneError: string | null = null;
+  try {
+    const tokenRow = await database()
+      .select()
+      .from(forgejoOauthTokens)
+      .where(
+        and(
+          eq(forgejoOauthTokens.userId, ownerUserId),
+          eq(forgejoOauthTokens.forgejoBaseUrl, config.forgejoBaseUrl),
+        ),
+      )
+      .limit(1);
+
+    const token = tokenRow[0];
+    const repoFullName = token ? parseRepoFullName(gitRemote) : null;
+
+    if (token && repoFullName) {
+      const result = await setupVaultFromForgejo({
+        vaultId: id,
+        forgejoBaseUrl: token.forgejoBaseUrl,
+        accessToken: token.accessToken,
+        repoFullName,
+        branch: gitBranch,
+      });
+
+      // Persist the canonical (untokenised) URL the wizard picked — NOT the
+      // tokenised URL `setupVaultFromForgejo` baked into `.git/config`. The
+      // tokenised URL would leak the OAuth token to anyone reading the
+      // `vaults` row (Settings UI, MCP config snippets, future audits).
+      await database()
+        .update(vaults)
+        .set({
+          gitRemote,
+          gitBranch: result.gitBranch,
+        })
+        .where(eq(vaults.id, id));
+    }
+  } catch (err) {
+    cloneError = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[setup/vault] setupVaultFromForgejo failed for vault ${id}: ${cloneError}`,
+    );
+  }
+
+  return c.json({ vaultId: id, cloneError });
 });
+
+/**
+ * Extracts `owner/repo` from a Forgejo HTTPS clone URL.
+ *
+ *   https://forgejo.example.com/oliver/mein-vault.git → "oliver/mein-vault"
+ *
+ * Returns `null` if the URL doesn't look like a parseable Forgejo HTTPS
+ * remote — e.g. SSH URLs, bare slugs, or anything where we can't safely
+ * derive an `owner/repo` pair. Callers must treat `null` as "not eligible
+ * for the Forgejo OAuth clone path" and skip `setupVaultFromForgejo`.
+ */
+function parseRepoFullName(gitRemote: string): string | null {
+  try {
+    const url = new URL(gitRemote);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    const path = url.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
+    const parts = path.split("/").filter((p) => p.length > 0);
+    if (parts.length < 2) return null;
+    // Forgejo `owner/repo` — first two non-empty segments.
+    return `${parts[0]}/${parts[1]}`;
+  } catch {
+    return null;
+  }
+}
 
 // POST /api/setup/complete
 setupRoutes.post("/complete", async (c) => {
