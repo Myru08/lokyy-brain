@@ -629,7 +629,11 @@ export function App() {
     setSecondaryNoteId(hit ? hit.id : target);
   }
 
-  // Fenster wieder aktiv -> offene Notiz neu laden (Server pullt).
+  // Fenster wieder aktiv -> offene Notiz neu laden (Server pullt) UND
+  // Datei-Baum aktualisieren. Zusätzlich pollt der Baum alle 30s solange
+  // der Tab sichtbar ist — so erscheinen Notizen, die externe MCP-Clients
+  // (claude.ai, Claude Code via create_note) nach Forgejo geschrieben
+  // haben, ohne dass der User die Seite manuell neu lädt.
   //
   // Three guards prevent the old "refetch clobbers the editor" bug:
   //   (a) skip entirely if a debounced save is pending — let it commit first
@@ -640,8 +644,15 @@ export function App() {
   //       differs, surface a non-modal banner instead of clobbering; the
   //       user can compare and decide. Without this, accidental dual-tab
   //       editing would silently lose data.
+  //
+  // The periodic poll ONLY hits `refreshTree()` — it never touches the
+  // active-note body. Re-fetching the active note on a timer would race
+  // with `isDirty`/typing protection, so that path stays bound to the
+  // explicit window-focus event where the guards above are in scope.
   useEffect(() => {
-    function onFocus() {
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+    function refreshActiveNoteIfSafe() {
       const note = activeRef.current;
       if (!note || saveTimer.current) return;
       if (isTypingRef.current) return;
@@ -666,10 +677,51 @@ export function App() {
           setActive(fresh);
         })
         .catch(() => {});
-      void refreshTree();
     }
+
+    function refreshTreeIfVisible() {
+      if (document.visibilityState === "visible") {
+        void refreshTree();
+      }
+    }
+
+    function startPoll() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(refreshTreeIfVisible, 30_000);
+    }
+
+    function stopPoll() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function onFocus() {
+      refreshActiveNoteIfSafe();
+      refreshTreeIfVisible();
+    }
+
+    function onVisibility() {
+      if (document.visibilityState === "visible") {
+        // Immediate tree refresh on un-hide, then resume the periodic poll.
+        void refreshTree();
+        startPoll();
+      } else {
+        stopPoll();
+      }
+    }
+
     window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    if (document.visibilityState === "visible") startPoll();
+
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
+      stopPoll();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   /**
