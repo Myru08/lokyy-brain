@@ -510,25 +510,29 @@ export function VoiceRecorder({
 
   /* ── AI-Polish toggle ─────────────────────────────────────────────
    * When true, the recorder fires `POST /api/notes/:id/ai-polish`
-   * after the regular save/finish path lands. Default ON per spec,
-   * persisted to localStorage so the user's preference sticks across
-   * sessions. The key is namespaced under `lokyy:` to keep the
-   * `pwa/`-local localStorage tidy.
+   * after the regular save/finish path lands. Default OFF — the
+   * editor's NoteHeader exposes a deliberate ✨ Polish button for any
+   * note, so auto-polish-on-stop is opt-in rather than the default
+   * (the original default-ON behaviour fired prematurely when the
+   * user paused mid-recording to think). Persisted to localStorage so
+   * the user's preference sticks across sessions. The key is
+   * namespaced under `lokyy:` to keep the `pwa/`-local localStorage
+   * tidy.
    *
-   * Initial read tolerates the key being absent (default ON) or
-   * malformed (also default ON — never silently disable a default-on
-   * feature based on a bad parse). Only the strings "0" / "1" are
-   * meaningful values.
+   * Initial read tolerates the key being absent (default OFF) or
+   * malformed (also default OFF — match the new default; never
+   * silently enable a default-off feature based on a bad parse).
+   * Only the strings "0" / "1" are meaningful values.
    * ─────────────────────────────────────────────────────────────── */
   const AI_POLISH_LS_KEY = "lokyy:voice:ai-polish";
   const [aiPolish, setAiPolishState] = useState<boolean>(() => {
-    if (typeof window === "undefined") return true;
+    if (typeof window === "undefined") return false;
     try {
       const raw = window.localStorage.getItem(AI_POLISH_LS_KEY);
-      if (raw === null) return true; // default ON
-      return raw !== "0"; // anything other than "0" → ON (incl. "1", legacy "true")
+      if (raw === null) return false; // default OFF
+      return raw === "1"; // only the explicit "1" turns it ON
     } catch {
-      return true; // localStorage blocked (privacy mode, file://) → default ON
+      return false; // localStorage blocked (privacy mode, file://) → default OFF
     }
   });
   const setAiPolish = (v: boolean) => {
@@ -2136,10 +2140,12 @@ export function VoiceRecorder({
                   ))}
                 </select>
               </label>
-              {/* AI-Polish toggle — Nach Stop von KI aufbereiten.
+              {/* AI-Polish toggle — Nach Stop automatisch von KI aufbereiten.
                 * Spec: visible for capture, editor and open-note targets
                 * (= always in live mode). Persisted to localStorage under
-                * `lokyy:voice:ai-polish`. Defaults ON. */}
+                * `lokyy:voice:ai-polish`. Defaults OFF — the editor's
+                * NoteHeader exposes a deliberate ✨ Polish button for any
+                * note, so the auto-on-stop variant is opt-in. */}
               <label
                 style={{
                   display: "flex",
@@ -2163,14 +2169,14 @@ export function VoiceRecorder({
                 />
                 <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <span style={{ fontWeight: 600 }}>
-                    Nach Stop von KI aufbereiten{" "}
-                    <span style={{ color: C.textFaint, fontWeight: 400, fontSize: 11 }}>
-                      (Standard)
-                    </span>
+                    Nach Stop automatisch von KI aufbereiten
                   </span>
                   <span style={{ color: C.textDim, fontSize: 11 }}>
                     Filterwörter raus, Markdown-Struktur, Titel + Tags.
                     Original-Transkript bleibt im Frontmatter (raw_transcript).
+                  </span>
+                  <span style={{ color: C.textFaint, fontSize: 10.5, fontStyle: "italic" }}>
+                    Tipp: Du kannst die Notiz auch jederzeit später aus dem Editor heraus mit dem ✨-Button polieren.
                   </span>
                 </span>
               </label>
@@ -2218,10 +2224,12 @@ export function VoiceRecorder({
                 </code>{" "}
                 abgelegt.
               </p>
-              {/* AI-Polish toggle — Nach Stop von KI aufbereiten.
+              {/* AI-Polish toggle — Nach Stop automatisch von KI aufbereiten.
                 * Whisper variant: same key/state as the live version, so
                 * flipping it in either mode persists across the next
-                * session regardless of which mode the user picks. */}
+                * session regardless of which mode the user picks. Default
+                * OFF — the editor's NoteHeader exposes a deliberate ✨
+                * Polish button so auto-polish-on-stop is opt-in. */}
               <label
                 style={{
                   display: "flex",
@@ -2245,14 +2253,14 @@ export function VoiceRecorder({
                 />
                 <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
                   <span style={{ fontWeight: 600 }}>
-                    Nach Stop von KI aufbereiten{" "}
-                    <span style={{ color: C.textFaint, fontWeight: 400, fontSize: 11 }}>
-                      (Standard)
-                    </span>
+                    Nach Stop automatisch von KI aufbereiten
                   </span>
                   <span style={{ color: C.textDim, fontSize: 11 }}>
                     Filterwörter raus, Markdown-Struktur, Titel + Tags.
                     Original-Transkript bleibt im Frontmatter (raw_transcript).
+                  </span>
+                  <span style={{ color: C.textFaint, fontSize: 10.5, fontStyle: "italic" }}>
+                    Tipp: Du kannst die Notiz auch jederzeit später aus dem Editor heraus mit dem ✨-Button polieren.
                   </span>
                 </span>
               </label>

@@ -121,6 +121,175 @@ function flattenNotes(nodes: TreeNode[]): { name: string; id: string }[] {
   return out;
 }
 
+/**
+ * Polish-undo helper — rewrites a polished note's body back to its
+ * pre-polish form.
+ *
+ * Input contract (set by `POST /api/notes/:id/ai-polish`):
+ *   - `raw_transcript:` is a top-level frontmatter field holding the
+ *     pre-polish markdown body. Multi-line bodies are emitted as YAML
+ *     block scalars (`|`, `|-`, `|+`, `>`, `>-`, `>+`) by js-yaml; single-
+ *     line bodies may appear inline.
+ *   - `ai_polished_at:` and `ai_polished_model:` are top-level scalars.
+ *
+ * Output:
+ *   - new body string with the three polish-marker fields removed and
+ *     the markdown body replaced by the parsed `raw_transcript` value
+ *   - `null` when no `raw_transcript` field is present (caller treats
+ *     this as "nothing to undo")
+ *
+ * Why a hand-rolled parser:
+ *   The PWA currently ships only `gray-matter` on the server side; the
+ *   frontend's existing frontmatter parser (PropertiesPanel.tsx) is
+ *   flat-only and doesn't speak block scalars. Adding a YAML lib to the
+ *   PWA bundle for one feature is overkill — the polish endpoint always
+ *   writes the same three fields with predictable shapes, so a focused
+ *   parser covers the use case at ~50 lines.
+ *
+ * Block-scalar styles handled:
+ *   - `|`  (literal, keep final newline)
+ *   - `|-` (literal, strip final newline)
+ *   - `|+` (literal, keep all trailing newlines)
+ *   - `>`  (folded, keep final newline)
+ *   - `>-` (folded, strip final newline)
+ *   - `>+` (folded, keep all trailing newlines)
+ *   We treat folded and literal identically for restoration — js-yaml's
+ *   default for multi-line strings is literal (`|-`), and even when the
+ *   user typed with linebreaks the folded variant round-trips the same
+ *   text minus one newline either way. Good enough for the recovery path.
+ */
+function restorePrePolishBody(body: string): string | null {
+  const fmMatch = /^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n?)/.exec(body);
+  if (!fmMatch) return null;
+  const fmOpen = fmMatch[1] ?? "";
+  const fmBlock = fmMatch[2] ?? "";
+  const fmClose = fmMatch[3] ?? "";
+  // Intentional: the polished body (everything after the closing `---`)
+  // is discarded — that's the entire point of "undo polish". We rebuild
+  // the body from the captured `raw_transcript` value instead.
+
+  const lines = fmBlock.split(/\r?\n/);
+  let rawTranscript: string | null = null;
+  const keptLines: string[] = [];
+
+  const STRIP_KEYS = new Set([
+    "raw_transcript",
+    "ai_polished_at",
+    "ai_polished_model",
+  ]);
+
+  // Single pass: top-level keys live at column 0 (no leading whitespace).
+  // When we hit a stripped key we either consume its inline value (single
+  // line) or consume its indented block-scalar children (multi-line).
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i] ?? "";
+    const km = /^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$/.exec(line);
+    if (!km) {
+      // Continuation / comment / blank — keep verbatim (it belongs to the
+      // previous key, which we either kept or stripped along with its
+      // children below).
+      keptLines.push(line);
+      i++;
+      continue;
+    }
+    const key = km[1] ?? "";
+    const rest = (km[2] ?? "").trim();
+    if (!STRIP_KEYS.has(key)) {
+      keptLines.push(line);
+      i++;
+      continue;
+    }
+    // Stripped key. If it's a block scalar, capture its body for
+    // raw_transcript and advance past the indented children.
+    const blockMatch = /^([|>])([+-]?)\s*$/.exec(rest);
+    if (blockMatch && key === "raw_transcript") {
+      const chomp = blockMatch[2] ?? "";
+      // Collect indented child lines.
+      const children: string[] = [];
+      let baseIndent: number | null = null;
+      let j = i + 1;
+      while (j < lines.length) {
+        const ln = lines[j] ?? "";
+        if (ln.trim() === "") {
+          children.push("");
+          j++;
+          continue;
+        }
+        const indentMatch = /^(\s+)/.exec(ln);
+        if (!indentMatch) break; // next top-level key
+        const indent = (indentMatch[1] ?? "").length;
+        if (baseIndent === null) baseIndent = indent;
+        if (indent < baseIndent) break;
+        children.push(ln.slice(baseIndent));
+        j++;
+      }
+      // Apply chomp: `-` strips trailing blank lines; `+` keeps everything;
+      // default keeps exactly one trailing newline. We always rejoin with
+      // `\n` and let the body-write below re-add a single trailing newline.
+      let txt = children.join("\n");
+      if (chomp === "-") {
+        txt = txt.replace(/\n+$/, "");
+      } else if (chomp === "+") {
+        // keep as-is
+      } else {
+        txt = txt.replace(/\n+$/, "") + "\n";
+      }
+      rawTranscript = txt;
+      i = j;
+      continue;
+    }
+    if (blockMatch) {
+      // Block-scalar for a non-raw stripped key (e.g. multi-line model
+      // string — unlikely but defensive). Just skip the children.
+      let j = i + 1;
+      let baseIndent: number | null = null;
+      while (j < lines.length) {
+        const ln = lines[j] ?? "";
+        if (ln.trim() === "") {
+          j++;
+          continue;
+        }
+        const indentMatch = /^(\s+)/.exec(ln);
+        if (!indentMatch) break;
+        const indent = (indentMatch[1] ?? "").length;
+        if (baseIndent === null) baseIndent = indent;
+        if (indent < baseIndent) break;
+        j++;
+      }
+      i = j;
+      continue;
+    }
+    // Inline scalar — drop the line for stripped keys. For raw_transcript
+    // specifically, capture the inline value (stripping optional quotes).
+    if (key === "raw_transcript") {
+      let t = rest;
+      if (
+        (t.startsWith('"') && t.endsWith('"') && t.length >= 2) ||
+        (t.startsWith("'") && t.endsWith("'") && t.length >= 2)
+      ) {
+        t = t.slice(1, -1);
+      }
+      rawTranscript = t;
+    }
+    i++;
+  }
+
+  if (rawTranscript === null) return null;
+
+  // Rebuild the frontmatter block, preserving the original open/close
+  // marker bytes (CRLF vs LF) so we don't introduce diff noise.
+  const newFmBlock = keptLines.join("\n").replace(/\n+$/, "");
+  // Body separator: js-yaml + gray-matter emit a single newline after the
+  // closing `---`. The polish endpoint preserves whatever the original had
+  // around the body, so we re-emit raw_transcript's contents with one
+  // trailing newline (matches what most editors expect).
+  const newBody = rawTranscript.endsWith("\n")
+    ? rawTranscript
+    : rawTranscript + "\n";
+  return `${fmOpen}${newFmBlock}${fmClose}${newBody}`;
+}
+
 export function App() {
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [active, setActive] = useState<Note | null>(null);
@@ -802,6 +971,121 @@ export function App() {
   }
 
   /**
+   * AI-Polish handler — fires `POST /api/notes/:id/ai-polish` and refetches
+   * the note so the editor picks up the polished body.
+   *
+   * Why this lives in App.tsx (not in NoteHeader): the polish endpoint
+   * rewrites the note's body on disk. The editor needs the same refetch
+   * path that forget/unforget use so cursor + sync state stay coherent.
+   * NoteHeader owns the button + confirmation + spinner; we own the HTTP
+   * call and the body-replacement.
+   *
+   * Throws (rejects) on failure so NoteHeader can surface the message
+   * inline next to the button. App.tsx flushes any pending save first so
+   * the polish endpoint reads the current body, not the stale committed one.
+   */
+  async function handlePolish(targetNoteId: string) {
+    await flushNow();
+    const res = await fetch(
+      `/api/notes/${encodeURIComponent(targetNoteId)}/ai-polish`,
+      { method: "POST", credentials: "include" },
+    );
+    // Backend contract: { ok: true, ... } | { ok: false, error, message }.
+    // Parse-error fallthrough still surfaces something meaningful.
+    const body = (await res
+      .json()
+      .catch(() => ({
+        ok: false,
+        error: "parse-error",
+        message: "Antwort konnte nicht gelesen werden.",
+      }))) as { ok?: boolean; error?: string; message?: string };
+    if (!res.ok || body.ok !== true) {
+      const msg =
+        body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`;
+      throw new Error(msg);
+    }
+    // Refetch through the standard `api.getNote` path so the editor's
+    // initialBody-watcher in Editor.tsx sees the new body and resyncs the
+    // doc without losing scroll. Mirrors what handleForget does.
+    try {
+      const fresh = await api.getNote(targetNoteId);
+      dirtyBody.current = fresh.body;
+      savedBodyRef.current = fresh.body;
+      setActive(fresh);
+      setSync("synced");
+      setLastSavedAt(Date.now());
+      setErrorMsg(null);
+      setBacklinksRefresh((n) => n + 1);
+    } catch (err) {
+      // Polish succeeded but reload failed — note IS polished on disk,
+      // the user will see it on the next focus-pull. Surface a soft error
+      // so they understand why the editor still shows the un-polished body.
+      throw new Error(
+        `Polish OK, aber Notiz konnte nicht neu geladen werden: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
+  /**
+   * Polish-undo handler — restores the pre-polish body from the
+   * `raw_transcript` frontmatter field, strips `raw_transcript`,
+   * `ai_polished_at`, `ai_polished_model`, and persists the rewritten
+   * note via the standard save flow.
+   *
+   * The whole rewrite happens client-side because the polish endpoint
+   * doesn't have an inverse — we already have everything we need in the
+   * active note's body. We use a small inline frontmatter parser that
+   * handles the YAML block-scalar `|`/`|-`/`>` shapes the polish
+   * endpoint emits via gray-matter+js-yaml.
+   */
+  async function handlePolishUndo(targetNoteId: string) {
+    const cur = activeRef.current;
+    if (!cur || cur.id !== targetNoteId) {
+      throw new Error("Aktive Notiz passt nicht zur Undo-Anfrage.");
+    }
+    await flushNow();
+    const restored = restorePrePolishBody(cur.body);
+    if (!restored) {
+      throw new Error(
+        "Kein raw_transcript im Frontmatter gefunden — nichts wiederherzustellen.",
+      );
+    }
+    // Update local state immediately so the editor re-syncs to the
+    // restored body, then persist via the existing PUT pipeline. We don't
+    // use the debounce — undo is an explicit action and should land asap.
+    dirtyBody.current = restored;
+    setActive({ ...cur, body: restored });
+    setSync("dirty");
+    try {
+      const saved = await api.putNote(targetNoteId, restored);
+      savedBodyRef.current = restored;
+      // Match the standard save-success branch: surface "synced" + timestamp.
+      setSync("synced");
+      setLastSavedAt(Date.now());
+      setErrorMsg(null);
+      // Reload from server so any backend-side frontmatter touches (e.g.
+      // bumped `updated`) reach the editor without manual reload.
+      try {
+        const fresh = await api.getNote(targetNoteId);
+        dirtyBody.current = fresh.body;
+        savedBodyRef.current = fresh.body;
+        setActive(fresh);
+      } catch {
+        // Best-effort — the local body is already correct.
+      }
+      setBacklinksRefresh((n) => n + 1);
+      // Discard `saved` — the refetch above (when it succeeds) supersedes it.
+      void saved;
+    } catch (err) {
+      setSync("error");
+      setErrorMsg(err instanceof Error ? err.message : "Undo fehlgeschlagen");
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+  }
+
+  /**
    * Wikilink mit Cmd/Ctrl+Klick → ins Sekundär-Pane. Auflösung mirrort
    * `onOpenLink`, aber landet bei `setSecondaryNoteId` statt `open`.
    * Falls bereits eine Secondary-Pane offen ist und die selbst einen
@@ -1463,6 +1747,8 @@ export function App() {
                     setErrorMsg(null);
                     if (sync === "error") setSync("dirty");
                   }}
+                  onPolish={handlePolish}
+                  onPolishUndo={handlePolishUndo}
                 />
                 {pendingServerBody && (
                   <ServerConflictBanner

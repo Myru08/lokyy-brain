@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Loader2, Save, RefreshCw } from "lucide-react";
+import { Loader2, Save, RefreshCw, Sparkles, Undo2 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { useIsMobile } from "./responsive.js";
 
@@ -77,6 +77,27 @@ export interface NoteHeaderProps {
    * App.tsx clears errorMsg and (optionally) re-queues a save.
    */
   onDismissError?: () => void;
+  /**
+   * AI-Polish handler — fires `POST /api/notes/:id/ai-polish` and refetches
+   * the note when done. App.tsx owns the request/refetch so the editor
+   * picks up the polished body via its standard reload path. The button
+   * is hidden when this prop is omitted.
+   *
+   * Contract:
+   *   - resolves on success (UI flashes a "✓ poliert" confirmation)
+   *   - rejects with an Error whose `.message` is surfaced to the user
+   *     inline for ~6s before clearing
+   */
+  onPolish?: (noteId: string) => Promise<void>;
+  /**
+   * Polish-undo handler — restores the pre-polish body from the
+   * `raw_transcript` frontmatter field. App.tsx rebuilds the note body
+   * (strips `raw_transcript`, `ai_polished_at`, `ai_polished_model`,
+   * substitutes `raw_transcript`'s contents for the markdown body) and
+   * persists it via the existing save flow. The button is hidden when
+   * this prop is omitted OR when the active note has no `raw_transcript`.
+   */
+  onPolishUndo?: (noteId: string) => Promise<void>;
 }
 
 /** Strip a top-level YAML scalar value. No nested mapping support needed. */
@@ -116,6 +137,30 @@ function extractFrontmatterForgotten(body: string): boolean {
     const raw = (km[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
     if (raw === "" || raw === "false") return false;
     return true;
+  }
+  return false;
+}
+
+/**
+ * Detect whether the note's frontmatter carries a `raw_transcript:` key.
+ *
+ * The polish endpoint stores the pre-polish body under this field (YAML
+ * block scalar `|-`, so the line looks like `raw_transcript: |-` on its
+ * own with indented children). For the undo affordance we only need to
+ * know IF the field exists — App.tsx parses the actual contents when
+ * the user actually clicks Undo.
+ *
+ * Returns true when the frontmatter contains a top-level line that
+ * starts with `raw_transcript:` (with optional inline scalar, block-
+ * scalar marker, or empty). Returns false when the field is absent or
+ * when there's no frontmatter block at all.
+ */
+function hasRawTranscript(body: string): boolean {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);
+  if (!m) return false;
+  const block = m[1] ?? "";
+  for (const line of block.split(/\r?\n/)) {
+    if (/^raw_transcript\s*:/.test(line)) return true;
   }
   return false;
 }
@@ -346,6 +391,84 @@ const SAVE_BUTTON_STYLE_MOBILE: CSSProperties = {
 };
 
 /**
+ * Polish (sparkle) button — promotes "AI cleanup" from the recorder's
+ * post-stop auto-toggle to a deliberate per-note action available from
+ * the editor header. Distinct purple/violet tint so it doesn't compete
+ * with the orange AI-Prompt CTA or the save controls. Same pill shape
+ * as the other header buttons for visual rhythm.
+ */
+const POLISH_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "rgba(168, 85, 247, 0.12)",
+  border: "1px solid rgba(168, 85, 247, 0.45)",
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: "#A855F7",
+  fontSize: 12,
+  fontWeight: 600,
+  fontFamily: FONT.ui,
+  letterSpacing: "0.02em",
+  minHeight: 32,
+};
+
+const POLISH_BUTTON_STYLE_MOBILE: CSSProperties = {
+  ...POLISH_BUTTON_STYLE,
+  fontSize: 13,
+  padding: "8px 14px",
+  minHeight: 40,
+};
+
+/**
+ * Polish-undo button — only rendered when `raw_transcript` is present in
+ * the active note's frontmatter. Softer styling than the primary polish
+ * button (this is the recovery action, not the primary one).
+ */
+const POLISH_UNDO_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: C.textDim,
+  fontSize: 12,
+  fontWeight: 500,
+  fontFamily: FONT.ui,
+  letterSpacing: "0.02em",
+  minHeight: 32,
+};
+
+const POLISH_UNDO_BUTTON_STYLE_MOBILE: CSSProperties = {
+  ...POLISH_UNDO_BUTTON_STYLE,
+  fontSize: 13,
+  padding: "8px 14px",
+  minHeight: 40,
+};
+
+/** Inline status text next to the polish controls — success flash + error. */
+const POLISH_OK_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: C.ok,
+  fontFamily: FONT.mono,
+  whiteSpace: "nowrap",
+};
+
+const POLISH_ERR_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: C.err,
+  fontFamily: FONT.ui,
+  whiteSpace: "nowrap",
+  maxWidth: 320,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+/**
  * Compact save-status badge. The colour-dot encodes the state; the label
  * spells it out for accessibility. Pulses while dirty (CSS keyframe
  * defined inline because the project doesn't use a CSS-in-JS lib that
@@ -491,16 +614,39 @@ export function NoteHeader({
   errorMsg,
   onManualSave,
   onDismissError,
+  onPolish,
+  onPolishUndo,
 }: NoteHeaderProps) {
   const ulid = useMemo(() => extractFrontmatterUlid(body), [body]);
   const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
+  const rawTranscriptPresent = useMemo(() => hasRawTranscript(body), [body]);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+  // Polish lifecycle — independent of save lifecycle: polish triggers a
+  // server-side rewrite of the note body that the editor picks up via the
+  // standard refetch path. We mirror only the in-flight + result states
+  // here so the user sees a spinner while the request is pending and a
+  // short success/failure flash after.
+  type PolishState =
+    | { kind: "idle" }
+    | { kind: "running" }
+    | { kind: "ok" }
+    | { kind: "err"; message: string };
+  const [polishState, setPolishState] = useState<PolishState>({ kind: "idle" });
+  const polishOkTimer = useRef<number | null>(null);
+  const polishErrTimer = useRef<number | null>(null);
+  const [undoBusy, setUndoBusy] = useState<boolean>(false);
   // Phase D Wave D1 — collapse the ID-badge on mobile (it dominates a
   // 375px header and the AI-Prompt button already encodes the ULID in the
   // copy payload) and grow the remaining buttons to 40px tall.
   const isMobile = useIsMobile();
   const aiButtonStyle = isMobile ? AI_BUTTON_STYLE_MOBILE : AI_BUTTON_STYLE;
+  const polishButtonStyle = isMobile
+    ? POLISH_BUTTON_STYLE_MOBILE
+    : POLISH_BUTTON_STYLE;
+  const polishUndoButtonStyle = isMobile
+    ? POLISH_UNDO_BUTTON_STYLE_MOBILE
+    : POLISH_UNDO_BUTTON_STYLE;
 
   // Clean up any pending toast timeout on unmount / note-switch.
   useEffect(() => {
@@ -508,8 +654,107 @@ export function NoteHeader({
       if (toastTimer.current !== null) {
         window.clearTimeout(toastTimer.current);
       }
+      if (polishOkTimer.current !== null) {
+        window.clearTimeout(polishOkTimer.current);
+      }
+      if (polishErrTimer.current !== null) {
+        window.clearTimeout(polishErrTimer.current);
+      }
     };
   }, []);
+
+  // Reset polish state when the active note changes so a stale "✓ poliert"
+  // flash from note A doesn't linger after the user switches to note B.
+  useEffect(() => {
+    setPolishState({ kind: "idle" });
+    setUndoBusy(false);
+    if (polishOkTimer.current !== null) {
+      window.clearTimeout(polishOkTimer.current);
+      polishOkTimer.current = null;
+    }
+    if (polishErrTimer.current !== null) {
+      window.clearTimeout(polishErrTimer.current);
+      polishErrTimer.current = null;
+    }
+  }, [noteId]);
+
+  /**
+   * Polish click handler — confirms with the user, fires the parent
+   * callback, drives the local idle → running → ok|err state machine.
+   *
+   * Why parent owns the actual POST: the polish endpoint replaces the
+   * note's body on disk. The editor needs to reload that body via the
+   * standard `open()` → `setActive` path so its cursor/scroll handling
+   * stays consistent with every other body-replacement flow (forget,
+   * manual reload, conflict resolution). Keeping the HTTP call in the
+   * parent means the header stays a dumb view of polish state.
+   */
+  async function handlePolish() {
+    if (!onPolish) return;
+    if (polishState.kind === "running") return;
+    const ok = window.confirm(
+      "Notiz mit KI aufbereiten? Das überschreibt den aktuellen Inhalt. " +
+        "Original wird im Frontmatter unter raw_transcript gesichert (Undo möglich).",
+    );
+    if (!ok) return;
+    setPolishState({ kind: "running" });
+    try {
+      await onPolish(noteId);
+      setPolishState({ kind: "ok" });
+      if (polishOkTimer.current !== null) {
+        window.clearTimeout(polishOkTimer.current);
+      }
+      polishOkTimer.current = window.setTimeout(() => {
+        polishOkTimer.current = null;
+        setPolishState((s) => (s.kind === "ok" ? { kind: "idle" } : s));
+      }, 4000);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unbekannter Fehler");
+      setPolishState({ kind: "err", message });
+      if (polishErrTimer.current !== null) {
+        window.clearTimeout(polishErrTimer.current);
+      }
+      polishErrTimer.current = window.setTimeout(() => {
+        polishErrTimer.current = null;
+        setPolishState((s) => (s.kind === "err" ? { kind: "idle" } : s));
+      }, 6000);
+    }
+  }
+
+  /**
+   * Undo handler — restores the pre-polish body from the `raw_transcript`
+   * frontmatter field. Parent does the body-rewrite + save; we just
+   * confirm + drive the in-flight spinner. On success we don't flash
+   * anything: the editor's body changes and that IS the feedback.
+   */
+  async function handlePolishUndo() {
+    if (!onPolishUndo) return;
+    if (undoBusy) return;
+    const ok = window.confirm(
+      "Polish rückgängig machen? Der polierte Text geht verloren, " +
+        "das Original wird wiederhergestellt.",
+    );
+    if (!ok) return;
+    setUndoBusy(true);
+    try {
+      await onPolishUndo(noteId);
+    } catch (err) {
+      // Surface failure through the same inline error slot as polish itself.
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unbekannter Fehler");
+      setPolishState({ kind: "err", message });
+      if (polishErrTimer.current !== null) {
+        window.clearTimeout(polishErrTimer.current);
+      }
+      polishErrTimer.current = window.setTimeout(() => {
+        polishErrTimer.current = null;
+        setPolishState((s) => (s.kind === "err" ? { kind: "idle" } : s));
+      }, 6000);
+    } finally {
+      setUndoBusy(false);
+    }
+  }
 
   function flashToast(msg: string) {
     setToast(msg);
@@ -534,6 +779,77 @@ export function NoteHeader({
     const ok = await copyToClipboard(prompt);
     flashToast(ok ? "✓ AI-Prompt kopiert" : "✗ Kopieren fehlgeschlagen");
   }
+
+  // Polish + Undo controls. Rendered to the LEFT of the save group so
+  // the visual order matches the user's mental model: think (polish) →
+  // commit (save). The undo pill only appears when raw_transcript is
+  // present, which keeps the header lean for the 99% case (no polish in
+  // history) and makes the recovery action obvious for the 1% case (just
+  // polished, oh wait).
+  const polishControls = onPolish ? (
+    <>
+      <button
+        type="button"
+        onClick={() => void handlePolish()}
+        disabled={polishState.kind === "running"}
+        style={{
+          ...polishButtonStyle,
+          opacity: polishState.kind === "running" ? 0.6 : 1,
+          cursor: polishState.kind === "running" ? "default" : "pointer",
+        }}
+        title="Notiz mit KI aufbereiten — Markdown-Struktur, Titel + Tags, Füllwörter raus"
+        aria-label="Polish note with AI"
+      >
+        {polishState.kind === "running" ? (
+          <Loader2
+            size={14}
+            style={{ animation: "lokyy-spin 0.9s linear infinite" }}
+          />
+        ) : (
+          <Sparkles size={14} />
+        )}
+        {polishState.kind === "running" ? "Poliert…" : "Polish"}
+      </button>
+      {rawTranscriptPresent && onPolishUndo && (
+        <button
+          type="button"
+          onClick={() => void handlePolishUndo()}
+          disabled={undoBusy}
+          style={{
+            ...polishUndoButtonStyle,
+            opacity: undoBusy ? 0.6 : 1,
+            cursor: undoBusy ? "default" : "pointer",
+          }}
+          title="Polish rückgängig machen — Originaltext aus raw_transcript wiederherstellen"
+          aria-label="Undo polish — restore original from raw_transcript"
+        >
+          {undoBusy ? (
+            <Loader2
+              size={14}
+              style={{ animation: "lokyy-spin 0.9s linear infinite" }}
+            />
+          ) : (
+            <Undo2 size={14} />
+          )}
+          Original
+        </button>
+      )}
+      {polishState.kind === "ok" && (
+        <span style={POLISH_OK_STYLE} aria-live="polite">
+          ✓ poliert
+        </span>
+      )}
+      {polishState.kind === "err" && (
+        <span
+          style={POLISH_ERR_STYLE}
+          title={polishState.message}
+          aria-live="polite"
+        >
+          Polish fehlgeschlagen: {polishState.message}
+        </span>
+      )}
+    </>
+  ) : null;
 
   // Notes without a ULID (legacy / hand-written w/o frontmatter) still
   // render the title — they just don't get the copy affordances.
@@ -612,6 +928,7 @@ export function NoteHeader({
               Forgotten — not visible in search
             </span>
           )}
+          {polishControls}
           {saveControls}
           <span
             style={{
@@ -647,6 +964,7 @@ export function NoteHeader({
         </span>
       )}
       {toast && <span style={TOAST_STYLE}>{toast}</span>}
+      {polishControls}
       {saveControls}
       <button
         type="button"
