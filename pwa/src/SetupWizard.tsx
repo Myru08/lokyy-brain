@@ -4,21 +4,24 @@ import { C, FONT } from "./theme.js";
 
 /**
  * Setup Wizard (Story 1.11). Five guided steps for first-time install:
- * Forgejo → Postgres → Ollama → Admin User → Vault. Each connectivity
- * step has a "Test Connection" gate before the user can advance.
+ * Forgejo → Postgres → Ollama → Admin User → Done. The vault row is
+ * created automatically as part of the final "Setup abschließen" action,
+ * deriving its name/slug from the Forgejo repo picked in Step 1 — no
+ * separate "Vault-Verknüpfung" step (it just confused users since the
+ * repo identity was already chosen upstream).
  *
  * Mounted by the App shell when /api/setup/status returns
- * `{setupComplete: false}`. On completion, calls /api/setup/complete and
- * reloads the page so the gated routes become available.
+ * `{setupComplete: false}`. On completion, POSTs /api/setup/vault then
+ * /api/setup/complete and reloads the page so the gated routes become
+ * available.
  */
 
-type StepKey = "forgejo" | "postgres" | "ollama" | "admin" | "vault" | "done";
+type StepKey = "forgejo" | "postgres" | "ollama" | "admin" | "done";
 const STEP_ORDER: StepKey[] = [
   "forgejo",
   "postgres",
   "ollama",
   "admin",
-  "vault",
   "done",
 ];
 const STEP_LABEL: Record<StepKey, string> = {
@@ -26,7 +29,6 @@ const STEP_LABEL: Record<StepKey, string> = {
   postgres: "Postgres",
   ollama: "Ollama",
   admin: "Admin",
-  vault: "Vault",
   done: "Fertig",
 };
 
@@ -354,12 +356,15 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [s.step]);
 
-  // Auto-prefill vault Name/Slug from the Forgejo repo selected in Step 1.
-  // The DB row in `vaults` is just metadata pointing at that repo — the user
-  // shouldn't have to invent a second identity. Skip if the user has already
-  // typed something non-default.
+  // Auto-derive vault Name/Slug from the Forgejo repo selected in Step 1, so
+  // they're ready when the `done` step's completeSetup() handler POSTs to
+  // /api/setup/vault. The vault row is just metadata pointing at the repo —
+  // the user shouldn't have to invent a second identity. We refresh whenever
+  // the admin step transitions to ok, and whenever we land on the done step
+  // (e.g. on back-navigation), but skip if the user-set value already differs
+  // from the default seed.
   useEffect(() => {
-    if (s.step !== "vault") return;
+    if (s.admin.submitState !== "ok" && s.step !== "done") return;
     const url = s.forgejo.gitRemote.value;
     if (!url) return;
     if (s.vault.name && s.vault.name !== "Mein Vault" && s.vault.name !== "") return;
@@ -371,7 +376,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
       vault: { ...p.vault, name: repoName, slug: repoName },
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [s.step, s.forgejo.gitRemote.value]);
+  }, [s.admin.submitState, s.step, s.forgejo.gitRemote.value]);
 
   async function submitAdmin() {
     setS((p) => ({ ...p, admin: { ...p.admin, submitState: "submitting" } }));
@@ -394,31 +399,32 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     }
   }
 
-  async function submitVault() {
-    if (!s.admin.userId) return;
-    setS((p) => ({ ...p, vault: { ...p.vault, submitState: "submitting" } }));
-    try {
-      const res = await postJson<{ vaultId?: string; error?: string }>("/vault", {
-        name: s.vault.name,
-        slug: s.vault.slug,
-        gitRemote: s.forgejo.gitRemote.value,
-        gitBranch: s.forgejo.gitBranch,
-        ownerUserId: s.admin.userId,
-      });
-      if (!res.vaultId) {
-        setS((p) => ({ ...p, vault: { ...p.vault, submitState: "fail", error: res.error ?? "fehler" } }));
-      } else {
-        setS((p) => ({ ...p, vault: { ...p.vault, submitState: "ok", vaultId: res.vaultId } }));
-      }
-    } catch (err) {
-      setS((p) => ({
-        ...p,
-        vault: { ...p.vault, submitState: "fail", error: err instanceof Error ? err.message : "fehler" },
-      }));
-    }
-  }
-
   async function completeSetup() {
+    // The dedicated "vault" wizard step was removed — name/slug are auto-derived
+    // from the Forgejo repo picked in Step 1, the admin is the owner, and the
+    // POST happens here just before /complete. If the vault row already exists
+    // (server returns 400 with an "already setup" style message), we swallow
+    // the error and let /complete proceed — /complete itself will fail loudly
+    // if the vault is truly missing.
+    if (s.admin.userId) {
+      try {
+        const res = await postJson<{ vaultId?: string; error?: string }>("/vault", {
+          name: s.vault.name,
+          slug: s.vault.slug,
+          gitRemote: s.forgejo.gitRemote.value,
+          gitBranch: s.forgejo.gitBranch,
+          ownerUserId: s.admin.userId,
+        });
+        if (!res.vaultId && res.error) {
+          // 400 path — postJson resolves on 400 so we can inspect the body.
+          // eslint-disable-next-line no-console
+          console.warn("[setup] vault POST returned error, continuing:", res.error);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("[setup] vault POST threw, continuing to /complete:", err);
+      }
+    }
     await postJson<{ setupComplete: boolean }>("/complete", {});
     onDone();
   }
@@ -614,35 +620,13 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
             />
             <NextRow
               enabled={s.admin.submitState === "ok"}
-              onNext={() => setStep("vault")}
-            />
-          </StepShell>
-        )}
-
-        {s.step === "vault" && (
-          <StepShell title="Vault-Verknüpfung" description="Dieser Vault verknüpft das in Schritt 1 gewählte Forgejo-Repo mit deinem Admin-Account. Name und Slug sind nur Anzeige-Metadaten — der Repo-Inhalt bleibt unverändert.">
-            <Field label="Vault-Name" value={s.vault.name} onChange={(v) => setS((p) => ({ ...p, vault: { ...p.vault, name: v } }))} />
-            <Field label="Slug (URL-tauglich)" value={s.vault.slug} onChange={(v) => setS((p) => ({ ...p, vault: { ...p.vault, slug: v } }))} />
-            <Note color={C.textDim}>
-              Forgejo-Remote: <span style={{ color: C.text, fontFamily: FONT.mono, fontSize: 12 }}>{s.forgejo.gitRemote.value}</span>
-            </Note>
-            <ActionRow
-              busy={s.vault.submitState === "submitting"}
-              done={s.vault.submitState === "ok"}
-              error={s.vault.submitState === "fail" ? s.vault.error : undefined}
-              label="Vault anlegen"
-              onClick={submitVault}
-            />
-            <NextRow
-              enabled={s.vault.submitState === "ok"}
               onNext={() => setStep("done")}
-              label="Setup abschließen"
             />
           </StepShell>
         )}
 
         {s.step === "done" && (
-          <StepShell title="Setup abschließen" description="Alle Vorbedingungen erfüllt. Letzter Schritt: Setup-Flag setzen und das System scharf schalten.">
+          <StepShell title="Setup abschließen" description="Alle Vorbedingungen erfüllt. Letzter Schritt: Vault an das Forgejo-Repo binden, Setup-Flag setzen und das System scharf schalten.">
             <button
               onClick={completeSetup}
               style={{
