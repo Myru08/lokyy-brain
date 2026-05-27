@@ -140,7 +140,25 @@ type State =
    * note", which it already did at start). `attachedToOpenNote` flags
    * whether the recording appended into an already-open note (true) vs.
    * created a fresh one (false) — used to vary the success copy. */
-  | { kind: "live-editor-finished"; noteId: string; notePath: string; durationMs: number; attachedToOpenNote: boolean; noteTitle?: string };
+  | { kind: "live-editor-finished"; noteId: string; notePath: string; durationMs: number; attachedToOpenNote: boolean; noteTitle?: string }
+  /* ── AI-Polish post-stop states ─────────────────────────────────
+   * After the regular save/finish path completes AND the user has the
+   * "Nach Stop von KI aufbereiten" toggle on, the recorder transitions
+   * into `polishing` while waiting for `POST /api/notes/:id/ai-polish`.
+   * On success we land in `polish-done`; on failure in `polish-failed`.
+   * Both terminal-ish states auto-close the slide-over after 4s — the
+   * underlying un-polished note is already saved either way, so the
+   * worst case is "polish didn't run, user has the raw transcript".
+   *
+   * `attachedToOpenNote` and `noteTitle` mirror the live-editor-finished
+   * shape so the success copy can echo where the polish landed.
+   * `offTarget` flips the success/failure surface from in-slide-over
+   * (default) to bottom-center toast (when the user tab-switched away
+   * from the live-target note mid-recording).
+   * ─────────────────────────────────────────────────────────────── */
+  | { kind: "polishing"; noteId: string; notePath: string; durationMs: number; attachedToOpenNote: boolean; noteTitle?: string; offTarget: boolean }
+  | { kind: "polish-done"; noteId: string; notePath: string; durationMs: number; attachedToOpenNote: boolean; noteTitle?: string; offTarget: boolean }
+  | { kind: "polish-failed"; noteId: string; notePath: string; durationMs: number; attachedToOpenNote: boolean; noteTitle?: string; message: string; offTarget: boolean };
 
 type Mode = "live" | "whisper";
 
@@ -490,6 +508,45 @@ export function VoiceRecorder({
       : "de",
   );
 
+  /* ── AI-Polish toggle ─────────────────────────────────────────────
+   * When true, the recorder fires `POST /api/notes/:id/ai-polish`
+   * after the regular save/finish path lands. Default ON per spec,
+   * persisted to localStorage so the user's preference sticks across
+   * sessions. The key is namespaced under `lokyy:` to keep the
+   * `pwa/`-local localStorage tidy.
+   *
+   * Initial read tolerates the key being absent (default ON) or
+   * malformed (also default ON — never silently disable a default-on
+   * feature based on a bad parse). Only the strings "0" / "1" are
+   * meaningful values.
+   * ─────────────────────────────────────────────────────────────── */
+  const AI_POLISH_LS_KEY = "lokyy:voice:ai-polish";
+  const [aiPolish, setAiPolishState] = useState<boolean>(() => {
+    if (typeof window === "undefined") return true;
+    try {
+      const raw = window.localStorage.getItem(AI_POLISH_LS_KEY);
+      if (raw === null) return true; // default ON
+      return raw !== "0"; // anything other than "0" → ON (incl. "1", legacy "true")
+    } catch {
+      return true; // localStorage blocked (privacy mode, file://) → default ON
+    }
+  });
+  const setAiPolish = (v: boolean) => {
+    setAiPolishState(v);
+    try {
+      window.localStorage.setItem(AI_POLISH_LS_KEY, v ? "1" : "0");
+    } catch {
+      // Persistence is best-effort. The in-memory state still reflects
+      // the user's pick for the current session.
+    }
+  };
+  /** Ref-mirror so the polish-trigger sequence reads the most recent
+   * toggle value even if the user flips it while a recording is in
+   * flight (state.kind doesn't always include `aiPolish`, and reading
+   * straight off the closure-captured state means stale values). */
+  const aiPolishRef = useRef<boolean>(aiPolish);
+  aiPolishRef.current = aiPolish;
+
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -638,6 +695,124 @@ export function VoiceRecorder({
   }, []);
 
   /* ── State transitions ───────────────────────────────────────────── */
+
+  /**
+   * Auto-close the slide-over 4s after we land in a polish-terminal state.
+   * `onTranscribed(noteId)` is what the parent's ImportPanel uses to close
+   * the panel (it also opens the note in the editor — for editor / open-note
+   * targets the note is already open, so this is effectively a "close").
+   */
+  function scheduleAutoDismiss(noteId: string) {
+    window.setTimeout(() => {
+      if (noteId) onTranscribed(noteId);
+    }, 4000);
+  }
+
+  /**
+   * Fire `POST /api/notes/:id/ai-polish` for `noteId`, drive the
+   * `polishing → polish-done | polish-failed` state machine, refresh
+   * the editor for editor/open-note targets, and schedule the 4s
+   * auto-dismiss.
+   *
+   * Polish trigger sequence (called from the existing save/finish chain):
+   *   1. Regular save/finish path completes → un-polished note is on disk.
+   *   2. Wait 6s for the editor's 5s save-debounce to flush
+   *      (editor/open-note targets only — capture wrote synchronously).
+   *      We can't reach the App-side `flushNow()` from here without
+   *      adding a new prop, so the conservative 6s wait is the contract.
+   *   3. POST /api/notes/:id/ai-polish
+   *   4a. ok=true → state=polish-done → tell parent to refetch via
+   *       onTranscribed(noteId) on auto-dismiss
+   *   4b. ok=false / network error → state=polish-failed; un-polished
+   *       note is intact, user can re-trigger polish manually later
+   */
+  async function runAiPolish(opts: {
+    noteId: string;
+    notePath: string;
+    durationMs: number;
+    attachedToOpenNote: boolean;
+    noteTitle?: string;
+    offTarget: boolean;
+    /** "editor" / "open-note" → need to wait for the editor's debounce
+     * to flush before polishing. "capture" wrote synchronously already. */
+    waitForEditorFlush: boolean;
+  }) {
+    setState({
+      kind: "polishing",
+      noteId: opts.noteId,
+      notePath: opts.notePath,
+      durationMs: opts.durationMs,
+      attachedToOpenNote: opts.attachedToOpenNote,
+      noteTitle: opts.noteTitle,
+      offTarget: opts.offTarget,
+    });
+
+    if (opts.waitForEditorFlush) {
+      // The editor's 5s save-debounce must complete BEFORE polish fires,
+      // otherwise the backend reads a stale body. We don't have a direct
+      // flush hook into App.tsx (it owns the editor lifecycle, not us),
+      // so we wait one debounce-window + 1s of slack. This is a soft
+      // constraint — if the user kept editing the editor will re-arm the
+      // debounce and we'll still read stale-by-1-edit, which is fine for
+      // the post-recording polish use case.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 6000));
+    }
+
+    try {
+      const res = await fetch(
+        `/api/notes/${encodeURIComponent(opts.noteId)}/ai-polish`,
+        { method: "POST", credentials: "include" },
+      );
+      // Backend contract: { ok: true, ... } on success, { ok: false, error, message } on failure.
+      const body = (await res
+        .json()
+        .catch(() => ({ ok: false, error: "parse-error", message: "Antwort konnte nicht gelesen werden." }))) as {
+        ok?: boolean;
+        error?: string;
+        message?: string;
+      };
+      if (!res.ok || body.ok !== true) {
+        const errMsg =
+          body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`;
+        setState({
+          kind: "polish-failed",
+          noteId: opts.noteId,
+          notePath: opts.notePath,
+          durationMs: opts.durationMs,
+          attachedToOpenNote: opts.attachedToOpenNote,
+          noteTitle: opts.noteTitle,
+          message: errMsg,
+          offTarget: opts.offTarget,
+        });
+        scheduleAutoDismiss(opts.noteId);
+        return;
+      }
+    } catch (err) {
+      setState({
+        kind: "polish-failed",
+        noteId: opts.noteId,
+        notePath: opts.notePath,
+        durationMs: opts.durationMs,
+        attachedToOpenNote: opts.attachedToOpenNote,
+        noteTitle: opts.noteTitle,
+        message: (err as Error).message ?? String(err),
+        offTarget: opts.offTarget,
+      });
+      scheduleAutoDismiss(opts.noteId);
+      return;
+    }
+
+    setState({
+      kind: "polish-done",
+      noteId: opts.noteId,
+      notePath: opts.notePath,
+      durationMs: opts.durationMs,
+      attachedToOpenNote: opts.attachedToOpenNote,
+      noteTitle: opts.noteTitle,
+      offTarget: opts.offTarget,
+    });
+    scheduleAutoDismiss(opts.noteId);
+  }
 
   async function startRecording() {
     // Capability check up front — secure-context errors are cryptic from
@@ -901,6 +1076,19 @@ export function VoiceRecorder({
               noteId,
               notePath: noteId ? `${noteId}.md` : "(unbekannt)",
             });
+            // ── AI-Polish hook: Whisper finished, note is on disk. The
+            // Whisper pipe writes the note server-side, no editor
+            // debounce is involved → waitForEditorFlush=false.
+            if (aiPolishRef.current && noteId) {
+              void runAiPolish({
+                noteId,
+                notePath: `${noteId}.md`,
+                durationMs: 0,
+                attachedToOpenNote: false,
+                offTarget: false,
+                waitForEditorFlush: false,
+              });
+            }
           } else if (job.status === "error") {
             stopPoll();
             setState({
@@ -1414,14 +1602,37 @@ export function VoiceRecorder({
       }
       onLiveEditorStopped?.();
       const noteInfo = liveEditorNoteRef.current;
+      const noteId = noteInfo?.id ?? "";
+      const notePath = noteInfo?.path ?? "(unbekannt)";
+      const attachedToOpenNote = target === "open-note";
+      const noteTitle = target === "open-note" ? currentNoteTitle : undefined;
       setState({
         kind: "live-editor-finished",
-        noteId: noteInfo?.id ?? "",
-        notePath: noteInfo?.path ?? "(unbekannt)",
+        noteId,
+        notePath,
         durationMs,
-        attachedToOpenNote: target === "open-note",
-        noteTitle: target === "open-note" ? currentNoteTitle : undefined,
+        attachedToOpenNote,
+        noteTitle,
       });
+      // ── AI-Polish hook: editor / open-note targets need to wait for
+      // the editor's 5s save-debounce in App.tsx to flush before polish
+      // fires (otherwise backend reads stale body). `waitForEditorFlush`
+      // adds the 6s sleep inside runAiPolish. `offTarget` flips the
+      // success/error surface to the bottom-center toast slot when the
+      // user tab-switched away mid-recording (we lose that signal in
+      // `live-editor-finished` but `liveEditorOffTarget` still reflects
+      // the parent's view of the world at stop-time).
+      if (aiPolishRef.current && noteId) {
+        void runAiPolish({
+          noteId,
+          notePath,
+          durationMs,
+          attachedToOpenNote,
+          noteTitle,
+          offTarget: liveEditorOffTarget,
+          waitForEditorFlush: true,
+        });
+      }
       return;
     }
 
@@ -1570,6 +1781,19 @@ export function VoiceRecorder({
       noteId: created.id,
       notePath: created.path,
     });
+    // ── AI-Polish hook: capture-mode save just PUT the body directly,
+    // no editor debounce involved → waitForEditorFlush=false. The
+    // note id and path come straight from the create-note response.
+    if (aiPolishRef.current) {
+      void runAiPolish({
+        noteId: created.id,
+        notePath: created.path,
+        durationMs: 0,
+        attachedToOpenNote: false,
+        offTarget: false,
+        waitForEditorFlush: false,
+      });
+    }
   }
 
   /* ── Render ──────────────────────────────────────────────────────── */
@@ -1912,6 +2136,44 @@ export function VoiceRecorder({
                   ))}
                 </select>
               </label>
+              {/* AI-Polish toggle — Nach Stop von KI aufbereiten.
+                * Spec: visible for capture, editor and open-note targets
+                * (= always in live mode). Persisted to localStorage under
+                * `lokyy:voice:ai-polish`. Defaults ON. */}
+              <label
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
+                  padding: "8px 10px",
+                  background: C.bg,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  color: C.text,
+                  lineHeight: 1.4,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={aiPolish}
+                  onChange={(e) => setAiPolish(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontWeight: 600 }}>
+                    Nach Stop von KI aufbereiten{" "}
+                    <span style={{ color: C.textFaint, fontWeight: 400, fontSize: 11 }}>
+                      (Standard)
+                    </span>
+                  </span>
+                  <span style={{ color: C.textDim, fontSize: 11 }}>
+                    Filterwörter raus, Markdown-Struktur, Titel + Tags.
+                    Original-Transkript bleibt im Frontmatter (raw_transcript).
+                  </span>
+                </span>
+              </label>
               <button
                 type="button"
                 onClick={() => void startLive(liveTarget)}
@@ -1956,6 +2218,44 @@ export function VoiceRecorder({
                 </code>{" "}
                 abgelegt.
               </p>
+              {/* AI-Polish toggle — Nach Stop von KI aufbereiten.
+                * Whisper variant: same key/state as the live version, so
+                * flipping it in either mode persists across the next
+                * session regardless of which mode the user picks. */}
+              <label
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "flex-start",
+                  padding: "8px 10px",
+                  background: C.bg,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 8,
+                  cursor: "pointer",
+                  fontSize: 12,
+                  color: C.text,
+                  lineHeight: 1.4,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={aiPolish}
+                  onChange={(e) => setAiPolish(e.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <span style={{ fontWeight: 600 }}>
+                    Nach Stop von KI aufbereiten{" "}
+                    <span style={{ color: C.textFaint, fontWeight: 400, fontSize: 11 }}>
+                      (Standard)
+                    </span>
+                  </span>
+                  <span style={{ color: C.textDim, fontSize: 11 }}>
+                    Filterwörter raus, Markdown-Struktur, Titel + Tags.
+                    Original-Transkript bleibt im Frontmatter (raw_transcript).
+                  </span>
+                </span>
+              </label>
               <button
                 type="button"
                 onClick={() => void startRecording()}
@@ -2798,6 +3098,162 @@ export function VoiceRecorder({
           </button>
         </>
       )}
+
+      {state.kind === "polishing" &&
+        (state.offTarget ? (
+          /* Off-target: render a bottom-center toast via portal-style
+           * fixed positioning. The user is looking at a different note,
+           * so the in-slide-over UI would be invisible to them. We
+           * still render INSIDE this component (spec forbids touching
+           * App.tsx) but escape the panel via `position: fixed`. */
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: "fixed",
+              left: "50%",
+              bottom: 24,
+              transform: "translateX(-50%)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 16px",
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 999,
+              color: C.text,
+              fontSize: 12.5,
+              fontFamily: FONT.ui,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+              zIndex: 9999,
+            }}
+          >
+            <Spinner size={14} />
+            <span>KI poliert deine Notiz…</span>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "12px 14px",
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+              color: C.textDim,
+            }}
+          >
+            <Spinner size={16} />
+            <span>KI poliert deine Notiz…</span>
+          </div>
+        ))}
+
+      {state.kind === "polish-done" &&
+        (state.offTarget ? (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              position: "fixed",
+              left: "50%",
+              bottom: 24,
+              transform: "translateX(-50%)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "10px 16px",
+              background: "rgba(127,163,122,0.95)",
+              border: `1px solid ${C.ok}`,
+              borderRadius: 999,
+              color: "#0c1a0e",
+              fontSize: 12.5,
+              fontWeight: 600,
+              fontFamily: FONT.ui,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+              zIndex: 9999,
+            }}
+          >
+            <Check size={14} />
+            <span>
+              Notiz wurde aufbereitet — Original im Frontmatter (raw_transcript)
+            </span>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              background: "rgba(127,163,122,0.10)",
+              border: `1px solid ${C.ok}`,
+              borderRadius: 8,
+              color: C.ok,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            <Check size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>
+              Notiz wurde aufbereitet — Original im Frontmatter
+              (raw_transcript)
+            </span>
+          </div>
+        ))}
+
+      {state.kind === "polish-failed" &&
+        (state.offTarget ? (
+          <div
+            role="alert"
+            style={{
+              position: "fixed",
+              left: "50%",
+              bottom: 24,
+              transform: "translateX(-50%)",
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              padding: "10px 16px",
+              maxWidth: 520,
+              background: "rgba(255,169,77,0.95)",
+              border: `1px solid ${C.gold}`,
+              borderRadius: 12,
+              color: "#1a1100",
+              fontSize: 12.5,
+              fontWeight: 500,
+              fontFamily: FONT.ui,
+              lineHeight: 1.45,
+              boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+              zIndex: 9999,
+            }}
+          >
+            <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>
+              KI-Aufbereitung fehlgeschlagen: {state.message}. Original-Notiz
+              ist gespeichert.
+            </span>
+          </div>
+        ) : (
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              background: "rgba(255,169,77,0.10)",
+              border: `1px solid ${C.gold}`,
+              borderRadius: 8,
+              color: C.gold,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <span>
+              KI-Aufbereitung fehlgeschlagen: {state.message}. Original-Notiz
+              ist gespeichert.
+            </span>
+          </div>
+        ))}
 
       {state.kind === "error" && (
         <>
