@@ -186,6 +186,19 @@ export function App() {
   // Save-lifecycle tracking — surfaced to NoteHeader for the badge UI.
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  /* ── Live-voice-in-editor target tracking ─────────────────────────
+   * VoiceQuickButton's Live-mode "Live in neuen Editor schreiben"
+   * option streams finalized speech segments into the *currently open*
+   * note's body. We remember which note was the recording target so
+   * (a) we can keep appending to that note even if the user switches
+   * tabs, and (b) we can surface a warning chip in the recorder if
+   * they did. The id is set when the recorder asks us to open the
+   * note, cleared when it tells us recording stopped.
+   * ─────────────────────────────────────────────────────────────── */
+  const liveTargetNoteIdRef = useRef<string | null>(null);
+  const [liveTargetNoteId, setLiveTargetNoteId] = useState<string | null>(null);
+  liveTargetNoteIdRef.current = liveTargetNoteId;
   // Conflict-banner payload: when a focus-pull discovers the server body
   // differs and the local copy is dirty, we surface a non-modal banner with
   // the fresh body cached here. Clobber is opt-in via "Server-Version laden".
@@ -512,6 +525,63 @@ export function App() {
       saveTimer.current = null;
       void flush();
     }, PROPS_DEBOUNCE_MS);
+  }
+
+  /**
+   * Live-voice append. The VoiceQuickButton's "Live in neuen Editor
+   * schreiben" mode pushes each finalized speech segment here. We append
+   * to the LIVE-TARGET note (not necessarily the currently-active note)
+   * so a tab switch mid-recording doesn't accidentally inject speech into
+   * an unrelated note.
+   *
+   * Two append paths:
+   *   1. Target IS active — use the existing setActive + dirty flow. The
+   *      Editor's initialBody-watcher effect picks up the new body and
+   *      preserves cursor/scroll (see Editor.tsx case 2). The 5s
+   *      auto-save debounce persists it normally.
+   *   2. Target is NOT active — silently mutate the in-memory tab cache
+   *      we don't have, so we fall back to a direct PUT. That's an
+   *      acceptable cost: the user already wandered off, and the warning
+   *      chip in the recorder tells them what's happening.
+   */
+  function handleLiveVoiceAppend(segment: string) {
+    const trimmed = segment.trim();
+    if (!trimmed) return;
+    const targetId = liveTargetNoteIdRef.current;
+    if (!targetId) return;
+
+    const cur = activeRef.current;
+    if (cur && cur.id === targetId) {
+      // Same paragraph separator policy as the recorder's capture mode:
+      // segments are individual sentences, so a single newline keeps them
+      // readable without ballooning the doc. End-of-doc anchor matches
+      // the spec ("intentional — user can clean up after").
+      const sep = cur.body.endsWith("\n") || cur.body === "" ? "" : "\n";
+      const newBody = cur.body + sep + trimmed + "\n";
+      dirtyBody.current = newBody;
+      setActive({ ...cur, body: newBody });
+      if (syncRef.current !== "saving") setSync("dirty");
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => {
+        saveTimer.current = null;
+        void flush();
+      }, SAVE_DEBOUNCE_MS);
+      return;
+    }
+
+    // Off-target: append directly via API. Fire-and-forget; errors are
+    // swallowed because the recorder is already showing the off-target
+    // warning chip and a per-segment alert would be noise.
+    void (async () => {
+      try {
+        const note = await api.getNote(targetId);
+        const sep =
+          note.body.endsWith("\n") || note.body === "" ? "" : "\n";
+        await api.putNote(targetId, note.body + sep + trimmed + "\n");
+      } catch {
+        /* see comment above */
+      }
+    })();
   }
 
   // Cmd/Ctrl+S → manual save. Registered after manualSave is defined so the
@@ -917,7 +987,23 @@ export function App() {
           onImported={(id) => {
             void refreshTree().then(() => open(id));
           }}
-          onOpenSettings={() => setSettingsOpen(true)}
+          onLiveEditorRequested={(noteId) => {
+            // Track the recording target so subsequent appends find the
+            // right note even if the user switches tabs.
+            setLiveTargetNoteId(noteId);
+            void refreshTree().then(() => open(noteId));
+          }}
+          onLiveEditorAppend={handleLiveVoiceAppend}
+          onLiveEditorStopped={() => {
+            // Flush any pending debounced save right away so the final
+            // segment lands in Forgejo without waiting 5s. Clear the
+            // target so future live recordings don't inherit it.
+            void flushNow();
+            setLiveTargetNoteId(null);
+          }}
+          liveEditorOffTarget={
+            liveTargetNoteId !== null && active?.id !== liveTargetNoteId
+          }
           isMobile={isMobile}
         />
         {/* Phase D Wave D1 — non-essential text buttons (Vorlagen, Review,

@@ -126,12 +126,24 @@ type State =
    * "live-stopped":  user stopped — transcript ready to edit + save.
    * "live-saving":   POSTing to /api/vault/note + PUTting frontmatter.
    * Other states ("permission-denied", "error", "done") are reused.
+   *
+   * `target` selects the destination for the finalized speech segments:
+   *   "capture" — accumulate in finalText, save as capture-note on Stop
+   *   "editor"  — stream each finalized segment to the parent's editor via
+   *               onLiveEditorAppend, no per-segment local accumulation
    * ─────────────────────────────────────────────────────────────── */
-  | { kind: "live-listening"; startedAt: number; elapsedMs: number; finalText: string; interimText: string }
-  | { kind: "live-stopped"; transcript: string; durationMs: number }
-  | { kind: "live-saving" };
+  | { kind: "live-listening"; startedAt: number; elapsedMs: number; finalText: string; interimText: string; target: LiveTarget }
+  | { kind: "live-stopped"; transcript: string; durationMs: number; target: LiveTarget }
+  | { kind: "live-saving" }
+  /** Editor-target Live recording finished — show a "Fertig" button that
+   * just closes the panel via onTranscribed (parent treats it as "open
+   * note", which it already did at start). */
+  | { kind: "live-editor-finished"; noteId: string; notePath: string; durationMs: number };
 
 type Mode = "live" | "whisper";
+
+/** Live-mode destination for the finalized speech segments. */
+type LiveTarget = "capture" | "editor";
 
 interface VoiceRecorderProps {
   /** Called with the resulting note id when transcription finishes. */
@@ -140,6 +152,28 @@ interface VoiceRecorderProps {
   active: boolean;
   /** Optional language hint for Whisper (ISO-639-1) — "" / "auto" = auto-detect. */
   defaultLanguage?: string;
+  /**
+   * Optional live-in-editor integration. When provided, a second target option
+   * appears in Live mode: "Live in neuen Editor schreiben". Picking it makes
+   * the recorder
+   *   1. fire `onLiveEditorRequested(noteId, path)` once the empty note exists
+   *      (parent opens it in the editor),
+   *   2. fire `onLiveEditorAppend(segment)` for every finalized speech segment
+   *      while recording (parent appends to the open editor's body),
+   *   3. fire `onLiveEditorStopped()` when the user presses Stop.
+   * If `onLiveEditorAppend` is NOT provided, the toggle is hidden and only
+   * the standard capture-note path is offered.
+   */
+  onLiveEditorRequested?: (noteId: string, notePath: string) => void;
+  onLiveEditorAppend?: (segment: string) => void;
+  onLiveEditorStopped?: () => void;
+  /**
+   * Optional: parent reports whether the user has switched away from the
+   * live-target note in the editor. The recorder uses this only to surface a
+   * warning chip — it keeps appending (silently) to whatever the parent
+   * decides the destination is.
+   */
+  liveEditorOffTarget?: boolean;
 }
 
 /** Pick the first supported audio mime-type — prefer opus for size + quality. */
@@ -260,10 +294,29 @@ export function VoiceRecorder({
   onTranscribed,
   active,
   defaultLanguage = "",
+  onLiveEditorRequested,
+  onLiveEditorAppend,
+  onLiveEditorStopped,
+  liveEditorOffTarget = false,
 }: VoiceRecorderProps) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [title, setTitle] = useState<string>(`Voice-Notiz ${fmtTimestamp()}`);
   const [language, setLanguage] = useState<string>(defaultLanguage);
+  /**
+   * Live-mode destination preference (per-session — spec says no
+   * persistence needed). Only meaningful when `onLiveEditorAppend` is wired
+   * up; otherwise the toggle is hidden and the value is ignored.
+   */
+  const liveEditorAvailable = typeof onLiveEditorAppend === "function";
+  const [liveTarget, setLiveTarget] = useState<LiveTarget>("capture");
+  /** Stable ref the recognition onresult reads (no re-binding per render). */
+  const liveTargetRef = useRef<LiveTarget>("capture");
+  liveTargetRef.current = liveTarget;
+  const onLiveEditorAppendRef = useRef<typeof onLiveEditorAppend>(onLiveEditorAppend);
+  onLiveEditorAppendRef.current = onLiveEditorAppend;
+  /** Note id created up-front for editor-target Live recordings (for the
+   *  "Fertig" screen + so we can echo it back as onTranscribed). */
+  const liveEditorNoteRef = useRef<{ id: string; path: string } | null>(null);
 
   /* ── Mode switch ──────────────────────────────────────────────────
    * `hasWebSpeech` is determined once at mount; if the browser doesn't
@@ -710,7 +763,15 @@ export function VoiceRecorder({
    * on-device Siri ASR; either way: no work for us).
    * ─────────────────────────────────────────────────────────────── */
 
-  function startLive() {
+  /**
+   * Start a Live-mode session. `target` decides where finalized speech
+   * segments go:
+   *   "capture" — accumulate locally (finalTextRef), save once on Stop
+   *   "editor"  — POST/PUT an empty note up-front, ask the parent to open
+   *               it, then stream each segment via onLiveEditorAppend
+   *               (App.tsx appends to the open editor's body)
+   */
+  async function startLive(target: LiveTarget = liveTarget) {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
       setState({
@@ -726,6 +787,119 @@ export function VoiceRecorder({
     teardownRecognition();
     userStoppedRef.current = false;
     finalTextRef.current = "";
+    liveEditorNoteRef.current = null;
+
+    // ── Editor-target pre-recording: create the empty note FIRST so it's
+    // open in the editor before the user says a word. We deliberately
+    // serialize the two HTTP calls (POST + PUT capture frontmatter) here
+    // — speech recognition won't start until the note exists. The user
+    // sees a brief "Bereite Notiz vor…" state via live-saving spinner.
+    if (target === "editor") {
+      if (!liveEditorAvailable) {
+        setState({
+          kind: "error",
+          message:
+            "Live-in-Editor nicht verfügbar — parent component hat keinen onLiveEditorAppend-Callback registriert.",
+        });
+        return;
+      }
+      setState({ kind: "live-saving" });
+      const finalTitle = title.trim() || `Voice-Notiz ${fmtTimestamp()}`;
+      const slug = slugify(finalTitle);
+      const path = `30_captures/voice/${fmtDate()}-${slug}`;
+
+      let created: Note;
+      try {
+        const res = await fetch("/api/vault/note", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path, body: "" }),
+          credentials: "include",
+        });
+        if (!res.ok) {
+          const errBody = await res
+            .json()
+            .catch(() => ({ error: res.statusText }));
+          throw new Error(errBody.error ?? `HTTP ${res.status}`);
+        }
+        created = (await res.json()) as Note;
+      } catch (err) {
+        setState({
+          kind: "error",
+          message: `Notiz konnte nicht angelegt werden: ${
+            (err as Error).message ?? err
+          }`,
+        });
+        return;
+      }
+
+      // Step 2: PUT capture frontmatter so the file is SPEC-valid before
+      // the user starts typing/speaking. Body is empty for now — segments
+      // are appended into the open editor by the parent, and the regular
+      // 5s save-debounce in App.tsx persists them.
+      let noteId = "";
+      let noteCreated = new Date().toISOString();
+      try {
+        const r = await fetch(
+          `/api/notes/${encodeURIComponent(created.id)}`,
+          { credentials: "include" },
+        );
+        if (r.ok) {
+          const note = (await r.json()) as Note & { body: string };
+          const fm = note.body.split(/\n---\n/)[0] ?? "";
+          const idMatch = fm.match(/\bid:\s*([0-9A-HJKMNP-TV-Z]{26})/);
+          const createdMatch = fm.match(/\bcreated:\s*([^\n]+)/);
+          if (idMatch) noteId = idMatch[1] ?? "";
+          if (createdMatch) noteCreated = (createdMatch[1] ?? "").trim();
+        }
+      } catch {
+        /* non-fatal */
+      }
+
+      const captureBody = buildCaptureBody({
+        noteId: noteId || "00000000000000000000000000",
+        noteCreated,
+        title: finalTitle,
+        language: liveLang,
+        transcript: "",
+      });
+
+      try {
+        const res = await fetch(
+          `/api/notes/${encodeURIComponent(created.id)}`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ body: captureBody }),
+            credentials: "include",
+          },
+        );
+        if (!res.ok) {
+          const errBody = await res
+            .json()
+            .catch(() => ({ error: res.statusText }));
+          throw new Error(errBody.error ?? `HTTP ${res.status}`);
+        }
+      } catch (err) {
+        setState({
+          kind: "error",
+          message: `Notiz erstellt (${created.path}) aber Frontmatter konnte nicht geschrieben werden: ${
+            (err as Error).message ?? err
+          }`,
+        });
+        return;
+      }
+
+      liveEditorNoteRef.current = { id: created.id, path: created.path };
+      // Tell the parent to open the note in the editor BEFORE we start
+      // recognition. We wait one paint cycle so the editor mounts with the
+      // new note's body before the first onresult fires.
+      onLiveEditorRequested?.(created.id, created.path);
+      await new Promise<void>((resolve) =>
+        window.setTimeout(resolve, 60),
+      );
+    }
+    // Fall through into the regular live-recognition setup below.
 
     const bcp47 =
       LIVE_LANGS.find((l) => l.value === liveLang)?.bcp47 ?? "de-DE";
@@ -761,17 +935,42 @@ export function VoiceRecorder({
           interim += alt.transcript;
         }
       }
-      if (appended) {
-        // Glue with a space so final segments don't run together.
-        const sep =
-          finalTextRef.current && !finalTextRef.current.endsWith(" ") ? " " : "";
-        finalTextRef.current = finalTextRef.current + sep + appended.trim();
+      const trimmed = appended.trim();
+      if (trimmed) {
+        if (liveTargetRef.current === "editor") {
+          // Editor mode: each finalized segment is shipped to the parent
+          // exactly once. We do NOT accumulate locally (the editor is the
+          // source of truth now). The parent decides spacing/paragraphing.
+          //
+          // Note on flooding: the Web-Speech-API fires `onresult` once per
+          // grammar-segment, NOT per character. A natural sentence pause
+          // yields one event with `isFinal: true` and the full sentence.
+          // Interim results stream more frequently but are discarded here
+          // (only the floating ghost-text panel below uses them). No
+          // batching/debouncing needed — typical rate is < 1/s.
+          try {
+            onLiveEditorAppendRef.current?.(trimmed);
+          } catch {
+            /* swallow — parent log; recognition must keep going */
+          }
+        } else {
+          // Capture mode: accumulate locally; saved on Stop.
+          const sep =
+            finalTextRef.current && !finalTextRef.current.endsWith(" ")
+              ? " "
+              : "";
+          finalTextRef.current = finalTextRef.current + sep + trimmed;
+        }
       }
       setState((prev) =>
         prev.kind === "live-listening"
           ? {
               ...prev,
-              finalText: finalTextRef.current,
+              // For editor-target the local finalText stays empty (parent
+              // owns it); for capture it mirrors the ref so the on-screen
+              // transcript box updates.
+              finalText:
+                prev.target === "editor" ? "" : finalTextRef.current,
               interimText: interim,
             }
           : prev,
@@ -861,6 +1060,7 @@ export function VoiceRecorder({
       elapsedMs: 0,
       finalText: "",
       interimText: "",
+      target,
     });
 
     stopLiveTick();
@@ -877,6 +1077,13 @@ export function VoiceRecorder({
     if (state.kind !== "live-listening") return;
     const durationMs = Date.now() - liveStartedAtRef.current;
     const transcript = finalTextRef.current.trim();
+    const target = state.target;
+    // Flush any remaining interim text as a final segment for editor mode
+    // — most browsers do emit a closing final on .stop(), but some (notably
+    // Safari) drop the mid-sentence interim text on stop. We capture it
+    // here so the user doesn't lose the last half-sentence.
+    const interimRemainder =
+      state.kind === "live-listening" ? state.interimText.trim() : "";
 
     // Flip the guard BEFORE calling stop so onend doesn't restart.
     userStoppedRef.current = true;
@@ -895,7 +1102,27 @@ export function VoiceRecorder({
       recognitionRef.current.onend = null;
     }
 
-    setState({ kind: "live-stopped", transcript, durationMs });
+    if (target === "editor") {
+      // Ship the trailing interim text (if any) as a final segment.
+      if (interimRemainder) {
+        try {
+          onLiveEditorAppendRef.current?.(interimRemainder);
+        } catch {
+          /* swallow */
+        }
+      }
+      onLiveEditorStopped?.();
+      const noteInfo = liveEditorNoteRef.current;
+      setState({
+        kind: "live-editor-finished",
+        noteId: noteInfo?.id ?? "",
+        notePath: noteInfo?.path ?? "(unbekannt)",
+        durationMs,
+      });
+      return;
+    }
+
+    setState({ kind: "live-stopped", transcript, durationMs, target });
   }
 
   function discardLive() {
@@ -1146,6 +1373,107 @@ export function VoiceRecorder({
                 Wähle die Sprache und sprich los; das Transkript baut sich in
                 Echtzeit auf.
               </p>
+
+              {/* Live-target chooser: capture-note vs. live-editor.
+                * Only rendered when the parent registered the editor sink
+                * (onLiveEditorAppend); otherwise the capture-note path is
+                * the only sane option and we don't pretend otherwise. */}
+              {liveEditorAvailable && (
+                <fieldset
+                  style={{
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 8,
+                    padding: "8px 10px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    background: C.bg,
+                  }}
+                >
+                  <legend
+                    style={{
+                      padding: "0 6px",
+                      fontSize: 11,
+                      color: C.textDim,
+                    }}
+                  >
+                    Ziel
+                  </legend>
+                  <label
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-start",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      color: C.text,
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="live-target"
+                      value="capture"
+                      checked={liveTarget === "capture"}
+                      onChange={() => setLiveTarget("capture")}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>
+                      In Capture-Note speichern{" "}
+                      <span style={{ color: C.textFaint, fontSize: 11 }}>
+                        (Standard — Notiz wird nach Stop angelegt)
+                      </span>
+                    </span>
+                  </label>
+                  <label
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-start",
+                      cursor: "pointer",
+                      fontSize: 12,
+                      color: C.text,
+                      lineHeight: 1.4,
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="live-target"
+                      value="editor"
+                      checked={liveTarget === "editor"}
+                      onChange={() => setLiveTarget("editor")}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>
+                      Live in neuen Editor schreiben{" "}
+                      <span style={{ color: C.textFaint, fontSize: 11 }}>
+                        (Notiz wird sofort angelegt, Text erscheint während du sprichst)
+                      </span>
+                    </span>
+                  </label>
+                </fieldset>
+              )}
+
+              <label style={{ fontSize: 11, color: C.textDim }}>
+                Titel
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    marginTop: 4,
+                    background: C.bg,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 7,
+                    color: C.text,
+                    fontSize: 13,
+                    fontFamily: FONT.ui,
+                    padding: "8px 10px",
+                    outline: "none",
+                  }}
+                />
+              </label>
               <label style={{ fontSize: 11, color: C.textDim }}>
                 Sprache
                 <select
@@ -1174,7 +1502,7 @@ export function VoiceRecorder({
               </label>
               <button
                 type="button"
-                onClick={startLive}
+                onClick={() => void startLive(liveTarget)}
                 aria-label="Live-Aufnahme starten"
                 style={{
                   display: "flex",
@@ -1672,7 +2000,9 @@ export function VoiceRecorder({
               }
             `}</style>
             <span style={{ color: C.err, fontWeight: 600, fontSize: 13 }}>
-              Live-Modus läuft
+              {state.target === "editor"
+                ? "Live → Editor läuft"
+                : "Live-Modus läuft"}
             </span>
             <span style={{ flex: 1 }} />
             <span
@@ -1687,37 +2017,93 @@ export function VoiceRecorder({
             </span>
           </div>
 
-          <div
-            aria-live="polite"
-            style={{
-              minHeight: 120,
-              maxHeight: 240,
-              overflowY: "auto",
-              padding: "10px 12px",
-              background: C.bg,
-              border: `1px solid ${C.border}`,
-              borderRadius: 8,
-              color: C.text,
-              fontSize: 13,
-              lineHeight: 1.55,
-              fontFamily: FONT.ui,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            {state.finalText ||
-              (!state.interimText && (
-                <span style={{ color: C.textFaint, fontStyle: "italic" }}>
-                  Beginn mit Sprechen — das Transkript erscheint hier…
-                </span>
-              ))}
-            {state.interimText && (
-              <span style={{ color: C.textDim, fontStyle: "italic" }}>
-                {state.finalText ? " " : ""}
-                {state.interimText}
+          {state.target === "editor" && liveEditorOffTarget && (
+            <div
+              role="alert"
+              style={{
+                display: "flex",
+                gap: 8,
+                padding: "8px 12px",
+                background: "rgba(255,169,77,0.10)",
+                border: `1px solid ${C.gold}`,
+                borderRadius: 7,
+                color: C.gold,
+                fontSize: 11.5,
+                lineHeight: 1.45,
+              }}
+            >
+              <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+              <span>
+                Du hast die Notiz gewechselt — Text geht weiter in die
+                ursprüngliche Live-Notiz.
               </span>
-            )}
-          </div>
+            </div>
+          )}
+
+          {state.target === "editor" ? (
+            /* Editor-target: just show the interim ghost text. The
+             * finalized text already lives in the open editor; mirroring
+             * it here would be noise and risks drift. */
+            <div
+              aria-live="polite"
+              style={{
+                minHeight: 64,
+                maxHeight: 160,
+                overflowY: "auto",
+                padding: "10px 12px",
+                background: C.bg,
+                border: `1px dashed ${C.border}`,
+                borderRadius: 8,
+                color: C.textDim,
+                fontSize: 12.5,
+                lineHeight: 1.5,
+                fontFamily: FONT.ui,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+                fontStyle: "italic",
+              }}
+            >
+              {state.interimText ? (
+                state.interimText
+              ) : (
+                <span style={{ color: C.textFaint }}>
+                  Sprich los — finalisierte Sätze landen direkt im Editor…
+                </span>
+              )}
+            </div>
+          ) : (
+            <div
+              aria-live="polite"
+              style={{
+                minHeight: 120,
+                maxHeight: 240,
+                overflowY: "auto",
+                padding: "10px 12px",
+                background: C.bg,
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                color: C.text,
+                fontSize: 13,
+                lineHeight: 1.55,
+                fontFamily: FONT.ui,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {state.finalText ||
+                (!state.interimText && (
+                  <span style={{ color: C.textFaint, fontStyle: "italic" }}>
+                    Beginn mit Sprechen — das Transkript erscheint hier…
+                  </span>
+                ))}
+              {state.interimText && (
+                <span style={{ color: C.textDim, fontStyle: "italic" }}>
+                  {state.finalText ? " " : ""}
+                  {state.interimText}
+                </span>
+              )}
+            </div>
+          )}
 
           <div style={{ display: "flex", gap: 8 }}>
             <button
@@ -1787,6 +2173,7 @@ export function VoiceRecorder({
                   kind: "live-stopped",
                   transcript: e.target.value,
                   durationMs: state.durationMs,
+                  target: state.target,
                 })
               }
               rows={8}
@@ -1919,6 +2306,64 @@ export function VoiceRecorder({
           <Spinner size={16} />
           <span>Speichere Notiz im Vault…</span>
         </div>
+      )}
+
+      {state.kind === "live-editor-finished" && (
+        <>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              padding: "12px 14px",
+              background: "rgba(127,163,122,0.10)",
+              border: `1px solid ${C.ok}`,
+              borderRadius: 8,
+              color: C.ok,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            <Check size={16} style={{ flexShrink: 0, marginTop: 2 }} />
+            <div>
+              Live-Aufnahme beendet — Text steht im Editor.{" "}
+              <code
+                style={{
+                  fontFamily: FONT.mono,
+                  color: C.text,
+                  wordBreak: "break-all",
+                }}
+              >
+                {state.notePath}
+              </code>
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 11,
+                  color: C.textDim,
+                  fontFamily: FONT.mono,
+                }}
+              >
+                {fmtDuration(state.durationMs)} aufgenommen
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={resetAll}
+            style={{
+              padding: "10px 0",
+              borderRadius: 8,
+              border: "none",
+              background: C.accent,
+              color: "#1a1110",
+              fontWeight: 600,
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            Fertig
+          </button>
+        </>
       )}
 
       {state.kind === "error" && (
