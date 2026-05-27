@@ -2,15 +2,18 @@
 import { resolve } from "node:path";
 import { buildServer } from "./server.js";
 import { startHttpServer } from "./httpServer.js";
+import { resolveVaultId } from "./resolveVaultId.js";
 
 /**
  * lokyy-brain MCP — HTTP variant.
  *
  * Required env:
  *   LOKYY_MCP_TOKEN     — bearer token clients must send
- *   LOKYY_DB_URL, LOKYY_VAULT_DIR, LOKYY_GIT_REMOTE, LOKYY_VAULT_ID
+ *   LOKYY_DB_URL, LOKYY_VAULT_DIR, LOKYY_GIT_REMOTE
  *   LOKYY_AGENT_ID       — default "claude-code"
  * Optional:
+ *   LOKYY_VAULT_ID       — explicit override; when empty/absent the server
+ *                          resolves it from the `vaults` table at startup.
  *   LOKYY_MCP_HTTP_PORT  — default 8788
  */
 
@@ -20,8 +23,12 @@ const token = process.env.LOKYY_MCP_TOKEN ?? "";
 const databaseUrl = req("LOKYY_DB_URL");
 const vaultDir = resolve(req("LOKYY_VAULT_DIR"));
 const gitRemote = req("LOKYY_GIT_REMOTE");
-const vaultId = req("LOKYY_VAULT_ID");
 const agentId = process.env.LOKYY_AGENT_ID ?? "claude-code";
+
+// Resolve vault-id BEFORE building the server (and BEFORE the HTTP listener
+// goes up) — the MCP tools key the memory provider by vault-id, so we
+// cannot accept any request before this completes.
+const vaultId = await resolveVaultId(databaseUrl);
 
 const coreConfig = {
   vaultDir,

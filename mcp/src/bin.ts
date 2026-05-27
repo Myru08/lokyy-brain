@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
 import { buildServer, start } from "./server.js";
+import { resolveVaultId } from "./resolveVaultId.js";
 
 /**
  * lokyy-mcp CLI entry point.
@@ -9,10 +10,12 @@ import { buildServer, start } from "./server.js";
  *   LOKYY_DB_URL       — Postgres DSN (same as the server's DATABASE_URL)
  *   LOKYY_VAULT_DIR    — Absolute path to the vault working copy
  *   LOKYY_GIT_REMOTE   — Vault git remote
- *   LOKYY_VAULT_ID     — ULID of the vault (for memory provider keying)
  *   LOKYY_AGENT_ID     — Identity used to look up scope (default: "claude-desktop")
  *
  * Optional:
+ *   LOKYY_VAULT_ID     — ULID of the vault (for memory provider keying). When
+ *                        empty/absent the server resolves it from the
+ *                        `vaults` table at startup.
  *   LOKYY_GIT_BRANCH   — default "main"
  *   LOKYY_GIT_AUTHOR_NAME / _EMAIL — defaults to "lokyy-brain" / "lokyy-brain@localhost"
  */
@@ -20,8 +23,13 @@ import { buildServer, start } from "./server.js";
 const databaseUrl = req("LOKYY_DB_URL");
 const vaultDir = resolve(req("LOKYY_VAULT_DIR"));
 const gitRemote = req("LOKYY_GIT_REMOTE");
-const vaultId = req("LOKYY_VAULT_ID");
 const agentId = process.env.LOKYY_AGENT_ID ?? "claude-desktop";
+
+// Resolve vault-id BEFORE building the server. stdio transport doesn't
+// accept requests until after `start(server)` runs, so this is a safety
+// belt rather than a strict ordering requirement, but it keeps the two
+// entry points symmetrical and fails fast on misconfigured deployments.
+const vaultId = await resolveVaultId(databaseUrl);
 
 const coreConfig = {
   vaultDir,
