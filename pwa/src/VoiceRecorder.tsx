@@ -306,11 +306,19 @@ export function VoiceRecorder({
    * Live-mode destination preference (per-session — spec says no
    * persistence needed). Only meaningful when `onLiveEditorAppend` is wired
    * up; otherwise the toggle is hidden and the value is ignored.
+   *
+   * Default: in the slide-over context (VoiceQuickButton, where the parent
+   * registers `onLiveEditorAppend`), the user-as-first-class flow is
+   * Google-Docs-style live writing into a fresh editor — so we default to
+   * "editor". The ImportPanel instance does NOT pass `onLiveEditorAppend`,
+   * so it keeps the legacy "capture" default (the toggle is hidden there).
    */
   const liveEditorAvailable = typeof onLiveEditorAppend === "function";
-  const [liveTarget, setLiveTarget] = useState<LiveTarget>("capture");
+  const [liveTarget, setLiveTarget] = useState<LiveTarget>(() =>
+    liveEditorAvailable ? "editor" : "capture",
+  );
   /** Stable ref the recognition onresult reads (no re-binding per render). */
-  const liveTargetRef = useRef<LiveTarget>("capture");
+  const liveTargetRef = useRef<LiveTarget>(liveTarget);
   liveTargetRef.current = liveTarget;
   const onLiveEditorAppendRef = useRef<typeof onLiveEditorAppend>(onLiveEditorAppend);
   onLiveEditorAppendRef.current = onLiveEditorAppend;
@@ -1076,14 +1084,27 @@ export function VoiceRecorder({
   function stopLive() {
     if (state.kind !== "live-listening") return;
     const durationMs = Date.now() - liveStartedAtRef.current;
-    const transcript = finalTextRef.current.trim();
     const target = state.target;
-    // Flush any remaining interim text as a final segment for editor mode
-    // — most browsers do emit a closing final on .stop(), but some (notably
-    // Safari) drop the mid-sentence interim text on stop. We capture it
-    // here so the user doesn't lose the last half-sentence.
-    const interimRemainder =
-      state.kind === "live-listening" ? state.interimText.trim() : "";
+    // Capture any remaining interim text BEFORE we stop the recognizer.
+    // The Web-Speech-API only marks text as "final" after a ~500ms–1s
+    // confidence window. If the user clicks Stop inside that window the
+    // grey on-screen interim would otherwise vanish — worse than slightly
+    // imperfect punctuation, so we flush it as-if it were a final segment.
+    // Source: `state.interimText` on the live-listening state — the same
+    // value the `onresult` handler writes into setState (lines ~965-977).
+    const interimRemainder = state.interimText.trim();
+
+    // ── Fix 1 flush site (capture-mode): append interim to finalTextRef
+    // BEFORE we snapshot the transcript. This makes the "what you see is
+    // what gets saved" guarantee true for capture-target live recordings.
+    if (target === "capture" && interimRemainder) {
+      const sep =
+        finalTextRef.current && !finalTextRef.current.endsWith(" ")
+          ? " "
+          : "";
+      finalTextRef.current = finalTextRef.current + sep + interimRemainder;
+    }
+    const transcript = finalTextRef.current.trim();
 
     // Flip the guard BEFORE calling stop so onend doesn't restart.
     userStoppedRef.current = true;
@@ -1103,7 +1124,9 @@ export function VoiceRecorder({
     }
 
     if (target === "editor") {
-      // Ship the trailing interim text (if any) as a final segment.
+      // ── Fix 1 flush site (editor-mode): ship the trailing interim
+      // text (if any) as a final segment so it lands in the open editor
+      // before we tell the parent the live session is over.
       if (interimRemainder) {
         try {
           onLiveEditorAppendRef.current?.(interimRemainder);
@@ -1452,6 +1475,28 @@ export function VoiceRecorder({
                     </span>
                   </label>
                 </fieldset>
+              )}
+
+              {/* Explainer only when the editor-target default is in effect
+                * — keeps the slide-over flow obvious without nagging the
+                * user when they've explicitly switched back to capture. */}
+              {liveEditorAvailable && liveTarget === "editor" && (
+                <div
+                  style={{
+                    padding: "8px 10px",
+                    background: C.bg,
+                    border: `1px dashed ${C.border}`,
+                    borderRadius: 7,
+                    color: C.textDim,
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Tipp: Beim Klick auf Start öffnet sich sofort eine neue
+                  Notiz und dein gesprochener Text erscheint Wort für Wort
+                  im Editor — wie in einem Google Doc. Wenn du fertig bist,
+                  klick Stop und bearbeite die Notiz weiter.
+                </div>
               )}
 
               <label style={{ fontSize: 11, color: C.textDim }}>
