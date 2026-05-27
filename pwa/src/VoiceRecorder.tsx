@@ -290,6 +290,77 @@ function buildCaptureBody(opts: {
   return lines.join("\n");
 }
 
+/**
+ * Build a SPEC-valid capture frontmatter block for the Live-in-Editor flow.
+ *
+ * Unlike `buildCaptureBody` (used by the standard capture-on-Stop path),
+ * this constructs the frontmatter as a plain object first and ONLY emits
+ * YAML lines for defined values. Whisper-only fields (`audio_path`,
+ * `duration_seconds`) and the optional `language` are intentionally absent
+ * for live-editor mode — they aren't known when the note is created (no
+ * upload happens, language might be auto). The previous implementation
+ * inlined them as `key: undefined` which the backend's `js-yaml.dump` then
+ * choked on with "unacceptable kind of an object to dump [object Undefined]".
+ *
+ * Body is empty — segments stream into the open editor and the regular
+ * 5s save-debounce in `App.tsx` persists them. The placeholder text only
+ * appears if the user stops before saying anything; the editor overwrites
+ * it on the first append.
+ */
+function buildLiveEditorCaptureBody(opts: {
+  noteId: string;
+  noteCreated: string;
+  title: string;
+  /** BCP-47 short code, or empty/undefined when no language is selected. */
+  language?: string;
+}): string {
+  // Build the frontmatter as an object first so we can drop undefined
+  // values BEFORE serialization. Mirrors the backend `stripUndefined`
+  // helper — defense in depth means the broken shape never leaves the
+  // browser, the backend never has to recover from it.
+  const frontmatter: Record<string, unknown> = {
+    id: opts.noteId,
+    type: "capture",
+    title: opts.title,
+    created: opts.noteCreated,
+    updated: new Date().toISOString(),
+    source: "voice",
+    tags: ["voice", "capture"],
+  };
+  if (opts.language) frontmatter.lang = opts.language;
+  // NOTE: `audio_path` and `duration_seconds` are deliberately NOT set
+  // here — they're populated by the Whisper pipeline, not the live-editor
+  // flow. Including them as `undefined` is what produced the original
+  // "unacceptable kind of an object to dump [object Undefined]" crash.
+
+  const escape = (s: string) =>
+    `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const serializeValue = (v: unknown): string => {
+    if (Array.isArray(v)) return `[${v.map((x) => String(x)).join(", ")}]`;
+    if (typeof v === "string") {
+      // Quote titles + any value that could be misread as YAML scalar;
+      // bare timestamps/IDs/enums stay unquoted to match the YAML the
+      // legacy `buildCaptureBody` produced for the equivalent fields.
+      const needsQuoting = /[:#'"\\]|^\s|\s$/.test(v);
+      return needsQuoting ? escape(v) : v;
+    }
+    return String(v);
+  };
+
+  const lines = ["---"];
+  for (const [k, v] of Object.entries(frontmatter)) {
+    if (v === undefined) continue; // belt-and-suspenders
+    // `title` always quoted to preserve the legacy byte shape.
+    if (k === "title" && typeof v === "string") {
+      lines.push(`${k}: ${escape(v)}`);
+      continue;
+    }
+    lines.push(`${k}: ${serializeValue(v)}`);
+  }
+  lines.push("---", "", "");
+  return lines.join("\n");
+}
+
 export function VoiceRecorder({
   onTranscribed,
   active,
@@ -864,12 +935,17 @@ export function VoiceRecorder({
         /* non-fatal */
       }
 
-      const captureBody = buildCaptureBody({
+      // Live-editor flow uses the dedicated helper that builds the
+      // frontmatter object first and only emits defined fields. Whisper-only
+      // fields like `audio_path` / `duration_seconds` are intentionally
+      // omitted — they don't exist for a live-editor recording, and sending
+      // them as `undefined` crashed `js-yaml.dump` on the server with
+      // "unacceptable kind of an object to dump [object Undefined]".
+      const captureBody = buildLiveEditorCaptureBody({
         noteId: noteId || "00000000000000000000000000",
         noteCreated,
         title: finalTitle,
-        language: liveLang,
-        transcript: "",
+        language: liveLang || undefined,
       });
 
       try {

@@ -74,14 +74,58 @@ export function parseFrontmatter(raw: string): {
 }
 
 /**
+ * Recursively drop `undefined` values from an object/array tree. Returned
+ * shape is structurally identical for fully-defined inputs (same keys, same
+ * order, same primitive identity) so downstream YAML output stays
+ * byte-identical for callers that never had undefineds in the first place.
+ *
+ * Why: `js-yaml`'s `dump` (used by `gray-matter` internally) throws
+ * `unacceptable kind of an object to dump [object Undefined]` whenever a
+ * map value is `undefined`. Helper paths like `captureEncodingContext`
+ * intentionally produce partial objects with undefined sub-fields (the
+ * JSON-Schema validator accepts the gaps via `additionalProperties`), so
+ * we strip them just-in-time before serialization. Defense in depth —
+ * frontend callers SHOULD avoid sending undefineds too, but a single
+ * forgotten field shouldn't crash a save.
+ *
+ * Behaviour notes:
+ *   - `null` is preserved (it's a valid YAML value, distinct from absent).
+ *   - Arrays are recursed into; an explicit `undefined` slot becomes `null`
+ *     (matches js-yaml's array semantics — arrays can't have "holes" in
+ *     YAML maps the way objects can omit keys).
+ *   - Nested objects are recursed into so an undefined sub-field on
+ *     `encoded.app_state` is dropped without losing siblings.
+ */
+function stripUndefined<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) {
+    return obj.map((v) =>
+      v === undefined ? null : stripUndefined(v),
+    ) as unknown as T;
+  }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+    if (v === undefined) continue;
+    out[k] = stripUndefined(v);
+  }
+  return out as T;
+}
+
+/**
  * Serialize a frontmatter map + body back to a Markdown document with a
  * YAML `---` frontmatter block. Preserves key order from `data`.
+ *
+ * Undefined values are stripped recursively before handing off to
+ * `gray-matter`/`js-yaml`, which would otherwise throw
+ * `unacceptable kind of an object to dump [object Undefined]`. For
+ * fully-populated inputs this is a no-op and produces byte-identical
+ * output to the previous implementation.
  */
 export function serializeFrontmatter(
   data: FrontmatterMap,
   body: string,
 ): string {
-  return matter.stringify(body, data);
+  return matter.stringify(body, stripUndefined(data));
 }
 
 /**
