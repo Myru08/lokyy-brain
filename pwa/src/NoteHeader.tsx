@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { Loader2, Save, RefreshCw, Sparkles, Undo2 } from "lucide-react";
+import { ChevronRight, Loader2, Save, RefreshCw, Sparkles, Undo2 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { useIsMobile } from "./responsive.js";
 
@@ -98,6 +98,15 @@ export interface NoteHeaderProps {
    * this prop is omitted OR when the active note has no `raw_transcript`.
    */
   onPolishUndo?: (noteId: string) => Promise<void>;
+  /**
+   * Optional click-to-jump handler for the folder-path breadcrumb. When
+   * provided, each breadcrumb segment becomes a button that calls this
+   * with the cumulative folder path (e.g. `30_captures` or
+   * `30_captures/voice`). App.tsx is expected to expand the FileTree to
+   * that folder and scroll it into view. When omitted, the breadcrumb
+   * renders as plain text (still visible — just non-interactive).
+   */
+  onFolderJump?: (folderPath: string) => void;
 }
 
 /** Strip a top-level YAML scalar value. No nested mapping support needed. */
@@ -218,6 +227,116 @@ function buildAiPrompt(title: string, ulid: string, path: string): string {
     "",
     "Meine Frage / Aufgabe: ",
   ].join("\n");
+}
+
+/**
+ * Compute breadcrumb segments from a note path-id. The note's `id` is
+ * the path WITHOUT the `.md` extension (e.g.
+ * `30_captures/voice/2026-05-27-voice-notiz`); the last segment is the
+ * filename, which the title row already shows — we drop it. Each entry
+ * carries both the visible label (`name`) and the cumulative path
+ * (`path`) so click-to-jump can target intermediate folders without
+ * re-splitting on the consumer side.
+ *
+ * Notes at vault root (no `/`) return [].
+ */
+function buildBreadcrumbSegments(
+  noteId: string,
+): { name: string; path: string }[] {
+  if (!noteId) return [];
+  const parts = noteId.split("/").filter(Boolean);
+  if (parts.length <= 1) return [];
+  const folders = parts.slice(0, -1);
+  const out: { name: string; path: string }[] = [];
+  let acc = "";
+  for (const seg of folders) {
+    acc = acc ? `${acc}/${seg}` : seg;
+    out.push({ name: seg, path: acc });
+  }
+  return out;
+}
+
+/**
+ * Folder-path breadcrumb. Renders a faint single-line strip above the
+ * title row so the user can see WHERE the active note lives (high-value
+ * for auto-opened voice captures that drop into deep folders). Each
+ * segment is a button when `onFolderJump` is wired; otherwise a plain
+ * span. Hidden entirely for vault-root notes.
+ */
+function Breadcrumb({
+  segments,
+  onFolderJump,
+}: {
+  segments: { name: string; path: string }[];
+  onFolderJump?: (folderPath: string) => void;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  if (segments.length === 0) return null;
+
+  const clickable = typeof onFolderJump === "function";
+
+  return (
+    <div
+      style={{
+        flexBasis: "100%",
+        width: "100%",
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 4,
+        fontSize: 11,
+        fontFamily: FONT.ui,
+        color: C.textDim,
+        marginBottom: 4,
+        lineHeight: 1.2,
+      }}
+      aria-label="Folder path"
+    >
+      {segments.map((seg, idx) => {
+        const isHover = hover === idx;
+        const color = isHover ? C.text : C.textDim;
+        const content = clickable ? (
+          <button
+            type="button"
+            onClick={() => onFolderJump?.(seg.path)}
+            onMouseEnter={() => setHover(idx)}
+            onMouseLeave={() => setHover((h) => (h === idx ? null : h))}
+            style={{
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              margin: 0,
+              cursor: "pointer",
+              color,
+              fontSize: 11,
+              fontFamily: FONT.ui,
+              textDecoration: isHover ? "underline" : "none",
+            }}
+            title={`Jump to ${seg.path}`}
+          >
+            {seg.name}
+          </button>
+        ) : (
+          <span style={{ color }}>{seg.name}</span>
+        );
+        return (
+          <span
+            key={seg.path}
+            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+          >
+            {content}
+            {idx < segments.length - 1 && (
+              <ChevronRight
+                size={10}
+                aria-hidden="true"
+                style={{ color: C.textFaint }}
+              />
+            )}
+          </span>
+        );
+      })}
+    </div>
+  );
 }
 
 const HEADER_STYLE: CSSProperties = {
@@ -616,10 +735,15 @@ export function NoteHeader({
   onDismissError,
   onPolish,
   onPolishUndo,
+  onFolderJump,
 }: NoteHeaderProps) {
   const ulid = useMemo(() => extractFrontmatterUlid(body), [body]);
   const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
   const rawTranscriptPresent = useMemo(() => hasRawTranscript(body), [body]);
+  const breadcrumbSegments = useMemo(
+    () => buildBreadcrumbSegments(noteId),
+    [noteId],
+  );
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   // Polish lifecycle — independent of save lifecycle: polish triggers a
@@ -914,6 +1038,10 @@ export function NoteHeader({
       <>
         <BadgeAnimationStyles />
         <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
+          <Breadcrumb
+            segments={breadcrumbSegments}
+            onFolderJump={onFolderJump}
+          />
           <span
             style={{
               ...TITLE_STYLE,
@@ -949,6 +1077,10 @@ export function NoteHeader({
     <>
       <BadgeAnimationStyles />
       <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
+      <Breadcrumb
+        segments={breadcrumbSegments}
+        onFolderJump={onFolderJump}
+      />
       <span
         style={{
           ...TITLE_STYLE,
