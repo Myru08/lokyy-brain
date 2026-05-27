@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { PipeJob } from "@lokyy/shared";
+import type { Note, PipeJob } from "@lokyy/shared";
 import {
   Mic,
   Square,
@@ -8,9 +8,66 @@ import {
   Check,
   AlertTriangle,
   ArrowUpRight,
+  Radio,
+  Brain,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { Spinner } from "./Spinner.js";
+
+/* ── Web-Speech-API types ─────────────────────────────────────────────
+ * The Web-Speech-API is non-standard and not in @types/dom. We declare
+ * the minimum surface we use here so the file remains self-contained
+ * (no new npm deps, no global lib augmentation that leaks to the rest
+ * of the PWA). All fields are typed loosely on purpose — different
+ * vendors omit/rename pieces.
+ * ─────────────────────────────────────────────────────────────────── */
+interface SpeechRecognitionAlternativeLike {
+  transcript: string;
+  confidence: number;
+}
+interface SpeechRecognitionResultLike {
+  readonly length: number;
+  readonly isFinal: boolean;
+  item(idx: number): SpeechRecognitionAlternativeLike;
+  [idx: number]: SpeechRecognitionAlternativeLike;
+}
+interface SpeechRecognitionResultListLike {
+  readonly length: number;
+  item(idx: number): SpeechRecognitionResultLike;
+  [idx: number]: SpeechRecognitionResultLike;
+}
+interface SpeechRecognitionEventLike extends Event {
+  readonly resultIndex: number;
+  readonly results: SpeechRecognitionResultListLike;
+}
+interface SpeechRecognitionErrorEventLike extends Event {
+  readonly error: string;
+  readonly message?: string;
+}
+interface SpeechRecognitionLike extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  maxAlternatives: number;
+  onresult: ((ev: SpeechRecognitionEventLike) => void) | null;
+  onerror: ((ev: SpeechRecognitionErrorEventLike) => void) | null;
+  onend: ((ev: Event) => void) | null;
+  onstart: ((ev: Event) => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+type SpeechRecognitionCtor = new () => SpeechRecognitionLike;
+
+function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as {
+    SpeechRecognition?: SpeechRecognitionCtor;
+    webkitSpeechRecognition?: SpeechRecognitionCtor;
+  };
+  const ctor = w.SpeechRecognition ?? w.webkitSpeechRecognition;
+  return typeof ctor === "function" ? ctor : null;
+}
 
 /**
  * Voice-Recorder — Sprachaufnahme-Tab im ImportPanel.
@@ -63,7 +120,18 @@ type State =
   | { kind: "uploading"; sizeBytes: number }
   | { kind: "transcribing"; jobId: string }
   | { kind: "done"; noteId: string; notePath: string }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string }
+  /* ── Web-Speech live-mode states ────────────────────────────────
+   * "live-listening": recognition is running, interim+final accumulating.
+   * "live-stopped":  user stopped — transcript ready to edit + save.
+   * "live-saving":   POSTing to /api/vault/note + PUTting frontmatter.
+   * Other states ("permission-denied", "error", "done") are reused.
+   * ─────────────────────────────────────────────────────────────── */
+  | { kind: "live-listening"; startedAt: number; elapsedMs: number; finalText: string; interimText: string }
+  | { kind: "live-stopped"; transcript: string; durationMs: number }
+  | { kind: "live-saving" };
+
+type Mode = "live" | "whisper";
 
 interface VoiceRecorderProps {
   /** Called with the resulting note id when transcription finishes. */
@@ -121,6 +189,73 @@ const LANGS: { value: string; label: string }[] = [
   { value: "es", label: "Spanisch" },
 ];
 
+/**
+ * Live-mode languages. Web-Speech needs a BCP-47 region tag (de-DE not
+ * just `de`), and "auto-detect" isn't a thing in the spec — most browsers
+ * silently fall back to the OS default. We force a pick so the user knows
+ * what they're getting. Maps the dropdown value to a BCP-47 tag.
+ */
+const LIVE_LANGS: { value: string; bcp47: string; label: string }[] = [
+  { value: "de", bcp47: "de-DE", label: "Deutsch" },
+  { value: "en", bcp47: "en-US", label: "Englisch" },
+  { value: "fr", bcp47: "fr-FR", label: "Französisch" },
+  { value: "es", bcp47: "es-ES", label: "Spanisch" },
+];
+
+/** YYYY-MM-DD for vault paths. */
+function fmtDate(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** Filesystem-safe slug for vault paths — kebab-case, ASCII-only, max 48 chars. */
+function slugify(input: string): string {
+  const base = input
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "") // strip combining marks
+    .replace(/ß/g, "ss")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return base || "voice";
+}
+
+/**
+ * Build a SPEC-valid capture frontmatter block plus body. The note id and
+ * created-timestamp come from the freshly created note so we don't fight
+ * the server over identity (frontmatter lifecycle rule: id/created are
+ * immutable once a note exists, type/title/extra fields are taken from
+ * the incoming PUT body).
+ */
+function buildCaptureBody(opts: {
+  noteId: string;
+  noteCreated: string;
+  title: string;
+  language: string;
+  transcript: string;
+}): string {
+  const escape = (s: string) =>
+    `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const lines = [
+    "---",
+    `id: ${opts.noteId}`,
+    "type: capture",
+    `title: ${escape(opts.title)}`,
+    `created: ${opts.noteCreated}`,
+    `updated: ${new Date().toISOString()}`,
+    "source: voice",
+    `lang: ${opts.language}`,
+    "tags: [voice, capture]",
+    "---",
+    "",
+    opts.transcript.trim() || "(leeres Transkript)",
+    "",
+  ];
+  return lines.join("\n");
+}
+
 export function VoiceRecorder({
   onTranscribed,
   active,
@@ -130,6 +265,20 @@ export function VoiceRecorder({
   const [title, setTitle] = useState<string>(`Voice-Notiz ${fmtTimestamp()}`);
   const [language, setLanguage] = useState<string>(defaultLanguage);
 
+  /* ── Mode switch ──────────────────────────────────────────────────
+   * `hasWebSpeech` is determined once at mount; if the browser doesn't
+   * expose SpeechRecognition we hide the Live pill entirely and force
+   * Whisper. Otherwise Live is the default (cheap + private).
+   * ─────────────────────────────────────────────────────────────── */
+  const [hasWebSpeech, setHasWebSpeech] = useState<boolean>(false);
+  const [mode, setMode] = useState<Mode>("whisper");
+  // For Live mode the dropdown can't be "" (auto) — pick a sane default.
+  const [liveLang, setLiveLang] = useState<string>(
+    defaultLanguage && LIVE_LANGS.some((l) => l.value === defaultLanguage)
+      ? defaultLanguage
+      : "de",
+  );
+
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -138,6 +287,27 @@ export function VoiceRecorder({
   // The current preview URL — kept on the side so cleanup can revoke it
   // even after the state has moved on (e.g. discard while playing).
   const previewUrlRef = useRef<string | null>(null);
+
+  /* ── Live-mode refs ───────────────────────────────────────────────
+   * The SpeechRecognition instance, plus a `userStoppedRef` flag we
+   * flip BEFORE calling `recognition.stop()` so the `onend` handler
+   * knows not to auto-restart. Without this flag we'd loop forever
+   * because some browsers (Chrome on long sessions) end the
+   * recognizer themselves after a silence window or a fixed timeout.
+   * `liveTickRef` runs the elapsed-time counter.
+   * ─────────────────────────────────────────────────────────────── */
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  const userStoppedRef = useRef<boolean>(false);
+  const liveTickRef = useRef<number | null>(null);
+  const finalTextRef = useRef<string>("");
+  const liveStartedAtRef = useRef<number>(0);
+
+  /* ── Web-Speech availability check (mount-only) ────────────────── */
+  useEffect(() => {
+    const supported = getSpeechRecognitionCtor() !== null;
+    setHasWebSpeech(supported);
+    setMode(supported ? "live" : "whisper");
+  }, []);
 
   /* ── Cleanup helpers ──────────────────────────────────────────────── */
 
@@ -169,6 +339,38 @@ export function VoiceRecorder({
     }
   };
 
+  const stopLiveTick = () => {
+    if (liveTickRef.current !== null) {
+      window.clearInterval(liveTickRef.current);
+      liveTickRef.current = null;
+    }
+  };
+
+  /**
+   * Tear down the SpeechRecognition instance. Flips `userStoppedRef`
+   * BEFORE calling stop/abort so the `onend` handler returns early
+   * instead of restarting. Also nukes the event handlers so a late
+   * `onresult` from the browser can't mutate state after teardown.
+   */
+  const teardownRecognition = () => {
+    const r = recognitionRef.current;
+    if (r) {
+      userStoppedRef.current = true;
+      try {
+        r.onresult = null;
+        r.onerror = null;
+        r.onend = null;
+        r.onstart = null;
+        r.abort();
+      } catch {
+        // ignore — some browsers throw if already stopped
+      }
+      recognitionRef.current = null;
+    }
+    stopLiveTick();
+    finalTextRef.current = "";
+  };
+
   /** Hard reset back to idle — releases every resource the recorder holds. */
   const resetAll = () => {
     stopTick();
@@ -182,6 +384,7 @@ export function VoiceRecorder({
     }
     teardownStream();
     revokePreview();
+    teardownRecognition();
     setState({ kind: "idle" });
     setTitle(`Voice-Notiz ${fmtTimestamp()}`);
   };
@@ -190,7 +393,7 @@ export function VoiceRecorder({
 
   useEffect(() => {
     if (!active) {
-      // Panel closed — drop any in-flight recording / upload.
+      // Panel closed — drop any in-flight recording / upload / live session.
       stopTick();
       stopPoll();
       try {
@@ -202,6 +405,7 @@ export function VoiceRecorder({
       }
       teardownStream();
       revokePreview();
+      teardownRecognition();
     }
   }, [active]);
 
@@ -218,6 +422,7 @@ export function VoiceRecorder({
       }
       teardownStream();
       revokePreview();
+      teardownRecognition();
     };
   }, []);
 
@@ -499,6 +704,331 @@ export function VoiceRecorder({
     }, POLL_INTERVAL_MS);
   }
 
+  /* ── Live mode (Web-Speech-API) ───────────────────────────────────
+   * No audio upload, no API key — the browser does ASR locally
+   * (Chrome routes to Google's cloud under the hood, Safari uses
+   * on-device Siri ASR; either way: no work for us).
+   * ─────────────────────────────────────────────────────────────── */
+
+  function startLive() {
+    const Ctor = getSpeechRecognitionCtor();
+    if (!Ctor) {
+      setState({
+        kind: "error",
+        message:
+          "Live-Modus nicht unterstützt — dein Browser hat keine SpeechRecognition. " +
+          "Chrome/Edge oder iOS Safari 14.5+ probieren.",
+      });
+      return;
+    }
+
+    // Belt-and-suspenders: kill any previous recognizer before starting.
+    teardownRecognition();
+    userStoppedRef.current = false;
+    finalTextRef.current = "";
+
+    const bcp47 =
+      LIVE_LANGS.find((l) => l.value === liveLang)?.bcp47 ?? "de-DE";
+
+    let recognition: SpeechRecognitionLike;
+    try {
+      recognition = new Ctor();
+    } catch (err) {
+      setState({
+        kind: "error",
+        message: `SpeechRecognition konnte nicht initialisiert werden: ${
+          (err as Error).message ?? err
+        }`,
+      });
+      return;
+    }
+    recognition.lang = bcp47;
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (ev: SpeechRecognitionEventLike) => {
+      let interim = "";
+      let appended = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        if (!res) continue;
+        const alt = res[0];
+        if (!alt) continue;
+        if (res.isFinal) {
+          appended += alt.transcript;
+        } else {
+          interim += alt.transcript;
+        }
+      }
+      if (appended) {
+        // Glue with a space so final segments don't run together.
+        const sep =
+          finalTextRef.current && !finalTextRef.current.endsWith(" ") ? " " : "";
+        finalTextRef.current = finalTextRef.current + sep + appended.trim();
+      }
+      setState((prev) =>
+        prev.kind === "live-listening"
+          ? {
+              ...prev,
+              finalText: finalTextRef.current,
+              interimText: interim,
+            }
+          : prev,
+      );
+    };
+
+    recognition.onerror = (ev: SpeechRecognitionErrorEventLike) => {
+      // `no-speech` and `aborted` are routine — silence, or our own stop().
+      // For the latter we already flipped `userStoppedRef`, so swallow it.
+      if (ev.error === "aborted" && userStoppedRef.current) return;
+
+      const msgMap: Record<string, string> = {
+        "no-speech":
+          "Keine Sprache erkannt. Mikro lauter stellen oder näher dran sprechen.",
+        "audio-capture":
+          "Kein Mikrofon verfügbar. Prüfe das Eingabegerät in den System-Einstellungen.",
+        "not-allowed":
+          "Mikrofon-Zugriff verweigert. Erlaube ihn in den Browser-Einstellungen.",
+        network:
+          "Netzwerk-Fehler bei der Spracherkennung. Live-Modus braucht für viele Browser eine Internet-Verbindung.",
+        "service-not-allowed":
+          "Spracherkennungs-Dienst nicht erlaubt — Browser blockiert ihn.",
+        "language-not-supported": `Sprache "${bcp47}" wird von diesem Browser nicht unterstützt. Andere Sprache wählen.`,
+        "bad-grammar": "Grammatik-Fehler in der Spracherkennung.",
+      };
+      const userMsg =
+        msgMap[ev.error] ??
+        `Spracherkennungs-Fehler: ${ev.error}${
+          ev.message ? ` (${ev.message})` : ""
+        }`;
+
+      // `no-speech` while still listening: don't kill the session — let
+      // onend auto-restart so the recognizer picks up again when the user
+      // resumes talking. For everything else: bail with an error state.
+      if (ev.error === "no-speech" && !userStoppedRef.current) return;
+
+      teardownRecognition();
+      setState({ kind: "error", message: userMsg });
+    };
+
+    recognition.onend = () => {
+      // Auto-restart unless the user pressed Stop.
+      //
+      // WHY: Chrome and most Chromium-based browsers terminate the
+      // recognizer after ~60 s of audio or after a silence window,
+      // regardless of `continuous: true`. Without auto-restart the
+      // session would silently die mid-thought. The `userStoppedRef`
+      // flag is set in `stopLive()` BEFORE calling stop(), so we know
+      // here whether the end was intentional.
+      if (userStoppedRef.current) return;
+      const r = recognitionRef.current;
+      if (!r) return;
+      try {
+        r.start();
+      } catch {
+        // Some browsers throw "InvalidStateError" if start() is called
+        // too quickly after end. One retry on the next tick is enough.
+        window.setTimeout(() => {
+          if (userStoppedRef.current) return;
+          try {
+            recognitionRef.current?.start();
+          } catch {
+            // give up silently — user can hit Stop and start again
+          }
+        }, 250);
+      }
+    };
+
+    try {
+      recognition.start();
+    } catch (err) {
+      setState({
+        kind: "error",
+        message: `Live-Aufnahme konnte nicht gestartet werden: ${
+          (err as Error).message ?? err
+        }`,
+      });
+      return;
+    }
+    recognitionRef.current = recognition;
+
+    const startedAt = Date.now();
+    liveStartedAtRef.current = startedAt;
+    setState({
+      kind: "live-listening",
+      startedAt,
+      elapsedMs: 0,
+      finalText: "",
+      interimText: "",
+    });
+
+    stopLiveTick();
+    liveTickRef.current = window.setInterval(() => {
+      setState((prev) =>
+        prev.kind === "live-listening"
+          ? { ...prev, elapsedMs: Date.now() - startedAt }
+          : prev,
+      );
+    }, 250);
+  }
+
+  function stopLive() {
+    if (state.kind !== "live-listening") return;
+    const durationMs = Date.now() - liveStartedAtRef.current;
+    const transcript = finalTextRef.current.trim();
+
+    // Flip the guard BEFORE calling stop so onend doesn't restart.
+    userStoppedRef.current = true;
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // ignore
+    }
+    stopLiveTick();
+    // Don't teardown yet — we want a clean stop event; teardown happens
+    // on discard/save/reset. (Defensive: nuke handlers so a late onresult
+    // doesn't flip us back into live-listening.)
+    if (recognitionRef.current) {
+      recognitionRef.current.onresult = null;
+      recognitionRef.current.onerror = null;
+      recognitionRef.current.onend = null;
+    }
+
+    setState({ kind: "live-stopped", transcript, durationMs });
+  }
+
+  function discardLive() {
+    teardownRecognition();
+    setState({ kind: "idle" });
+    setTitle(`Voice-Notiz ${fmtTimestamp()}`);
+  }
+
+  /**
+   * Persist the live transcript as a SPEC-valid `type: capture` note
+   * under `30_captures/voice/{date}-{slug}`.
+   *
+   * Two-step write because the public POST /api/vault/note hard-codes
+   * `type: note` server-side (it's a thin wrapper around createNote).
+   * To get `type: capture` into the frontmatter we:
+   *   1. POST a blank note at the target path → server generates id +
+   *      created timestamp, validates as `type: note`.
+   *   2. PUT a body containing the full capture frontmatter — saveNote
+   *      merges incoming frontmatter, preserves id/created, and writes
+   *      `type: capture` (validated against capture.json schema).
+   */
+  async function saveLive() {
+    if (state.kind !== "live-stopped") return;
+    const transcript = state.transcript.trim();
+    if (!transcript) {
+      setState({
+        kind: "error",
+        message: "Transkript ist leer — nichts zu speichern.",
+      });
+      return;
+    }
+
+    const finalTitle = title.trim() || `Voice-Notiz ${fmtTimestamp()}`;
+    const slug = slugify(finalTitle);
+    const path = `30_captures/voice/${fmtDate()}-${slug}`;
+
+    setState({ kind: "live-saving" });
+
+    // Step 1: create the empty note.
+    let created: Note;
+    try {
+      const res = await fetch("/api/vault/note", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, body: "" }),
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const errBody = await res
+          .json()
+          .catch(() => ({ error: res.statusText }));
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+      created = (await res.json()) as Note;
+    } catch (err) {
+      setState({
+        kind: "error",
+        message: `Notiz konnte nicht angelegt werden: ${
+          (err as Error).message ?? err
+        }`,
+      });
+      return;
+    }
+
+    // Server returns the parsed Note — we need the ULID + created stamp
+    // out of the frontmatter for step 2. Re-fetch to get the frontmatter
+    // verbatim (the Note shape only exposes a subset).
+    let noteId = "";
+    let noteCreated = new Date().toISOString();
+    try {
+      const r = await fetch(
+        `/api/notes/${encodeURIComponent(created.id)}`,
+        { credentials: "include" },
+      );
+      if (r.ok) {
+        const note = (await r.json()) as Note & { body: string };
+        // Pull `id:` and `created:` lines out of the YAML frontmatter.
+        const fm = note.body.split(/\n---\n/)[0] ?? "";
+        const idMatch = fm.match(/\bid:\s*([0-9A-HJKMNP-TV-Z]{26})/);
+        const createdMatch = fm.match(/\bcreated:\s*([^\n]+)/);
+        if (idMatch) noteId = idMatch[1] ?? "";
+        if (createdMatch) noteCreated = (createdMatch[1] ?? "").trim();
+      }
+    } catch {
+      // Non-fatal — saveNote will preserve whatever's on disk for id/created,
+      // and our PUT body only needs them to round-trip the schema.
+    }
+
+    // Step 2: PUT the body with capture frontmatter.
+    const captureBody = buildCaptureBody({
+      noteId: noteId || "00000000000000000000000000",
+      noteCreated,
+      title: finalTitle,
+      language: liveLang,
+      transcript,
+    });
+
+    try {
+      const res = await fetch(
+        `/api/notes/${encodeURIComponent(created.id)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: captureBody }),
+          credentials: "include",
+        },
+      );
+      if (!res.ok) {
+        const errBody = await res
+          .json()
+          .catch(() => ({ error: res.statusText }));
+        throw new Error(errBody.error ?? `HTTP ${res.status}`);
+      }
+    } catch (err) {
+      // Note was created but content failed to land — surface clearly so
+      // the user knows to open it and fix it manually.
+      setState({
+        kind: "error",
+        message: `Notiz erstellt (${created.path}) aber Transkript konnte nicht gespeichert werden: ${
+          (err as Error).message ?? err
+        }`,
+      });
+      return;
+    }
+
+    teardownRecognition();
+    setState({
+      kind: "done",
+      noteId: created.id,
+      notePath: created.path,
+    });
+  }
+
   /* ── Render ──────────────────────────────────────────────────────── */
 
   return (
@@ -515,46 +1045,205 @@ export function VoiceRecorder({
     >
       {state.kind === "idle" && (
         <>
-          <p
-            style={{
-              margin: 0,
-              fontSize: 11.5,
-              color: C.textDim,
-              lineHeight: 1.5,
-            }}
-          >
-            Sprachaufnahme — wird per Whisper transkribiert und als Capture in{" "}
-            <code style={{ fontFamily: FONT.mono, color: C.gold }}>
-              30_captures/voice/
-            </code>{" "}
-            abgelegt.
-          </p>
-          <button
-            type="button"
-            onClick={() => void startRecording()}
-            aria-label="Aufnahme starten"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-              padding: "16px 0",
-              borderRadius: 10,
-              border: "none",
-              cursor: "pointer",
-              background: C.err,
-              color: "#fff",
-              fontSize: 15,
-              fontWeight: 600,
-              fontFamily: FONT.ui,
-            }}
-          >
-            <Mic size={20} />
-            Aufnahme starten
-          </button>
-          <small style={{ color: C.textFaint, fontSize: 10.5 }}>
-            Max. 10 Minuten · Whisper-Limit 25 MB
-          </small>
+          {/* ── Mode switch (Live vs Whisper) ──────────────────────
+            * Two pill-style buttons. Hidden entirely when the browser
+            * lacks SpeechRecognition — in that case Whisper is the
+            * only option and we just show the original UI plus a small
+            * compat note.
+            * ──────────────────────────────────────────────────── */}
+          {hasWebSpeech ? (
+            <div
+              role="tablist"
+              aria-label="Aufnahme-Modus"
+              style={{
+                display: "flex",
+                gap: 6,
+                padding: 3,
+                background: C.bg,
+                border: `1px solid ${C.border}`,
+                borderRadius: 999,
+              }}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "live"}
+                onClick={() => setMode("live")}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  padding: "8px 10px",
+                  borderRadius: 999,
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  fontFamily: FONT.ui,
+                  background: mode === "live" ? C.accent : "transparent",
+                  color: mode === "live" ? "#1a1110" : C.textDim,
+                }}
+              >
+                <Radio size={13} />
+                Live (Browser, kostenlos)
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={mode === "whisper"}
+                onClick={() => setMode("whisper")}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  padding: "8px 10px",
+                  borderRadius: 999,
+                  border: "none",
+                  cursor: "pointer",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  fontFamily: FONT.ui,
+                  background: mode === "whisper" ? C.accent : "transparent",
+                  color: mode === "whisper" ? "#1a1110" : C.textDim,
+                }}
+              >
+                <Brain size={13} />
+                Hochwertig (Whisper)
+              </button>
+            </div>
+          ) : (
+            <div
+              style={{
+                padding: "8px 10px",
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                color: C.textFaint,
+                fontSize: 10.5,
+                lineHeight: 1.5,
+              }}
+            >
+              Live-Modus nicht unterstützt — dein Browser hat keine
+              SpeechRecognition. Chrome/Edge oder iOS Safari 14.5+ probieren.
+            </div>
+          )}
+
+          {mode === "live" && hasWebSpeech ? (
+            <>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 11.5,
+                  color: C.textDim,
+                  lineHeight: 1.5,
+                }}
+              >
+                Live-Transkription im Browser — kein Upload, kein API-Key.
+                Wähle die Sprache und sprich los; das Transkript baut sich in
+                Echtzeit auf.
+              </p>
+              <label style={{ fontSize: 11, color: C.textDim }}>
+                Sprache
+                <select
+                  value={liveLang}
+                  onChange={(e) => setLiveLang(e.target.value)}
+                  style={{
+                    width: "100%",
+                    boxSizing: "border-box",
+                    marginTop: 4,
+                    background: C.bg,
+                    border: `1px solid ${C.border}`,
+                    borderRadius: 7,
+                    color: C.text,
+                    fontSize: 13,
+                    fontFamily: FONT.ui,
+                    padding: "8px 10px",
+                    outline: "none",
+                  }}
+                >
+                  {LIVE_LANGS.map((l) => (
+                    <option key={l.value} value={l.value}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                onClick={startLive}
+                aria-label="Live-Aufnahme starten"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  padding: "16px 0",
+                  borderRadius: 10,
+                  border: "none",
+                  cursor: "pointer",
+                  background: C.err,
+                  color: "#fff",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  fontFamily: FONT.ui,
+                }}
+              >
+                <Mic size={20} />
+                Aufnahme starten
+              </button>
+              <small style={{ color: C.textFaint, fontSize: 10.5 }}>
+                Keine Längen-Begrenzung · läuft komplett im Browser
+              </small>
+            </>
+          ) : (
+            <>
+              <p
+                style={{
+                  margin: 0,
+                  fontSize: 11.5,
+                  color: C.textDim,
+                  lineHeight: 1.5,
+                }}
+              >
+                Sprachaufnahme — wird per Whisper transkribiert und als
+                Capture in{" "}
+                <code style={{ fontFamily: FONT.mono, color: C.gold }}>
+                  30_captures/voice/
+                </code>{" "}
+                abgelegt.
+              </p>
+              <button
+                type="button"
+                onClick={() => void startRecording()}
+                aria-label="Aufnahme starten"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  padding: "16px 0",
+                  borderRadius: 10,
+                  border: "none",
+                  cursor: "pointer",
+                  background: C.err,
+                  color: "#fff",
+                  fontSize: 15,
+                  fontWeight: 600,
+                  fontFamily: FONT.ui,
+                }}
+              >
+                <Mic size={20} />
+                Aufnahme starten
+              </button>
+              <small style={{ color: C.textFaint, fontSize: 10.5 }}>
+                Max. 10 Minuten · Whisper-Limit 25 MB
+              </small>
+            </>
+          )}
         </>
       )}
 
@@ -950,6 +1639,286 @@ export function VoiceRecorder({
             </button>
           </div>
         </>
+      )}
+
+      {state.kind === "live-listening" && (
+        <>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              padding: "14px 16px",
+              background: C.elevated,
+              border: `1px solid ${C.err}`,
+              borderRadius: 10,
+            }}
+          >
+            <span
+              aria-hidden="true"
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: "50%",
+                background: C.err,
+                animation: "lokyy-rec-pulse 1.2s ease-in-out infinite",
+                flexShrink: 0,
+              }}
+            />
+            <style>{`
+              @keyframes lokyy-rec-pulse {
+                0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239,68,68,0.5); }
+                50%      { opacity: 0.55; box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+              }
+            `}</style>
+            <span style={{ color: C.err, fontWeight: 600, fontSize: 13 }}>
+              Live-Modus läuft
+            </span>
+            <span style={{ flex: 1 }} />
+            <span
+              style={{
+                fontFamily: FONT.mono,
+                fontSize: 15,
+                color: C.text,
+                fontVariantNumeric: "tabular-nums",
+              }}
+            >
+              {fmtDuration(state.elapsedMs)}
+            </span>
+          </div>
+
+          <div
+            aria-live="polite"
+            style={{
+              minHeight: 120,
+              maxHeight: 240,
+              overflowY: "auto",
+              padding: "10px 12px",
+              background: C.bg,
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+              color: C.text,
+              fontSize: 13,
+              lineHeight: 1.55,
+              fontFamily: FONT.ui,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+            }}
+          >
+            {state.finalText ||
+              (!state.interimText && (
+                <span style={{ color: C.textFaint, fontStyle: "italic" }}>
+                  Beginn mit Sprechen — das Transkript erscheint hier…
+                </span>
+              ))}
+            {state.interimText && (
+              <span style={{ color: C.textDim, fontStyle: "italic" }}>
+                {state.finalText ? " " : ""}
+                {state.interimText}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={stopLive}
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                padding: "10px 0",
+                borderRadius: 8,
+                border: "none",
+                background: C.accent,
+                color: "#1a1110",
+                fontWeight: 600,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              <Square size={14} fill="currentColor" />
+              Stop
+            </button>
+            <button
+              type="button"
+              onClick={discardLive}
+              style={{
+                padding: "10px 14px",
+                borderRadius: 8,
+                border: `1px solid ${C.border}`,
+                background: C.elevated,
+                color: C.textDim,
+                fontSize: 12.5,
+                cursor: "pointer",
+              }}
+            >
+              Abbrechen
+            </button>
+          </div>
+        </>
+      )}
+
+      {state.kind === "live-stopped" && (
+        <>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              fontSize: 10.5,
+              color: C.textFaint,
+              fontFamily: FONT.mono,
+              padding: "6px 2px",
+            }}
+          >
+            <span>Live-Transkript</span>
+            <span>·</span>
+            <span>{fmtDuration(state.durationMs)}</span>
+          </div>
+
+          <label style={{ fontSize: 11, color: C.textDim }}>
+            Transkript (editierbar)
+            <textarea
+              value={state.transcript}
+              onChange={(e) =>
+                setState({
+                  kind: "live-stopped",
+                  transcript: e.target.value,
+                  durationMs: state.durationMs,
+                })
+              }
+              rows={8}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                marginTop: 4,
+                background: C.bg,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                padding: "8px 10px",
+                outline: "none",
+                resize: "vertical",
+                lineHeight: 1.55,
+              }}
+            />
+          </label>
+
+          <label style={{ fontSize: 11, color: C.textDim }}>
+            Titel
+            <input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                marginTop: 4,
+                background: C.bg,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                padding: "8px 10px",
+                outline: "none",
+              }}
+            />
+          </label>
+
+          <label style={{ fontSize: 11, color: C.textDim }}>
+            Sprache
+            <select
+              value={liveLang}
+              onChange={(e) => setLiveLang(e.target.value)}
+              style={{
+                width: "100%",
+                boxSizing: "border-box",
+                marginTop: 4,
+                background: C.bg,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                padding: "8px 10px",
+                outline: "none",
+              }}
+            >
+              {LIVE_LANGS.map((l) => (
+                <option key={l.value} value={l.value}>
+                  {l.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              type="button"
+              onClick={() => void saveLive()}
+              style={{
+                flex: 1,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 6,
+                padding: "10px 0",
+                borderRadius: 8,
+                border: "none",
+                background: C.accent,
+                color: "#1a1110",
+                fontWeight: 600,
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              <Check size={14} />
+              Notiz speichern
+            </button>
+            <button
+              type="button"
+              onClick={discardLive}
+              aria-label="Verwerfen"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: `1px solid ${C.border}`,
+                background: C.elevated,
+                color: C.textDim,
+                fontSize: 12.5,
+                cursor: "pointer",
+              }}
+            >
+              <Trash2 size={13} />
+              Verwerfen
+            </button>
+          </div>
+        </>
+      )}
+
+      {state.kind === "live-saving" && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: "12px 14px",
+            background: C.elevated,
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            color: C.textDim,
+          }}
+        >
+          <Spinner size={16} />
+          <span>Speichere Notiz im Vault…</span>
+        </div>
       )}
 
       {state.kind === "error" && (
