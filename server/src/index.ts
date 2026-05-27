@@ -10,6 +10,7 @@ import {
   registerHandler,
   resumePendingMigration,
   runMigrations,
+  setLlmProviders,
   sleepAgent,
 } from "@lokyy/core";
 import { notesRoutes } from "./routes/notes.js";
@@ -311,7 +312,29 @@ async function main() {
   // Failures here MUST NOT abort startup — a missing/broken provider is
   // expected on first boot (config empty) and recoverable via PUT /api/llm/config.
   try {
-    const providers = await getLlmProviders();
+    // Auto-register Ollama when OLLAMA_HOST is set and no Ollama row exists
+    // in DB yet. Ollama is the local embedding source — the deployment depends
+    // on it — so we don't make the operator open the UI just to enable a
+    // provider whose URL is already wired via env. Idempotent: subsequent
+    // restarts find the row and skip the insert; operator-edits via the UI
+    // are preserved (we never overwrite an existing row).
+    let providers = await getLlmProviders();
+    const ollamaHostEnv = process.env.OLLAMA_HOST?.trim();
+    if (ollamaHostEnv && !providers.some((p) => p.name === "ollama")) {
+      const seeded = [
+        ...providers,
+        {
+          name: "ollama",
+          enabled: true,
+          baseUrl: ollamaHostEnv,
+        },
+      ];
+      await setLlmProviders(seeded);
+      providers = seeded;
+      console.log(
+        `[lokyy-brain] auto-registered Ollama provider from OLLAMA_HOST=${ollamaHostEnv}`,
+      );
+    }
     const result = await initLlmFromConfig(providers);
     console.log(
       `[lokyy-brain] LLM registry initialised — registered: [${result.registered.join(", ")}], errors: ${result.errors.length}`,
