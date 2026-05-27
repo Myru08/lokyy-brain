@@ -18,3 +18,4 @@ export * from "./ragFusion.js";
 export * from "./selfRag.js";
 export * from "./reranker.js";
 export * from "./contextLayout.js";
+export * from "./polish.js";
