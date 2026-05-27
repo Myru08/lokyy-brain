@@ -64,10 +64,17 @@ forgejoOauthRoutes.get("/info", (c) => {
 });
 
 /**
- * GET /api/auth/forgejo/start
+ * GET /api/auth/forgejo/start?next=/settings?forgejo=connected
  *
  * Generates a CSRF state token, persists it bound to the current user,
  * then 302s to Forgejo's authorize endpoint.
+ *
+ * The optional `next` query parameter is the same-origin path the
+ * callback should redirect to after a successful token exchange. It is
+ * encoded into the state value (format: `<randomHex>.<base64urlNext>`)
+ * so no schema migration is needed and the state row remains the only
+ * trust anchor. Default is `/setup?forgejo=connected` for backwards
+ * compatibility with the wizard.
  */
 forgejoOauthRoutes.get("/start", async (c) => {
   if (!isFullyConfigured()) {
@@ -76,7 +83,13 @@ forgejoOauthRoutes.get("/start", async (c) => {
   const user = await requireUser(c);
   if (!user) return c.json({ error: "unauthenticated" }, 401);
 
-  const state = randomBytes(16).toString("hex"); // 32 hex chars
+  const rawNext = c.req.query("next") ?? "/setup?forgejo=connected";
+  // Validate to a same-origin path BEFORE we ship it through the OAuth
+  // round-trip. The callback validates again as defence-in-depth.
+  const safeNext = sanitizeNextPath(rawNext) ?? "/setup?forgejo=connected";
+
+  const randomPart = randomBytes(16).toString("hex"); // 32 hex chars
+  const state = `${randomPart}.${encodeNext(safeNext)}`;
   await database().insert(forgejoOauthState).values({
     state,
     userId: user.id,
@@ -204,8 +217,15 @@ forgejoOauthRoutes.get("/callback", async (c) => {
     forgejoUserLogin: forgejoUser.login,
   });
 
-  const wizardUrl = buildSameOriginUrl(c, "/setup?forgejo=connected");
-  return c.redirect(wizardUrl, 302);
+  // Decode the post-OAuth redirect target from the state value. Format
+  // is `<randomHex>.<base64urlNext>`; the dot is reserved (hex chars
+  // never produce one). Legacy states without a dot fall back to the
+  // wizard URL. Any decoded next is re-validated to a same-origin path.
+  const decodedNext = decodeNextFromState(state);
+  const safeNext =
+    (decodedNext && sanitizeNextPath(decodedNext)) ?? "/setup?forgejo=connected";
+  const targetUrl = buildSameOriginUrl(c, safeNext);
+  return c.redirect(targetUrl, 302);
 });
 
 // ─── /api/forgejo ───────────────────────────────────────────────────────
@@ -228,6 +248,69 @@ forgejoApiRoutes.get("/connection", async (c) => {
     forgejoUserLogin: token.forgejoUserLogin,
     baseUrl: token.forgejoBaseUrl,
   });
+});
+
+/**
+ * GET /api/forgejo/probe
+ *
+ * Calls Forgejo's `/api/v1/user` with the stored OAuth token to
+ * determine whether the token is actually still valid (Forgejo JWTs
+ * expire after ~1h). The Settings page uses this to show "Token
+ * abgelaufen" and prompt for a reconnect-flow.
+ *
+ *   { ok: true, forgejoUserLogin: string }                   – live
+ *   { ok: false, reason: 'no-token' }                        – never connected
+ *   { ok: false, reason: 'expired', error?: string }         – 401 from Forgejo
+ *   { ok: false, reason: 'network', error?: string }         – fetch failed
+ */
+forgejoApiRoutes.get("/probe", async (c) => {
+  const user = await requireUser(c);
+  if (!user) return c.json({ error: "unauthenticated" }, 401);
+
+  const token = await findToken(user.id);
+  if (!token) {
+    return c.json({ ok: false, reason: "no-token" as const });
+  }
+
+  try {
+    const userRes = await forgejoFetch(
+      new URL(
+        "/api/v1/user",
+        ensureTrailingSlash(token.forgejoBaseUrl),
+      ).toString(),
+      {
+        headers: {
+          Authorization: `Bearer ${token.accessToken}`,
+          Accept: "application/json",
+        },
+      },
+    );
+    if (userRes.status === 401 || userRes.status === 403) {
+      return c.json({
+        ok: false as const,
+        reason: "expired" as const,
+        error: `forgejo returned ${userRes.status}`,
+      });
+    }
+    if (!userRes.ok) {
+      return c.json({
+        ok: false as const,
+        reason: "network" as const,
+        error: `forgejo returned ${userRes.status}`,
+      });
+    }
+    const forgejoUser = (await userRes.json()) as ForgejoUserResponse;
+    return c.json({
+      ok: true as const,
+      forgejoUserLogin: forgejoUser.login ?? token.forgejoUserLogin,
+    });
+  } catch (err) {
+    return c.json({
+      ok: false as const,
+      reason: "network" as const,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 });
 
 /**
@@ -512,4 +595,61 @@ async function safeReadText(res: Response): Promise<string> {
   } catch {
     return "";
   }
+}
+
+// ─── `next` encoding / validation ────────────────────────────────────────
+//
+// The OAuth callback redirects to a path provided by the start endpoint
+// (`?next=...`). To avoid a DB schema change we tunnel that path through
+// the existing `state` column by joining `<randomHex>.<base64urlNext>`;
+// hex never produces a literal `.`, so the dot reliably partitions the
+// two halves.
+//
+// Open-redirect defence: `sanitizeNextPath` rejects everything except
+// rooted same-origin paths. No scheme/host allowed, no protocol-relative
+// `//evil.com`, no backslash tricks.
+
+function encodeNext(path: string): string {
+  return Buffer.from(path, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function decodeNext(b64: string): string | null {
+  try {
+    // Restore base64 from base64url and pad to a multiple of 4.
+    const padded = b64.replace(/-/g, "+").replace(/_/g, "/");
+    const pad = padded.length % 4 === 0 ? "" : "=".repeat(4 - (padded.length % 4));
+    return Buffer.from(padded + pad, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
+function decodeNextFromState(state: string): string | null {
+  const dot = state.indexOf(".");
+  if (dot === -1) return null;
+  const next = decodeNext(state.slice(dot + 1));
+  return next;
+}
+
+/**
+ * Validate a candidate post-OAuth `next` path. Returns the normalized
+ * path on success, or null when the input would enable an open-redirect
+ * (absolute URL, scheme, protocol-relative, control characters).
+ */
+function sanitizeNextPath(raw: string): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  // Reject control characters and whitespace — they have no place in a URL
+  // and are a common parser-confusion vector.
+  if (/[\x00-\x1f\x7f\s]/.test(raw)) return null;
+  // Must be a rooted path. Reject absolute URLs (`http://…`,
+  // `https://…`, `javascript:…`) and scheme-relative (`//evil.com/x`).
+  if (!raw.startsWith("/")) return null;
+  if (raw.startsWith("//")) return null;
+  // Reject backslash, which Chrome historically normalises to `/`.
+  if (raw.includes("\\")) return null;
+  return raw;
 }
