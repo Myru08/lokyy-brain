@@ -25,6 +25,7 @@ import { NoteHeader } from "./NoteHeader.js";
 import { QuickSwitcher } from "./QuickSwitcher.js";
 import { DailyNoteButton } from "./DailyNoteButton.js";
 import { TemplatePicker } from "./TemplatePicker.js";
+import { VoiceQuickButton } from "./VoiceQuickButton.js";
 import { SessionUserContext } from "./AuthGate.js";
 import { C, FONT } from "./theme.js";
 
@@ -907,6 +908,18 @@ export function App() {
         />
         <span style={{ flex: 1 }} />
         <DailyNoteButton onOpenNote={(id) => void openNoteById(id)} />
+        {/* Voice-Quick-Capture — first-class one-click recording. Visible on
+            mobile too: voice is the most mobile-friendly capture mode and
+            the spec wants this prominent. The full recorder with mode-
+            switch + audio preview still lives in the ImportPanel for power
+            users. */}
+        <VoiceQuickButton
+          onImported={(id) => {
+            void refreshTree().then(() => open(id));
+          }}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isMobile={isMobile}
+        />
         {/* Phase D Wave D1 — non-essential text buttons (Vorlagen, Review,
             Import) are dropped on mobile to keep the toolbar from
             horizontal-scrolling. They remain reachable via Settings + the
