@@ -12,9 +12,15 @@ import { users } from "./users.js";
  * One token row per (user, forgejo_base_url) pair — re-authorizing the same
  * instance UPSERTS the row instead of stacking.
  *
- * `access_token` is stored as plain text for now. Encrypting at rest is a
- * follow-up (out of scope of this story); the schema column type stays the
- * same so we don't need a migration when wrapping it.
+ * ## At-rest encryption
+ *
+ * `access_token_encrypted` / `refresh_token_encrypted` hold the AES-256-GCM
+ * envelope produced by `packages/core/src/crypto/secrets.ts`. Migration
+ * `0016_forgejo_oauth_tokens_encrypt` renamed the columns from their plain
+ * counterparts and encrypted any legacy plaintext rows in place. NEVER read
+ * these columns directly — always go through `loadToken()` /
+ * `getValidForgejoToken()` in `packages/core/src/forgejo/refresh.ts` so the
+ * envelope is decrypted (and refreshed, if necessary) before use.
  */
 export const forgejoOauthTokens = pgTable(
   "forgejo_oauth_tokens",
@@ -24,8 +30,8 @@ export const forgejoOauthTokens = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     forgejoBaseUrl: text("forgejo_base_url").notNull(),
-    accessToken: text("access_token").notNull(),
-    refreshToken: text("refresh_token"),
+    accessTokenEncrypted: text("access_token_encrypted").notNull(),
+    refreshTokenEncrypted: text("refresh_token_encrypted"),
     expiresAt: timestamp("expires_at", { withTimezone: true }),
     forgejoUserLogin: text("forgejo_user_login").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })

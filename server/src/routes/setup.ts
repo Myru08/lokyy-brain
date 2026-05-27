@@ -2,19 +2,20 @@ import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import postgres from "postgres";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   isSetupComplete,
   markSetupComplete,
   database,
   generateUlid,
   setupVaultFromForgejo,
+  getValidForgejoToken,
+  loadToken,
 } from "@lokyy/core";
 import {
   users,
   vaults,
   vaultMemberships,
-  forgejoOauthTokens,
 } from "@lokyy/core";
 import { config } from "../config.js";
 
@@ -259,27 +260,33 @@ setupRoutes.post("/vault", async (c) => {
   // helper actually used — never trust the frontend payload alone, which has
   // been observed to be empty in race conditions and would otherwise leak
   // `git_remote=''` to Settings + the MCP config snippets.
+  //
+  // `getValidForgejoToken` decrypts the at-rest envelope and silently
+  // refreshes via the stored refresh_token if the JWT is within ~60s of
+  // expiry — the wizard can take a while between the OAuth callback and
+  // hitting this endpoint, and we don't want a 1h-stale token to nuke an
+  // otherwise valid setup. `loadToken` is the cheaper "is the row present
+  // at all" check we use to decide whether to attempt the clone path.
   let cloneError: string | null = null;
   try {
-    const tokenRow = await database()
-      .select()
-      .from(forgejoOauthTokens)
-      .where(
-        and(
-          eq(forgejoOauthTokens.userId, ownerUserId),
-          eq(forgejoOauthTokens.forgejoBaseUrl, config.forgejoBaseUrl),
-        ),
-      )
-      .limit(1);
+    const tokenRow = await loadToken(ownerUserId, config.forgejoBaseUrl);
+    const repoFullName = tokenRow ? parseRepoFullName(gitRemote) : null;
 
-    const token = tokenRow[0];
-    const repoFullName = token ? parseRepoFullName(gitRemote) : null;
-
-    if (token && repoFullName) {
+    if (tokenRow && repoFullName) {
+      const accessToken = await getValidForgejoToken(ownerUserId, {
+        forgejoBaseUrl: config.forgejoBaseUrl,
+        clientId: config.forgejoOauthClientId,
+        clientSecret: config.forgejoOauthClientSecret,
+      });
+      if (!accessToken) {
+        throw new Error(
+          "forgejo OAuth token expired and could not be refreshed — reconnect required",
+        );
+      }
       const result = await setupVaultFromForgejo({
         vaultId: id,
-        forgejoBaseUrl: token.forgejoBaseUrl,
-        accessToken: token.accessToken,
+        forgejoBaseUrl: tokenRow.forgejoBaseUrl,
+        accessToken,
         repoFullName,
         branch: gitBranch,
       });

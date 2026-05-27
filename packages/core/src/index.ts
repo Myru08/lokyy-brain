@@ -450,3 +450,29 @@ export {
   type SearchPipelineResult,
   type PipelineStepTrace,
 } from "./pipeline/index.js";
+
+// ─── At-rest secret encryption ──────────────────────────────────────────
+// AES-256-GCM helpers used by Forgejo OAuth (and future secret-bearing
+// columns). Pass-through when LOKYY_DATA_KEY is unset; warns once at
+// startup. See packages/core/src/crypto/secrets.ts.
+export {
+  encrypt,
+  decrypt,
+  isEncryptionConfigured,
+} from "./crypto/secrets.js";
+
+// ─── Forgejo OAuth — refresh + decrypt helpers ──────────────────────────
+// Wraps the encrypted `forgejo_oauth_tokens` table with two responsibilities:
+// 1) hand callers a plaintext access_token, 2) silently exchange the stored
+// refresh_token when the access_token is within 60s of expiry. Callers that
+// used to read `findToken(userId).accessToken` switch to these helpers and
+// stop worrying about the JWT lifetime. See packages/core/src/forgejo/refresh.ts.
+export {
+  loadToken,
+  loadAllTokensForUser,
+  getValidForgejoToken,
+  refreshAndStore,
+  upsertForgejoToken,
+  type DecryptedToken,
+  type ForgejoOauthConfig,
+} from "./forgejo/refresh.js";

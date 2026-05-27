@@ -20,6 +20,7 @@ import { migration0012Entities } from "./0012_entities.js";
 import { migration0013PeerProfiles } from "./0013_peer_profiles.js";
 import { migration0014NoteSearchForgotten } from "./0014_note_search_forgotten.js";
 import { migration0015ForgejoOauthTokens } from "./0015_forgejo_oauth_tokens.js";
+import { migration0016ForgejoOauthTokensEncrypt } from "./0016_forgejo_oauth_tokens_encrypt.js";
 
 export interface Migration {
   name: string;
@@ -43,4 +44,8 @@ export const MIGRATIONS: Migration[] = [
   { name: "0013_peer_profiles", sql: migration0013PeerProfiles },
   { name: "0014_note_search_forgotten", sql: migration0014NoteSearchForgotten },
   { name: "0015_forgejo_oauth_tokens", sql: migration0015ForgejoOauthTokens },
+  {
+    name: "0016_forgejo_oauth_tokens_encrypt",
+    sql: migration0016ForgejoOauthTokensEncrypt,
+  },
 ];

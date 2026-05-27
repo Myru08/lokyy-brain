@@ -2,12 +2,15 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { getCookie } from "hono/cookie";
 import { randomBytes } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import {
   database,
   forgejoOauthState,
   forgejoOauthTokens,
   generateUlid,
+  getValidForgejoToken,
+  loadToken,
+  upsertForgejoToken,
 } from "@lokyy/core";
 import { config } from "../config.js";
 import { getSessionUser } from "../auth/sessions.js";
@@ -208,7 +211,8 @@ forgejoOauthRoutes.get("/callback", async (c) => {
     ? new Date(Date.now() + tokenJson.expires_in * 1000)
     : null;
 
-  await upsertToken({
+  await upsertForgejoToken({
+    id: generateUlid(),
     userId: stateRow.userId,
     forgejoBaseUrl: config.forgejoBaseUrl,
     accessToken: tokenJson.access_token,
@@ -241,7 +245,9 @@ forgejoApiRoutes.get("/connection", async (c) => {
   const user = await requireUser(c);
   if (!user) return c.json({ error: "unauthenticated" }, 401);
 
-  const token = await findToken(user.id);
+  // Connection check is metadata-only — no need to decrypt access_token /
+  // refresh expiry just to surface "are we wired up at all?".
+  const token = await loadToken(user.id, config.forgejoBaseUrl);
   if (!token) return c.json({ connected: false });
   return c.json({
     connected: true,
@@ -267,20 +273,30 @@ forgejoApiRoutes.get("/probe", async (c) => {
   const user = await requireUser(c);
   if (!user) return c.json({ error: "unauthenticated" }, 401);
 
-  const token = await findToken(user.id);
-  if (!token) {
+  // Need the row metadata (baseUrl) to find a token at all — call loadToken
+  // first to distinguish "no row" from "expired + couldn't refresh".
+  const stored = await loadToken(user.id, config.forgejoBaseUrl);
+  if (!stored) {
     return c.json({ ok: false, reason: "no-token" as const });
+  }
+  const accessToken = await getValidForgejoToken(user.id, oauthConfigFromEnv());
+  if (!accessToken) {
+    return c.json({
+      ok: false as const,
+      reason: "expired" as const,
+      error: "refresh_token unavailable or rejected",
+    });
   }
 
   try {
     const userRes = await forgejoFetch(
       new URL(
         "/api/v1/user",
-        ensureTrailingSlash(token.forgejoBaseUrl),
+        ensureTrailingSlash(stored.forgejoBaseUrl),
       ).toString(),
       {
         headers: {
-          Authorization: `Bearer ${token.accessToken}`,
+          Authorization: `Bearer ${accessToken}`,
           Accept: "application/json",
         },
       },
@@ -302,7 +318,7 @@ forgejoApiRoutes.get("/probe", async (c) => {
     const forgejoUser = (await userRes.json()) as ForgejoUserResponse;
     return c.json({
       ok: true as const,
-      forgejoUserLogin: forgejoUser.login ?? token.forgejoUserLogin,
+      forgejoUserLogin: forgejoUser.login ?? stored.forgejoUserLogin,
     });
   } catch (err) {
     return c.json({
@@ -352,19 +368,21 @@ forgejoApiRoutes.get("/repos", async (c) => {
   const user = await requireUser(c);
   if (!user) return c.json({ error: "unauthenticated" }, 401);
 
-  const token = await findToken(user.id);
-  if (!token) return c.json({ error: "forgejo-not-connected" }, 412);
+  const accessToken = await getValidForgejoToken(user.id, oauthConfigFromEnv());
+  if (!accessToken) {
+    return c.json({ error: "forgejo-not-connected" }, 412);
+  }
 
   const reposUrl = new URL(
     "/api/v1/user/repos",
-    ensureTrailingSlash(token.forgejoBaseUrl),
+    ensureTrailingSlash(config.forgejoBaseUrl),
   );
   reposUrl.searchParams.set("limit", "50");
   reposUrl.searchParams.set("sort", "updated");
 
   const res = await forgejoFetch(reposUrl.toString(), {
     headers: {
-      Authorization: `Bearer ${token.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       Accept: "application/json",
     },
   });
@@ -389,8 +407,10 @@ forgejoApiRoutes.post("/repos", async (c) => {
   const user = await requireUser(c);
   if (!user) return c.json({ error: "unauthenticated" }, 401);
 
-  const token = await findToken(user.id);
-  if (!token) return c.json({ error: "forgejo-not-connected" }, 412);
+  const accessToken = await getValidForgejoToken(user.id, oauthConfigFromEnv());
+  if (!accessToken) {
+    return c.json({ error: "forgejo-not-connected" }, 412);
+  }
 
   const body = await c.req.json<{
     name?: string;
@@ -403,12 +423,12 @@ forgejoApiRoutes.post("/repos", async (c) => {
 
   const createUrl = new URL(
     "/api/v1/user/repos",
-    ensureTrailingSlash(token.forgejoBaseUrl),
+    ensureTrailingSlash(config.forgejoBaseUrl),
   );
   const res = await forgejoFetch(createUrl.toString(), {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token.accessToken}`,
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
       Accept: "application/json",
     },
@@ -479,61 +499,17 @@ async function requireUser(c: Context) {
   return getSessionUser(sid);
 }
 
-async function findToken(userId: string) {
-  const rows = await database()
-    .select()
-    .from(forgejoOauthTokens)
-    .where(
-      and(
-        eq(forgejoOauthTokens.userId, userId),
-        eq(forgejoOauthTokens.forgejoBaseUrl, config.forgejoBaseUrl),
-      ),
-    )
-    .limit(1);
-  return rows[0] ?? null;
-}
-
-async function upsertToken(input: {
-  userId: string;
-  forgejoBaseUrl: string;
-  accessToken: string;
-  refreshToken: string | null;
-  expiresAt: Date | null;
-  forgejoUserLogin: string;
-}) {
-  const existing = await database()
-    .select()
-    .from(forgejoOauthTokens)
-    .where(
-      and(
-        eq(forgejoOauthTokens.userId, input.userId),
-        eq(forgejoOauthTokens.forgejoBaseUrl, input.forgejoBaseUrl),
-      ),
-    )
-    .limit(1);
-  if (existing[0]) {
-    await database()
-      .update(forgejoOauthTokens)
-      .set({
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken,
-        expiresAt: input.expiresAt,
-        forgejoUserLogin: input.forgejoUserLogin,
-      })
-      .where(eq(forgejoOauthTokens.id, existing[0].id));
-    return;
-  }
-  await database()
-    .insert(forgejoOauthTokens)
-    .values({
-      id: generateUlid(),
-      userId: input.userId,
-      forgejoBaseUrl: input.forgejoBaseUrl,
-      accessToken: input.accessToken,
-      refreshToken: input.refreshToken,
-      expiresAt: input.expiresAt,
-      forgejoUserLogin: input.forgejoUserLogin,
-    });
+/**
+ * Bundle the env-driven OAuth-app config into the shape
+ * `@lokyy/core`'s refresh-token helpers expect. Centralising the read keeps
+ * route handlers from sprinkling `config.forgejo*` references.
+ */
+function oauthConfigFromEnv() {
+  return {
+    forgejoBaseUrl: config.forgejoBaseUrl,
+    clientId: config.forgejoOauthClientId,
+    clientSecret: config.forgejoOauthClientSecret,
+  };
 }
 
 /**

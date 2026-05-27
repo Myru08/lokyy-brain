@@ -1,18 +1,19 @@
 import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import {
   database,
   systemConfig,
   vaults,
-  forgejoOauthTokens,
   initCore,
   getIntegrationSettings,
   setSupadataApiKey,
   setDefaultImportFolder,
   maskSupadataKey,
+  getValidForgejoToken,
+  loadAllTokensForUser,
 } from "@lokyy/core";
 import { config } from "../config.js";
 
@@ -584,15 +585,11 @@ async function findOauthTokenForHost(
   userId: string,
   host: string,
 ): Promise<string | null> {
-  const rows = await database()
-    .select({
-      accessToken: forgejoOauthTokens.accessToken,
-      forgejoBaseUrl: forgejoOauthTokens.forgejoBaseUrl,
-    })
-    .from(forgejoOauthTokens)
-    .where(eq(forgejoOauthTokens.userId, userId));
+  const rows = await loadAllTokensForUser(userId);
   // `forgejo_base_url` is whatever the operator set in env — normalize to
   // host before comparing so trailing-slash / scheme drift doesn't matter.
+  // Tokens are returned ALREADY DECRYPTED by loadAllTokensForUser, so we
+  // can hand them straight to `git ls-remote`.
   for (const r of rows) {
     let tokenHost: string;
     try {
@@ -600,22 +597,20 @@ async function findOauthTokenForHost(
     } catch {
       tokenHost = r.forgejoBaseUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
     }
-    if (tokenHost === host) return r.accessToken;
+    if (tokenHost !== host) continue;
+    // Run through the refresh-token-aware helper so an expired access_token
+    // gets transparently refreshed before the `git ls-remote` test runs.
+    // Falls back to the directly-loaded value if the env-level OAuth-app
+    // config isn't wired up (refresh impossible, but the legacy token is
+    // still our best bet — let git decide whether it works).
+    const fresh = await getValidForgejoToken(userId, {
+      forgejoBaseUrl: r.forgejoBaseUrl,
+      clientId: config.forgejoOauthClientId,
+      clientSecret: config.forgejoOauthClientSecret,
+    });
+    return fresh ?? r.accessToken ?? null;
   }
-  // Defensive secondary path: re-query with exact `forgejoBaseUrl` match in
-  // case the env stored an exact `https://host` form. Avoids importing the
-  // server config here.
-  const exact = await database()
-    .select({ accessToken: forgejoOauthTokens.accessToken })
-    .from(forgejoOauthTokens)
-    .where(
-      and(
-        eq(forgejoOauthTokens.userId, userId),
-        eq(forgejoOauthTokens.forgejoBaseUrl, `https://${host}`),
-      ),
-    )
-    .limit(1);
-  return exact[0]?.accessToken ?? null;
+  return null;
 }
 
 /**
