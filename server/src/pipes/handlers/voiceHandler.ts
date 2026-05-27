@@ -6,6 +6,8 @@ import {
   generateUlid,
   getDefaultImportFolder,
   getLlmProviders,
+  getVoiceDefaultsWithMeta,
+  type VoiceDefaults,
 } from "@lokyy/core";
 import { config } from "../../config.js";
 
@@ -169,6 +171,97 @@ function firstSentence(text: string): string {
   return sentence.slice(0, 120);
 }
 
+/** UTC-based date parts for `titlePattern` token substitution. */
+interface UtcParts {
+  YYYY: string;
+  MM: string;
+  DD: string;
+  HH: string;
+  mm: string;
+}
+
+function utcParts(d: Date): UtcParts {
+  return {
+    YYYY: String(d.getUTCFullYear()),
+    MM: pad(d.getUTCMonth() + 1),
+    DD: pad(d.getUTCDate()),
+    HH: pad(d.getUTCHours()),
+    mm: pad(d.getUTCMinutes()),
+  };
+}
+
+/**
+ * First sentence OR first 80 chars of the transcript, used by the
+ * `{transcript-first-words}` token in `titlePattern`.
+ */
+function transcriptFirstWords(transcript: string): string {
+  const trimmed = transcript.trim();
+  if (!trimmed) return "";
+  const sentence = firstSentence(trimmed);
+  if (sentence) return sentence.slice(0, 80);
+  return trimmed.slice(0, 80);
+}
+
+/**
+ * Kebab-case of the first ~5 transcript words, capped at 40 chars. Used by
+ * the `{slug}` token in `titlePattern`. Empty transcript → "voice".
+ */
+function transcriptSlug(transcript: string): string {
+  const words = transcript.trim().split(/\s+/).slice(0, 5).join(" ");
+  return slugify(words).slice(0, 40) || "voice";
+}
+
+/**
+ * Render the configured `titlePattern` with token substitution. All date
+ * tokens are evaluated in UTC so the title is stable across servers in
+ * different timezones. Supported tokens:
+ *
+ *   {YYYY-MM-DD HH:mm} — convenience composite (legacy default)
+ *   {YYYY} {MM} {DD} {HH} {mm}
+ *   {slug}                       — kebab-case, first 5 transcript words
+ *   {transcript-first-words}     — first sentence or first 80 chars
+ *
+ * Unknown tokens are left as-is (forward-compat with future tokens).
+ */
+function renderTitlePattern(
+  pattern: string,
+  now: Date,
+  transcript: string,
+): string {
+  const parts = utcParts(now);
+  return pattern
+    // Legacy composite tokens first so partial matches don't eat them.
+    .replace(/\{YYYY-MM-DD HH:mm\}/g, `${parts.YYYY}-${parts.MM}-${parts.DD} ${parts.HH}:${parts.mm}`)
+    .replace(/\{YYYY-MM-DD\}/g, `${parts.YYYY}-${parts.MM}-${parts.DD}`)
+    .replace(/\{HH:mm\}/g, `${parts.HH}:${parts.mm}`)
+    .replace(/\{YYYY\}/g, parts.YYYY)
+    .replace(/\{MM\}/g, parts.MM)
+    .replace(/\{DD\}/g, parts.DD)
+    .replace(/\{HH\}/g, parts.HH)
+    .replace(/\{mm\}/g, parts.mm)
+    .replace(/\{transcript-first-words\}/g, transcriptFirstWords(transcript))
+    .replace(/\{slug\}/g, transcriptSlug(transcript))
+    .trim();
+}
+
+/**
+ * Derive the final title from (in order): explicit payload override > pattern
+ * rendered with transcript context > timestamp fallback. The fallback always
+ * succeeds even if the rendered pattern collapses to an empty string.
+ */
+function deriveTitle(
+  payloadTitle: string | undefined,
+  defaults: VoiceDefaults,
+  now: Date,
+  transcript: string,
+): string {
+  const explicit = payloadTitle?.trim();
+  if (explicit) return explicit;
+  const rendered = renderTitlePattern(defaults.titlePattern, now, transcript).trim();
+  if (rendered) return rendered;
+  return `Voice-Notiz ${fmtDateTime(now)}`;
+}
+
 /**
  * Read the configured OpenAI API key. Returns null if no enabled openai
  * provider with apiKey exists — the caller surfaces a user-facing hint.
@@ -310,11 +403,53 @@ async function postWhisper(
   return data;
 }
 
-/** Per-Job-Override gewinnt vor dem globalen `default_import_folder`. */
-async function resolveFolder(payload: SharePayload): Promise<string> {
+/**
+ * Resolved note-target folder for the voice handler.
+ *
+ *   - `folder`        vault-relative target dir, no leading/trailing slash
+ *   - `appendVoiceSubdir` true if the legacy `/voice/` subdir should be
+ *                     suffixed by the caller (kept for backwards-compat).
+ *
+ * Path-shape contract:
+ *   1. Per-job `payload.targetFolder` — pointed at the IMPORT root (e.g.
+ *      `30_captures`). The voice handler historically appended `/voice/`
+ *      on top to keep audio + note co-located. `appendVoiceSubdir=true`.
+ *   2. `voice_defaults.folder` — the user-configured COMPLETE folder
+ *      (`30_captures/voice` by default). Used as-is.
+ *      `appendVoiceSubdir=false`.
+ *   3. Legacy `default_import_folder` — same shape as (1).
+ *      `appendVoiceSubdir=true`.
+ *
+ * Result: existing deployments without a `voice_defaults` row keep writing
+ * to `${default_import_folder}/voice/...`, exactly like today.
+ */
+interface ResolvedVoiceFolder {
+  folder: string;
+  appendVoiceSubdir: boolean;
+}
+
+async function resolveFolder(
+  payload: SharePayload,
+  defaults: VoiceDefaults,
+  defaultsRowExists: boolean,
+): Promise<ResolvedVoiceFolder> {
   const override = payload.targetFolder?.trim();
-  if (override) return override.replace(/^\/+|\/+$/g, "");
-  return getDefaultImportFolder();
+  if (override) {
+    return {
+      folder: override.replace(/^\/+|\/+$/g, ""),
+      appendVoiceSubdir: true,
+    };
+  }
+  if (defaultsRowExists && defaults.folder?.trim()) {
+    return {
+      folder: defaults.folder.trim().replace(/^\/+|\/+$/g, ""),
+      appendVoiceSubdir: false,
+    };
+  }
+  return {
+    folder: await getDefaultImportFolder(),
+    appendVoiceSubdir: true,
+  };
 }
 
 export async function voiceHandler(
@@ -326,6 +461,29 @@ export async function voiceHandler(
       "no-audio-path",
       "Voice-Pipe: kein audioPath im Payload",
     );
+  }
+
+  // Load persisted defaults BEFORE the Whisper call so the language hint
+  // can fall back to defaults.language. Read failure (DB not initialised
+  // yet, etc.) gracefully degrades to hardcoded defaults — voice never
+  // breaks because the settings row is missing.
+  let voiceDefaults: VoiceDefaults;
+  let defaultsRowExists = false;
+  try {
+    const meta = await getVoiceDefaultsWithMeta();
+    voiceDefaults = meta.defaults;
+    defaultsRowExists = meta.rowExists;
+  } catch (err) {
+    console.warn(
+      `[voice] getVoiceDefaults failed, using hardcoded defaults — ${err instanceof Error ? err.message : String(err)}`,
+    );
+    voiceDefaults = {
+      mode: "live",
+      folder: "30_captures/voice",
+      titlePattern: "Voice-Notiz {YYYY-MM-DD HH:mm}",
+      language: null,
+    };
+    defaultsRowExists = false;
   }
 
   // Endpoint routing: self-hosted (WHISPER_BASE_URL) wins; fall back to
@@ -360,35 +518,46 @@ export async function voiceHandler(
   const audioFilename = audioPath.split("/").pop() ?? "audio.webm";
   const audioMime = mimeFromExt(audioFilename);
 
+  // Language hint priority: per-job payload > persisted default > none
+  // (Whisper auto-detect). Defaults that store `"de-DE"` keep the region
+  // for display but only the 2-letter prefix gets sent to Whisper — the
+  // upload route already enforces the same shape on the payload field.
+  const payloadLanguage = payload.language?.trim();
+  const defaultLanguage = voiceDefaults.language?.trim();
+  const languageHint =
+    payloadLanguage || defaultLanguage || undefined;
+  const whisperLanguage = languageHint
+    ? languageHint.slice(0, 2).toLowerCase()
+    : undefined;
+
   // Whisper call (incl. 429 retry).
   const whisper = await postWhisper(
     endpoint,
     audioBytes,
     audioFilename,
     audioMime,
-    payload.language?.trim() || undefined,
+    whisperLanguage,
   );
 
   const transcript = whisper.text!.trim();
   const detectedLanguage =
-    payload.language?.trim() || whisper.language?.trim() || "auto";
+    languageHint || whisper.language?.trim() || "auto";
   const durationSec = Math.round(whisper.duration ?? 0);
 
-  // Derive title: explicit > first sentence > timestamped fallback.
+  // Derive title: explicit > rendered titlePattern (defaults) > fallback.
   const now = new Date();
-  const explicitTitle = payload.title?.trim();
-  const derivedFromTranscript = firstSentence(transcript);
-  const title =
-    explicitTitle ||
-    derivedFromTranscript ||
-    `Voice-Notiz ${fmtDateTime(now)}`;
+  const title = deriveTitle(payload.title, voiceDefaults, now, transcript);
 
   // SPEC-valid frontmatter (matches packages/core/src/frontmatter/schemas/capture.json):
   // id + type + title + created + updated are mandatory; the pre-commit
   // hook on the vault rejects writes that miss any of these.
   const noteUlid = generateUlid();
   const nowIso = now.toISOString();
-  const folder = await resolveFolder(payload);
+  const resolvedFolder = await resolveFolder(
+    payload,
+    voiceDefaults,
+    defaultsRowExists,
+  );
 
   // Wikilink target for the audio file: gray-matter / wikilink parsers
   // treat the bracketed path as the link target. We keep the full vault-
@@ -423,9 +592,18 @@ export async function voiceHandler(
 
   // Path inside the folder. Collide-safe via UNIX-ms suffix (the dispatcher
   // can fire multiple jobs in the same second on rapid retries).
+  //
+  // Folder shape:
+  //   - voice_defaults.folder (explicit user setting) → use AS-IS, no extra
+  //     `/voice/` suffix. The user's configured path is the complete target.
+  //   - payload.targetFolder / default_import_folder (legacy fallbacks) →
+  //     append `/voice/` so old deployments keep writing to the same place.
   const slug = slugify(title);
   const baseName = `${fmtDate(now)}-${slug}`;
-  const path = `${folder}/voice/${baseName}-${Date.now()}.md`;
+  const targetDir = resolvedFolder.appendVoiceSubdir
+    ? `${resolvedFolder.folder}/voice`
+    : resolvedFolder.folder;
+  const path = `${targetDir}/${baseName}-${Date.now()}.md`;
 
   return { path, body };
 }

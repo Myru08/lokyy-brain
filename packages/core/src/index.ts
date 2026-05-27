@@ -197,6 +197,25 @@ export {
   type IntegrationSettings,
 } from "./setup/integrationSettings.js";
 
+// ─── Voice-capture defaults (folder / title pattern / language / mode) ──
+// Persisted under `system_config[voice_defaults]` as a JSON value. Read by
+// the voice pipe handler whenever the per-job payload doesn't carry an
+// override. See packages/core/src/setup/voiceDefaults.ts.
+export {
+  DEFAULT_VOICE_DEFAULTS,
+  VAULT_ROOTS,
+  VOICE_DEFAULTS_KEY,
+  VOICE_MODES,
+  VoiceDefaultsValidationError,
+  getVoiceDefaults,
+  getVoiceDefaultsWithMeta,
+  updateVoiceDefaults,
+  validateVoiceDefaultsPatch,
+  type VoiceDefaults,
+  type VoiceDefaultsWithMeta,
+  type VoiceMode,
+} from "./setup/voiceDefaults.js";
+
 // ─── Dataview queries ───────────────────────────────────────────────────
 export {
   queryNotes,

@@ -55,6 +55,7 @@ import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
 import { voiceHandler } from "./pipes/handlers/voiceHandler.js";
 import { voiceRoutes } from "./routes/voice.js";
+import { voiceSettingsRoutes } from "./routes/voice-settings.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -276,6 +277,13 @@ app.route("/api/graph", graphRoutes);
 // path first.
 app.route("/api/pipes/voice", voiceRoutes);
 app.route("/api/pipes", pipesRoutes);
+
+// Voice defaults — folder, title pattern, language, mode. Persisted in
+// `system_config[voice_defaults]`. Consumed by voiceHandler. Public for
+// consistency with the rest of /api/settings (setupGate-only); add an
+// auth-gate when other settings need one.
+app.use("/api/voice/*", setupGate);
+app.route("/api/voice/settings", voiceSettingsRoutes);
 app.route("/api", searchRoutes);
 app.route("/api/dataview", dataviewRoutes);
 app.route("/api/templates", templatesRoutes);
