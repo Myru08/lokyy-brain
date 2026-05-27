@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Hash } from "lucide-react";
 import { api } from "./api.js";
 import { C, FONT } from "./theme.js";
@@ -12,6 +12,17 @@ import { C, FONT } from "./theme.js";
  * Refresh per `refreshKey`-Prop: Parent erhöht den Counter nach Saves /
  * Imports, und wir holen die Tag-Liste neu. So bleibt die Liste live,
  * ohne dass wir uns auf Websockets festlegen müssen.
+ *
+ * Anti-Flicker-Regeln:
+ *  - Während eines Refetches bleibt die alte Tagliste sichtbar (kein
+ *    Zurückschalten auf "loading"). Nur der initiale Load zeigt den
+ *    Loading-State.
+ *  - Refetches werden um 250ms gedebounct, damit schnell aufeinander
+ *    folgende Save-Pulse während des Tippens nicht jeden einzelnen
+ *    Roundtrip auslösen.
+ *  - Sortierung läuft via `useMemo`, damit Re-Renders der Parent (z.B.
+ *    durch jeden Tastendruck im Editor) nicht in der TagPane weitere
+ *    Arbeit verursachen.
  */
 
 interface TagPaneProps {
@@ -34,26 +45,61 @@ type LoadState =
 
 export function TagPane({ refreshKey, activeTag, onSelectTag }: TagPaneProps) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+  // Tracks whether we've ever successfully loaded — so we know whether
+  // to show the "loading" placeholder or quietly refetch in the
+  // background while keeping the existing list painted.
+  const hasLoadedRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
-    setState({ status: "loading" });
-    api
-      .listTags()
-      .then((tags) => {
-        if (cancelled) return;
-        const sorted = [...tags].sort((a, b) => b.count - a.count);
-        setState({ status: "ready", tags: sorted });
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        const message = err instanceof Error ? err.message : "Tag-Laden fehlgeschlagen";
-        setState({ status: "error", message });
-      });
+
+    // Debounce: collapse rapid refreshKey bumps (e.g. a burst of saves
+    // during typing) into a single fetch. The first load fires
+    // immediately because hasLoadedRef is false.
+    const delay = hasLoadedRef.current ? 250 : 0;
+
+    const timer = window.setTimeout(() => {
+      if (cancelled) return;
+      // Only reset to "loading" on the initial fetch. Subsequent
+      // refetches keep the previous tags visible to avoid the
+      // disappearing-list flicker that steals editor focus.
+      if (!hasLoadedRef.current) {
+        setState({ status: "loading" });
+      }
+      api
+        .listTags()
+        .then((tags) => {
+          if (cancelled) return;
+          hasLoadedRef.current = true;
+          setState({ status: "ready", tags });
+        })
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          const message =
+            err instanceof Error ? err.message : "Tag-Laden fehlgeschlagen";
+          // Don't blow away a previously-good list with an error
+          // panel — keep showing the stale tags and just log.
+          if (hasLoadedRef.current) {
+            console.warn("TagPane refresh failed:", message);
+          } else {
+            setState({ status: "error", message });
+          }
+        });
+    }, delay);
+
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [refreshKey]);
+
+  // Sorting is cheap but lifting it into useMemo means parent re-renders
+  // (every keystroke in the editor re-renders App, which re-renders us)
+  // don't redo the work on each frame.
+  const sortedTags = useMemo(() => {
+    if (state.status !== "ready") return [];
+    return [...state.tags].sort((a, b) => b.count - a.count);
+  }, [state]);
 
   return (
     <aside
@@ -66,6 +112,7 @@ export function TagPane({ refreshKey, activeTag, onSelectTag }: TagPaneProps) {
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
+        maxHeight: 320,
         overflowY: "auto",
       }}
     >
@@ -140,7 +187,7 @@ export function TagPane({ refreshKey, activeTag, onSelectTag }: TagPaneProps) {
         </div>
       )}
 
-      {state.status === "ready" && state.tags.length === 0 && (
+      {state.status === "ready" && sortedTags.length === 0 && (
         <div
           style={{
             fontSize: 11,
@@ -156,9 +203,9 @@ export function TagPane({ refreshKey, activeTag, onSelectTag }: TagPaneProps) {
         </div>
       )}
 
-      {state.status === "ready" && state.tags.length > 0 && (
+      {state.status === "ready" && sortedTags.length > 0 && (
         <div style={{ padding: "0 2px 8px" }}>
-          {state.tags.map((entry) => (
+          {sortedTags.map((entry) => (
             <TagRow
               key={entry.tag}
               entry={entry}
