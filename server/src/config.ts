@@ -35,5 +35,24 @@ export const config = {
   forgejoBaseUrl: process.env.FORGEJO_BASE_URL ?? "",
   forgejoOauthClientId: process.env.FORGEJO_OAUTH_CLIENT_ID ?? "",
   forgejoOauthClientSecret: process.env.FORGEJO_OAUTH_CLIENT_SECRET ?? "",
+  /**
+   * Whisper transcription endpoint.
+   *
+   * Empty (default) → fall back to OpenAI cloud
+   * (`https://api.openai.com/v1/audio/transcriptions`) using the API key
+   * from the `llm_providers` table.
+   *
+   * Set → point at a self-hosted whisper-asr-webservice instance
+   * (e.g. `http://whisper-<UUID>:9000` or
+   * `https://whisper.example.com/v1/audio/transcriptions`). The handler
+   * appends `/v1/audio/transcriptions` if the URL doesn't already end in
+   * that path, so both base-URL and full-URL forms work.
+   *
+   * Optional companion: `WHISPER_API_KEY` — when set alongside
+   * `WHISPER_BASE_URL`, sent as `Authorization: Bearer <key>`. Omit for
+   * the default whisper-asr-webservice (no auth).
+   */
+  whisperBaseUrl: process.env.WHISPER_BASE_URL ?? "",
+  whisperApiKey: process.env.WHISPER_API_KEY ?? "",
   port: Number(process.env.PORT ?? 8787),
 } as const;

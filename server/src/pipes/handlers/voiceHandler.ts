@@ -7,9 +7,10 @@ import {
   getDefaultImportFolder,
   getLlmProviders,
 } from "@lokyy/core";
+import { config } from "../../config.js";
 
 /**
- * Voice-Pipe (OpenAI Whisper).
+ * Voice-Pipe (Whisper-compatible transcription).
  *
  * Ablauf:
  *   1. Route `/api/pipes/voice` empfaengt die Audio-Datei (multipart),
@@ -17,9 +18,16 @@ import {
  *      nach `30_captures/voice/{YYYY-MM-DD}-{ULID}.{ext}` und ruft
  *      `enqueue('voice', { audioPath, language, title, targetFolder })`.
  *   2. Diese Funktion (`voiceHandler`) wird vom Pipe-Queue-Drain aufgerufen,
- *      liest die Audio-Bytes von Disk, postet sie an `whisper-1`, baut eine
+ *      liest die Audio-Bytes von Disk, postet sie an einen Whisper-Endpoint
+ *      (OpenAI Cloud ODER self-hosted `whisper-asr-webservice`), baut eine
  *      Markdown-Notiz mit Frontmatter und gibt sie als `PipeResult` zurueck.
  *      Der Pipe-Queue committet die Notiz dann nach `30_captures/voice/`.
+ *
+ * Endpoint-Routing (siehe `resolveWhisperEndpoint`):
+ *   - `WHISPER_BASE_URL` gesetzt -> self-hosted (OpenAI-API-kompatibel,
+ *     z.B. `onerahmet/openai-whisper-asr-webservice`). Auth optional via
+ *     `WHISPER_API_KEY`.
+ *   - Sonst -> OpenAI Cloud mit Key aus `llm_providers`-Tabelle (legacy).
  *
  * Audio-Asset im Repo: Audio-Dateien landen direkt im Git-Working-Copy.
  * Bei vielen / langen Aufnahmen blaeht das Repo das Forgejo-Backup auf.
@@ -29,7 +37,83 @@ import {
 
 const OPENAI_TRANSCRIBE_URL =
   "https://api.openai.com/v1/audio/transcriptions";
+const TRANSCRIBE_PATH = "/v1/audio/transcriptions";
 const WHISPER_MODEL = "whisper-1";
+
+/** Resolved endpoint description: where to POST, how to auth, which mode we're in. */
+interface WhisperEndpoint {
+  url: string;
+  authHeader: string | null;
+  mode: "openai-cloud" | "self-hosted";
+  /** Sanitized display URL (no credentials) used in error messages + logs. */
+  displayUrl: string;
+}
+
+/**
+ * Build the endpoint descriptor.
+ *
+ * - `WHISPER_BASE_URL` set -> self-hosted; auth iff `WHISPER_API_KEY` set.
+ * - Empty -> OpenAI cloud; the caller must provide a key (loaded from
+ *   `llm_providers` via `loadOpenaiKey`) and we reject early otherwise.
+ *
+ * Path tolerance: if the configured URL already ends with the
+ * transcriptions path we use it as-is, otherwise we append it. This lets
+ * operators paste either `http://whisper:9000` or the full
+ * `https://whisper.example.com/v1/audio/transcriptions`.
+ */
+function resolveWhisperEndpoint(
+  openaiKey: string | null,
+): WhisperEndpoint | { error: string; userFacing: string } {
+  const base = config.whisperBaseUrl.trim();
+
+  if (base) {
+    const trimmed = base.replace(/\/+$/, "");
+    const url = trimmed.endsWith(TRANSCRIBE_PATH)
+      ? trimmed
+      : `${trimmed}${TRANSCRIBE_PATH}`;
+    const key = config.whisperApiKey.trim();
+    return {
+      url,
+      authHeader: key ? `Bearer ${key}` : null,
+      mode: "self-hosted",
+      displayUrl: url,
+    };
+  }
+
+  if (!openaiKey) {
+    return {
+      error: "openai-key-missing",
+      userFacing: "Add an OpenAI API key in Settings → AI Provider",
+    };
+  }
+  return {
+    url: OPENAI_TRANSCRIBE_URL,
+    authHeader: `Bearer ${openaiKey}`,
+    mode: "openai-cloud",
+    displayUrl: OPENAI_TRANSCRIBE_URL,
+  };
+}
+
+/**
+ * Startup log: print which Whisper backend we're talking to.
+ *
+ * Triggered lazily on the first voice request (rather than at module
+ * import) so it shows up even if the env var is changed via a hot
+ * dev-restart. Logged exactly once per process. Never leaks keys.
+ */
+let endpointLogged = false;
+function logEndpointOnce(endpoint: WhisperEndpoint): void {
+  if (endpointLogged) return;
+  endpointLogged = true;
+  if (endpoint.mode === "self-hosted") {
+    const auth = endpoint.authHeader ? "with WHISPER_API_KEY" : "no auth";
+    console.log(
+      `[voice] Whisper endpoint: self-hosted ${endpoint.displayUrl} (${auth})`,
+    );
+  } else {
+    console.log(`[voice] Whisper endpoint: OpenAI cloud (${endpoint.displayUrl})`);
+  }
+}
 
 interface WhisperResponse {
   /** plain transcript */
@@ -97,9 +181,35 @@ async function loadOpenaiKey(): Promise<string | null> {
   return openai?.apiKey?.trim() || null;
 }
 
+/**
+ * Heuristic: did this fetch failure look like the endpoint being
+ * unreachable (DNS, connection refused, network timeout)? Node's
+ * `fetch` wraps these in a `TypeError: fetch failed` with the real
+ * cause attached. We don't have access to `undici` error codes
+ * directly without a runtime import — message-sniffing on the cause
+ * is good enough for the user-facing message.
+ */
+function isUnreachableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const cause = (err as { cause?: unknown }).cause;
+  const causeMsg =
+    cause instanceof Error
+      ? cause.message.toLowerCase()
+      : typeof cause === "string"
+        ? cause.toLowerCase()
+        : "";
+  const msg = err.message.toLowerCase();
+  return (
+    /econn(refused|reset)|enotfound|eai_again|etimedout|undici|fetch failed/.test(
+      msg,
+    ) ||
+    /econn(refused|reset)|enotfound|eai_again|etimedout|connect/.test(causeMsg)
+  );
+}
+
 /** Whisper POST, with one retry on 429. Throws VoiceHandlerError on real failure. */
 async function postWhisper(
-  apiKey: string,
+  endpoint: WhisperEndpoint,
   audioBytes: Uint8Array,
   audioFilename: string,
   audioMime: string,
@@ -115,24 +225,50 @@ async function postWhisper(
     new Uint8Array(ab).set(audioBytes);
     const blob = new Blob([ab], { type: audioMime || "audio/webm" });
     form.append("file", blob, audioFilename);
+    // OpenAI requires model=whisper-1. whisper-asr-webservice ignores the
+    // field (it uses whatever model was loaded at container start via the
+    // ASR_MODEL env on the whisper container). Sending it always keeps
+    // both backends happy.
     form.append("model", WHISPER_MODEL);
     form.append("response_format", "verbose_json");
     if (language) form.append("language", language);
-    return fetch(OPENAI_TRANSCRIBE_URL, {
+    const headers: Record<string, string> = {};
+    if (endpoint.authHeader) headers.Authorization = endpoint.authHeader;
+    return fetch(endpoint.url, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers,
       body: form,
     });
   };
 
-  let res = await doPost();
-  if (res.status === 429) {
-    // single retry with 5s backoff
-    await new Promise((r) => setTimeout(r, 5000));
+  let res: Response;
+  try {
     res = await doPost();
+    if (res.status === 429) {
+      // single retry with 5s backoff
+      await new Promise((r) => setTimeout(r, 5000));
+      res = await doPost();
+    }
+  } catch (err) {
+    if (endpoint.mode === "self-hosted" && isUnreachableError(err)) {
+      throw new VoiceHandlerError(
+        `whisper-unreachable: ${err instanceof Error ? err.message : String(err)}`,
+        `Whisper-Endpoint (${endpoint.displayUrl}) nicht erreichbar — Coolify-Resource läuft?`,
+      );
+    }
+    throw new VoiceHandlerError(
+      `whisper-fetch-failed: ${err instanceof Error ? err.message : String(err)}`,
+      "Whisper-Endpoint nicht erreichbar",
+    );
   }
 
   if (res.status === 401) {
+    if (endpoint.mode === "self-hosted") {
+      throw new VoiceHandlerError(
+        "whisper-401",
+        "Whisper-Endpoint braucht Auth (WHISPER_API_KEY) oder Endpoint falsch",
+      );
+    }
     throw new VoiceHandlerError(
       "whisper-401",
       "OpenAI-API-Key ungültig oder ohne Whisper-Zugriff",
@@ -141,13 +277,17 @@ async function postWhisper(
   if (res.status === 429) {
     throw new VoiceHandlerError(
       "whisper-429",
-      "OpenAI-Whisper-Rate-Limit erreicht — bitte später erneut versuchen",
+      endpoint.mode === "self-hosted"
+        ? "Whisper-Endpoint-Rate-Limit erreicht — bitte später erneut versuchen"
+        : "OpenAI-Whisper-Rate-Limit erreicht — bitte später erneut versuchen",
     );
   }
   if (res.status >= 500) {
     throw new VoiceHandlerError(
       `whisper-${res.status}`,
-      "OpenAI-Whisper antwortet gerade nicht — bitte später erneut versuchen",
+      endpoint.mode === "self-hosted"
+        ? `Whisper-Endpoint (${endpoint.displayUrl}) antwortet gerade nicht — bitte später erneut versuchen`
+        : "OpenAI-Whisper antwortet gerade nicht — bitte später erneut versuchen",
     );
   }
   if (!res.ok) {
@@ -188,14 +328,21 @@ export async function voiceHandler(
     );
   }
 
-  const apiKey = await loadOpenaiKey();
-  if (!apiKey) {
-    // Rich error so the UI can route the user to settings.
+  // Endpoint routing: self-hosted (WHISPER_BASE_URL) wins; fall back to
+  // OpenAI cloud with the key from `llm_providers`. We only consult the
+  // DB when no self-hosted endpoint is configured, so a self-hosted
+  // setup needs zero OpenAI provider config.
+  const selfHosted = !!config.whisperBaseUrl.trim();
+  const apiKey = selfHosted ? null : await loadOpenaiKey();
+  const endpointOrError = resolveWhisperEndpoint(apiKey);
+  if ("error" in endpointOrError) {
     throw new VoiceHandlerError(
-      "openai-key-missing",
-      "Add an OpenAI API key in Settings → AI Provider",
+      endpointOrError.error,
+      endpointOrError.userFacing,
     );
   }
+  const endpoint = endpointOrError;
+  logEndpointOnce(endpoint);
 
   // Read the audio bytes that the route already committed.
   const cfg = coreConfig();
@@ -215,7 +362,7 @@ export async function voiceHandler(
 
   // Whisper call (incl. 429 retry).
   const whisper = await postWhisper(
-    apiKey,
+    endpoint,
     audioBytes,
     audioFilename,
     audioMime,
