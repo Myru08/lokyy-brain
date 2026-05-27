@@ -129,6 +129,60 @@ docker ps --format "{{.Names}}" | grep -i ollama
 
 **App-URL:** `http://ollama-<RESOURCE-UUID>:11434`
 
+### 1.3 Whisper (optional, self-hosted für Voice-Transkription)
+
+**Optional.** Wenn du Voice-Notes ohne OpenAI-Cloud transkribieren willst:
+self-hosted [`openai-whisper-asr-webservice`](https://github.com/ahmetoner/whisper-asr-webservice)
+ist OpenAI-API-kompatibel, läuft auf CPU, kostenlos. Lokyy-Brain spricht es
+über `WHISPER_BASE_URL` an statt OpenAI.
+
+1. Project → **+ New Resource** → **Service** → **Docker Compose** (Custom)
+2. Name: `whisper-asr`
+3. Compose (flush-left):
+
+```yaml
+services:
+  whisper:
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    environment:
+      - ASR_MODEL=small
+      - ASR_ENGINE=openai_whisper
+    volumes:
+      - whisper-models:/root/.cache/whisper
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/docs"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+volumes:
+  whisper-models:
+```
+
+4. Deploy. Erster Start lädt das Modell (~500 MB bei `small`), ~2–5 min.
+
+**Modell-Wahl (`ASR_MODEL` env):**
+
+| Wert | RAM | CPU-Speed (i5) | Qualität (de) |
+|------|-----|----------------|---------------|
+| `tiny` | <1 GB | ~10x realtime | ok |
+| `base` | ~1 GB | ~7x realtime | gut |
+| `small` | ~2 GB | ~3x realtime | sehr gut (empfohlen) |
+| `medium` | ~5 GB | ~1x realtime | exzellent |
+| `large-v3` | ~10 GB | ~0.3x realtime | beste |
+
+**Interner Hostname:** `whisper-<RESOURCE-UUID>` (Container-Name aus
+`docker ps --format "{{.Names}}" | grep whisper`).
+
+**App-URL für Phase 2.3:** `http://whisper-<RESOURCE-UUID>:9000` als
+`WHISPER_BASE_URL` Env-Var in der Lokyy-App. Lokyy-Brain ruft dann
+`<URL>/v1/audio/transcriptions` (OpenAI-kompatibel), keine Auth nötig per
+Default (lokales Netz).
+
+Wenn `WHISPER_BASE_URL` leer ist, fällt der Voice-Handler auf OpenAI-Cloud-
+Whisper zurück (braucht OpenAI-API-Key in Settings → AI Provider).
+
 ---
 
 ## Phase 2 — Lokyy-Application anlegen
@@ -166,6 +220,11 @@ Application → **Environment**:
 DATABASE_URL=postgres://postgres:<postgres-password>@postgres-<PARADEDB-UUID>:5432/lokyy_brain
 # Auch OLLAMA_HOST muss auf den Container-Namen zeigen, nicht auf "ollama"!
 OLLAMA_HOST=http://ollama-<OLLAMA-UUID>:11434
+
+# Optional: self-hosted Whisper für Voice-Transkription (Phase 1.3).
+# Leer lassen → fällt auf OpenAI-Cloud-Whisper zurück (braucht OpenAI-API-Key
+# in Settings → AI Provider).
+WHISPER_BASE_URL=http://whisper-<WHISPER-UUID>:9000
 OLLAMA_EMBED_MODEL=nomic-embed-text
 
 # Forgejo-Anbindung läuft jetzt über OAuth (Setup-Wizard Step 1).
