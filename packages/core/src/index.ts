@@ -216,6 +216,21 @@ export {
   type VoiceMode,
 } from "./setup/voiceDefaults.js";
 
+// ─── Global display-timezone ───────────────────────────────────────────
+// IANA tz string persisted under `system_config[timezone]`. Default `UTC`.
+// Container clock + all storage stay UTC; only user-facing rendering
+// (voice-note titles, daily-notes, future scheduling) uses this value.
+export {
+  DEFAULT_TIMEZONE,
+  TIMEZONE_KEY,
+  TimezoneValidationError,
+  getDateParts,
+  getTimezone,
+  setTimezone,
+  validateTimezone,
+  type DateParts,
+} from "./setup/timezone.js";
+
 // ─── Dataview queries ───────────────────────────────────────────────────
 export {
   queryNotes,

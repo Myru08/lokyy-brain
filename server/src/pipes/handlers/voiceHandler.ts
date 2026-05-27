@@ -4,9 +4,12 @@ import type { PipeResult, SharePayload } from "@lokyy/shared";
 import {
   coreConfig,
   generateUlid,
+  getDateParts,
   getDefaultImportFolder,
   getLlmProviders,
+  getTimezone,
   getVoiceDefaultsWithMeta,
+  type DateParts,
   type VoiceDefaults,
 } from "@lokyy/core";
 import { config } from "../../config.js";
@@ -171,24 +174,10 @@ function firstSentence(text: string): string {
   return sentence.slice(0, 120);
 }
 
-/** UTC-based date parts for `titlePattern` token substitution. */
-interface UtcParts {
-  YYYY: string;
-  MM: string;
-  DD: string;
-  HH: string;
-  mm: string;
-}
-
-function utcParts(d: Date): UtcParts {
-  return {
-    YYYY: String(d.getUTCFullYear()),
-    MM: pad(d.getUTCMonth() + 1),
-    DD: pad(d.getUTCDate()),
-    HH: pad(d.getUTCHours()),
-    mm: pad(d.getUTCMinutes()),
-  };
-}
+// Date-parts for `titlePattern` token substitution come from `getDateParts`
+// in @lokyy/core, which honors the global timezone setting. With
+// `timezone = "UTC"` the output is byte-identical to the legacy UTC-only
+// renderer, so existing deployments keep their current title shapes.
 
 /**
  * First sentence OR first 80 chars of the transcript, used by the
@@ -212,9 +201,11 @@ function transcriptSlug(transcript: string): string {
 }
 
 /**
- * Render the configured `titlePattern` with token substitution. All date
- * tokens are evaluated in UTC so the title is stable across servers in
- * different timezones. Supported tokens:
+ * Render the configured `titlePattern` with token substitution. Date
+ * tokens are evaluated in the configured display timezone (default `UTC`)
+ * so the title matches what the user sees in their clock. With
+ * `timezone = "UTC"` the output is byte-identical to the legacy renderer.
+ * Supported tokens:
  *
  *   {YYYY-MM-DD HH:mm} — convenience composite (legacy default)
  *   {YYYY} {MM} {DD} {HH} {mm}
@@ -222,13 +213,16 @@ function transcriptSlug(transcript: string): string {
  *   {transcript-first-words}     — first sentence or first 80 chars
  *
  * Unknown tokens are left as-is (forward-compat with future tokens).
+ *
+ * `parts` is pre-computed once per job (not per token) — the caller does
+ * one `Intl.DateTimeFormat` call inside `voiceHandler` and threads the
+ * result through here.
  */
 function renderTitlePattern(
   pattern: string,
-  now: Date,
+  parts: DateParts,
   transcript: string,
 ): string {
-  const parts = utcParts(now);
   return pattern
     // Legacy composite tokens first so partial matches don't eat them.
     .replace(/\{YYYY-MM-DD HH:mm\}/g, `${parts.YYYY}-${parts.MM}-${parts.DD} ${parts.HH}:${parts.mm}`)
@@ -252,12 +246,13 @@ function renderTitlePattern(
 function deriveTitle(
   payloadTitle: string | undefined,
   defaults: VoiceDefaults,
+  parts: DateParts,
   now: Date,
   transcript: string,
 ): string {
   const explicit = payloadTitle?.trim();
   if (explicit) return explicit;
-  const rendered = renderTitlePattern(defaults.titlePattern, now, transcript).trim();
+  const rendered = renderTitlePattern(defaults.titlePattern, parts, transcript).trim();
   if (rendered) return rendered;
   return `Voice-Notiz ${fmtDateTime(now)}`;
 }
@@ -545,8 +540,21 @@ export async function voiceHandler(
   const durationSec = Math.round(whisper.duration ?? 0);
 
   // Derive title: explicit > rendered titlePattern (defaults) > fallback.
+  // Date-parts are evaluated in the configured display timezone (default
+  // `UTC`) — cached once per job so token substitution stays a pure string
+  // op. Read failure (DB not initialised, corrupt row) silently falls back
+  // to UTC: title rendering must never block a voice transcription.
   const now = new Date();
-  const title = deriveTitle(payload.title, voiceDefaults, now, transcript);
+  let displayTimezone = "UTC";
+  try {
+    displayTimezone = await getTimezone();
+  } catch (err) {
+    console.warn(
+      `[voice] getTimezone failed, falling back to UTC — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  const dateParts = getDateParts(now, displayTimezone);
+  const title = deriveTitle(payload.title, voiceDefaults, dateParts, now, transcript);
 
   // SPEC-valid frontmatter (matches packages/core/src/frontmatter/schemas/capture.json):
   // id + type + title + created + updated are mandatory; the pre-commit

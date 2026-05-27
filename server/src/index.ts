@@ -56,6 +56,7 @@ import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
 import { voiceHandler } from "./pipes/handlers/voiceHandler.js";
 import { voiceRoutes } from "./routes/voice.js";
 import { voiceSettingsRoutes } from "./routes/voice-settings.js";
+import { systemRoutes } from "./routes/system.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -284,6 +285,13 @@ app.route("/api/pipes", pipesRoutes);
 // auth-gate when other settings need one.
 app.use("/api/voice/*", setupGate);
 app.route("/api/voice/settings", voiceSettingsRoutes);
+
+// Global system settings — currently just the display timezone (IANA
+// string, default `UTC`). Container clock stays UTC; this value only
+// drives user-visible date rendering (voice-note title patterns, daily-
+// notes, future scheduling tokens). Same auth posture as voice-settings.
+app.use("/api/system/*", setupGate);
+app.route("/api/system", systemRoutes);
 app.route("/api", searchRoutes);
 app.route("/api/dataview", dataviewRoutes);
 app.route("/api/templates", templatesRoutes);
