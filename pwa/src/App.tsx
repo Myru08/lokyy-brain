@@ -413,6 +413,20 @@ export function App() {
   async function flush(): Promise<Note | null> {
     const note = activeRef.current;
     if (!note) return null;
+    // Strip any live-voice interim zone before persisting. The U+200E
+    // LRM anchor + italic wrap is purely a display artifact for the
+    // live-voice ghost-text preview — it must never reach disk.
+    // SPEC contract (CLAUDE.md "Vault Contract") requires clean body
+    // bytes; a stale marker zone could also confuse the pre-commit
+    // frontmatter hook on the vault side.
+    // This is the canonical strip site — `handleLiveVoiceAppend` and
+    // `handleLiveVoiceReplaceTail` also strip on their write paths so
+    // the marker doesn't accumulate, but THIS strip is the only one
+    // that guarantees no marker ever reaches `api.putNote`.
+    const cleanedDirty = dirtyBody.current.replace(/‎[\s\S]*$/, "").replace(/[ \t]+$/m, "");
+    if (cleanedDirty !== dirtyBody.current) {
+      dirtyBody.current = cleanedDirty;
+    }
     const body = dirtyBody.current;
     if (!body || body === savedBodyRef.current) {
       if (syncRef.current === "dirty" || syncRef.current === "saving") {
@@ -543,6 +557,13 @@ export function App() {
    *      we don't have, so we fall back to a direct PUT. That's an
    *      acceptable cost: the user already wandered off, and the warning
    *      chip in the recorder tells them what's happening.
+   *
+   * Marker hygiene: any tail-interim zone (U+200E LRM anchor + italic
+   * wrap) is stripped BEFORE the final segment lands, so leftover ghost
+   * text never persists into the saved note body. This is the second
+   * strip site (the first lives in `handleLiveVoiceReplaceTail`); both
+   * exist as defense-in-depth — a missed interim cleanup elsewhere still
+   * gets wiped here.
    */
   function handleLiveVoiceAppend(segment: string) {
     const trimmed = segment.trim();
@@ -552,12 +573,15 @@ export function App() {
 
     const cur = activeRef.current;
     if (cur && cur.id === targetId) {
+      // Strip any U+200E LRM interim zone before appending the final.
+      // Pattern: LRM and everything after it through end-of-doc.
+      const stripped = cur.body.replace(/‎[\s\S]*$/, "").replace(/[ \t]+$/m, "");
       // Same paragraph separator policy as the recorder's capture mode:
       // segments are individual sentences, so a single newline keeps them
       // readable without ballooning the doc. End-of-doc anchor matches
       // the spec ("intentional — user can clean up after").
-      const sep = cur.body.endsWith("\n") || cur.body === "" ? "" : "\n";
-      const newBody = cur.body + sep + trimmed + "\n";
+      const sep = stripped.endsWith("\n") || stripped === "" ? "" : "\n";
+      const newBody = stripped + sep + trimmed + "\n";
       dirtyBody.current = newBody;
       setActive({ ...cur, body: newBody });
       if (syncRef.current !== "saving") setSync("dirty");
@@ -575,13 +599,80 @@ export function App() {
     void (async () => {
       try {
         const note = await api.getNote(targetId);
+        // Same marker-strip defense as the on-target path. The off-target
+        // note may still carry a stale interim zone from the last
+        // replaceTail before the user switched tabs.
+        const stripped = note.body.replace(/‎[\s\S]*$/, "").replace(/[ \t]+$/m, "");
         const sep =
-          note.body.endsWith("\n") || note.body === "" ? "" : "\n";
-        await api.putNote(targetId, note.body + sep + trimmed + "\n");
+          stripped.endsWith("\n") || stripped === "" ? "" : "\n";
+        await api.putNote(targetId, stripped + sep + trimmed + "\n");
       } catch {
         /* see comment above */
       }
     })();
+  }
+
+  /**
+   * Live-voice tail-replace. The VoiceQuickButton's live-editor mode pushes
+   * not-yet-final (interim) speech text here. Unlike `handleLiveVoiceAppend`
+   * (which appends permanent segments), this REPLACES the trailing interim
+   * zone with new interim text — giving the user a Google-Docs-style
+   * word-by-word preview that updates as the recognizer revises its guess.
+   *
+   * Protocol: the caller wraps interim text in a `U+200E` LEFT-TO-RIGHT MARK
+   * anchor (`‎`) + markdown italics, e.g. ` ‎ *hello world* `. The
+   * LRM is the search needle — invisible to the user, distinctive enough
+   * that it's safe to nuke "from LRM to end of doc" on every call.
+   *
+   * The save-debounce is intentionally NOT extended/reset here. Interim
+   * text changes locally; the 5s timer fires whenever it last fired against
+   * the final-append flow. If the user stops mid-interim, the recorder
+   * calls replaceTail("") to strip the marker zone, then appends the
+   * trailing interim as a final segment, which DOES touch the debounce.
+   *
+   * `text` of "" means "just strip the interim zone" (used by the recorder
+   * on stop, and as a no-op cleanup). Off-target writes are skipped — the
+   * user has wandered off, surfacing interim ghost-text in a note they're
+   * no longer looking at would be confusing. The final flush via
+   * `handleLiveVoiceAppend` still lands when the user stops.
+   */
+  function handleLiveVoiceReplaceTail(text: string) {
+    const targetId = liveTargetNoteIdRef.current;
+    if (!targetId) return;
+    const cur = activeRef.current;
+    // Off-target interim is intentionally a no-op (see jsdoc above).
+    if (!cur || cur.id !== targetId) return;
+
+    // Strip from LRM marker to end-of-doc. If no marker present this is
+    // a no-op on the strip side, so the function also covers "first
+    // interim of a session" — just appends text at end of doc.
+    const stripped = cur.body
+      .replace(/‎[\s\S]*$/, "")
+      .replace(/[ \t]+$/m, "");
+    // For non-empty text: keep one separating space so the marker doesn't
+    // bleed into the last word of the permanent text. For empty text
+    // (caller wants strip-only), no separator.
+    const sep =
+      text === ""
+        ? ""
+        : stripped === "" || stripped.endsWith("\n") || stripped.endsWith(" ")
+          ? ""
+          : " ";
+    const displayBody = stripped + sep + text;
+    // No-op short-circuit — avoids a CM6 doc-swap on identical interim
+    // text (the recognizer occasionally re-emits the same string while
+    // it waits for the confidence window to close). Costs one string
+    // compare, saves one full-doc dispatch + reparse cycle.
+    if (displayBody === cur.body) return;
+    dirtyBody.current = displayBody;
+    setActive({ ...cur, body: displayBody });
+    // INTENTIONALLY NOT touching `syncRef`/`saveTimer` directly here.
+    // The Editor's updateListener fires `onChange(displayBody)` in
+    // reaction to our doc swap above, which is what actually
+    // (re)arms the 5s debounce. The eventual `flush()` call strips
+    // the LRM zone before PUT (canonical safety net in `flush()`),
+    // so even if the debounce fires mid-interim the saved bytes are
+    // clean. Marker-survives-to-disk is impossible.
   }
 
   // Cmd/Ctrl+S → manual save. Registered after manualSave is defined so the
@@ -994,6 +1085,7 @@ export function App() {
             void refreshTree().then(() => open(noteId));
           }}
           onLiveEditorAppend={handleLiveVoiceAppend}
+          onLiveEditorReplaceTail={handleLiveVoiceReplaceTail}
           onLiveEditorStopped={() => {
             // Flush any pending debounced save right away so the final
             // segment lands in Forgejo without waiting 5s. Clear the

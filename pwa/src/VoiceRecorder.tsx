@@ -166,6 +166,19 @@ interface VoiceRecorderProps {
    */
   onLiveEditorRequested?: (noteId: string, notePath: string) => void;
   onLiveEditorAppend?: (segment: string) => void;
+  /**
+   * Optional: replace the live-interim "tail zone" (everything after the
+   * U+200E LRM marker the recorder writes) with `text`. Used to show
+   * Google-Docs-style word-by-word ghost text in the open editor as the
+   * Web-Speech recognizer streams interim results. Passing `text = ""`
+   * means "strip the interim zone" — used on stop before flushing the
+   * trailing interim as a permanent segment.
+   *
+   * When this callback is NOT provided, interim text falls back to the
+   * sidebar-only display (legacy behaviour): interim never reaches the
+   * editor, only finalized segments do.
+   */
+  onLiveEditorReplaceTail?: (text: string) => void;
   onLiveEditorStopped?: () => void;
   /**
    * Optional: parent reports whether the user has switched away from the
@@ -367,6 +380,7 @@ export function VoiceRecorder({
   defaultLanguage = "",
   onLiveEditorRequested,
   onLiveEditorAppend,
+  onLiveEditorReplaceTail,
   onLiveEditorStopped,
   liveEditorOffTarget = false,
 }: VoiceRecorderProps) {
@@ -393,6 +407,28 @@ export function VoiceRecorder({
   liveTargetRef.current = liveTarget;
   const onLiveEditorAppendRef = useRef<typeof onLiveEditorAppend>(onLiveEditorAppend);
   onLiveEditorAppendRef.current = onLiveEditorAppend;
+  const onLiveEditorReplaceTailRef = useRef<typeof onLiveEditorReplaceTail>(
+    onLiveEditorReplaceTail,
+  );
+  onLiveEditorReplaceTailRef.current = onLiveEditorReplaceTail;
+  /**
+   * Tracks whether the editor doc currently has a live-interim "tail zone"
+   * (the U+200E LRM-anchored italic preview). We use this to decide
+   * whether to send `replaceTail("")` cleanups on final-append and on
+   * stop — if the flag is false, no marker exists and we can skip the
+   * call. Set to true on every `replaceTail(<non-empty>)`, cleared on
+   * every `replaceTail("")` and on final-append.
+   */
+  const interimZoneActiveRef = useRef<boolean>(false);
+  /**
+   * Last interim text we shipped to the editor. Used to short-circuit
+   * `replaceTail` calls when the recognizer re-emits identical text
+   * (common while it waits for the confidence window to close) — avoids
+   * a CM6 doc-swap + reparse on every duplicate event. The App-side
+   * handler also short-circuits, but de-duping here saves the function
+   * call entirely.
+   */
+  const lastInterimTextRef = useRef<string>("");
   /** Note id created up-front for editor-target Live recordings (for the
    *  "Fertig" screen + so we can echo it back as onTranscribed). */
   const liveEditorNoteRef = useRef<{ id: string; path: string } | null>(null);
@@ -867,6 +903,8 @@ export function VoiceRecorder({
     userStoppedRef.current = false;
     finalTextRef.current = "";
     liveEditorNoteRef.current = null;
+    interimZoneActiveRef.current = false;
+    lastInterimTextRef.current = "";
 
     // ── Editor-target pre-recording: create the empty note FIRST so it's
     // open in the editor before the user says a word. We deliberately
@@ -1019,33 +1057,90 @@ export function VoiceRecorder({
           interim += alt.transcript;
         }
       }
-      const trimmed = appended.trim();
-      if (trimmed) {
-        if (liveTargetRef.current === "editor") {
-          // Editor mode: each finalized segment is shipped to the parent
-          // exactly once. We do NOT accumulate locally (the editor is the
-          // source of truth now). The parent decides spacing/paragraphing.
-          //
-          // Note on flooding: the Web-Speech-API fires `onresult` once per
-          // grammar-segment, NOT per character. A natural sentence pause
-          // yields one event with `isFinal: true` and the full sentence.
-          // Interim results stream more frequently but are discarded here
-          // (only the floating ghost-text panel below uses them). No
-          // batching/debouncing needed — typical rate is < 1/s.
+      const trimmedFinal = appended.trim();
+      const trimmedInterim = interim.trim();
+      const liveEditorReplaceTail = onLiveEditorReplaceTailRef.current;
+      const liveEditorAppend = onLiveEditorAppendRef.current;
+
+      if (liveTargetRef.current === "editor") {
+        // ── Editor mode ──────────────────────────────────────────────
+        // Two distinct write paths, both routed through the parent's
+        // App.tsx callbacks. Order matters: final BEFORE interim so the
+        // marker (which `liveEditorAppend` also strips defensively)
+        // never carries forward into the new permanent text.
+        //
+        // Note on flooding: the Web-Speech-API fires `onresult` once per
+        // grammar-segment, NOT per character. Interim results stream
+        // more frequently than finals (multiple per second is possible)
+        // but each one is a small string replacement on the doc tail,
+        // not a per-character keystroke. The App-side handler short-
+        // circuits identical interim and we de-dupe again here via
+        // `lastInterimTextRef`, so duplicate events are cheap.
+        if (trimmedFinal) {
           try {
-            onLiveEditorAppendRef.current?.(trimmed);
+            // `liveEditorAppend` already strips any leftover marker zone
+            // before appending, so we don't have to call
+            // `replaceTail("")` first. The append also resets our
+            // local tracking — the next interim starts a fresh zone.
+            liveEditorAppend?.(trimmedFinal);
           } catch {
             /* swallow — parent log; recognition must keep going */
           }
-        } else {
-          // Capture mode: accumulate locally; saved on Stop.
-          const sep =
-            finalTextRef.current && !finalTextRef.current.endsWith(" ")
-              ? " "
-              : "";
-          finalTextRef.current = finalTextRef.current + sep + trimmed;
+          interimZoneActiveRef.current = false;
+          lastInterimTextRef.current = "";
         }
+
+        if (liveEditorReplaceTail) {
+          // New interim text → rewrite the tail zone with U+200E LRM
+          // marker + markdown italics. The LRM is invisible to the user
+          // but acts as a precise needle for the strip regex on the next
+          // call. Italics give the visual "ghost text" distinction so
+          // the user can tell what's confirmed vs guessed.
+          //
+          // The wrap format ` ‎ *<text>* ` is deliberate:
+          //   - leading space + LRM: separates the marker zone from any
+          //     trailing permanent text (App-side handler also adds a
+          //     separating space, but belt-and-suspenders);
+          //   - the LRM (U+200E, "‎") between the space and the
+          //     opening asterisk is the search needle;
+          //   - markdown italics render as ghost text via the editor's
+          //     live-preview extension.
+          if (trimmedInterim) {
+            if (trimmedInterim !== lastInterimTextRef.current) {
+              try {
+                liveEditorReplaceTail(` ‎ *${trimmedInterim}* `);
+              } catch {
+                /* swallow */
+              }
+              lastInterimTextRef.current = trimmedInterim;
+              interimZoneActiveRef.current = true;
+            }
+          } else if (interimZoneActiveRef.current) {
+            // Recognizer cleared its interim buffer (silence, segment
+            // boundary). Wipe the marker zone so the doc tail isn't
+            // left dangling. The next interim will reopen a fresh zone.
+            try {
+              liveEditorReplaceTail("");
+            } catch {
+              /* swallow */
+            }
+            interimZoneActiveRef.current = false;
+            lastInterimTextRef.current = "";
+          }
+        } else if (trimmedFinal) {
+          // Fallback: no replaceTail callback wired — final-only legacy
+          // behaviour was already handled by the `liveEditorAppend`
+          // call above. Nothing to do here.
+        }
+      } else if (trimmedFinal) {
+        // Capture mode: accumulate locally; saved on Stop.
+        const sep =
+          finalTextRef.current && !finalTextRef.current.endsWith(" ")
+            ? " "
+            : "";
+        finalTextRef.current = finalTextRef.current + sep + trimmedFinal;
       }
+
       setState((prev) =>
         prev.kind === "live-listening"
           ? {
@@ -1203,6 +1298,20 @@ export function VoiceRecorder({
       // ── Fix 1 flush site (editor-mode): ship the trailing interim
       // text (if any) as a final segment so it lands in the open editor
       // before we tell the parent the live session is over.
+      //
+      // Two writes: first wipe any LRM-marked interim zone (the doc
+      // currently shows ghost text — we don't want it to land as
+      // permanent markdown italics in the saved note), then append the
+      // remainder as a clean final segment. If `replaceTail` isn't
+      // wired (legacy path), the append's defensive strip still cleans
+      // the marker so we never persist garbage.
+      try {
+        onLiveEditorReplaceTailRef.current?.("");
+      } catch {
+        /* swallow */
+      }
+      interimZoneActiveRef.current = false;
+      lastInterimTextRef.current = "";
       if (interimRemainder) {
         try {
           onLiveEditorAppendRef.current?.(interimRemainder);
@@ -1225,6 +1334,19 @@ export function VoiceRecorder({
   }
 
   function discardLive() {
+    // If we left an LRM-marked interim zone in the editor, wipe it now
+    // so the user doesn't see ghost italics linger after they discard.
+    // The App-side `flush()` would also strip it before saving, but this
+    // keeps the visible doc consistent with what's about to persist.
+    if (interimZoneActiveRef.current) {
+      try {
+        onLiveEditorReplaceTailRef.current?.("");
+      } catch {
+        /* swallow */
+      }
+      interimZoneActiveRef.current = false;
+      lastInterimTextRef.current = "";
+    }
     teardownRecognition();
     setState({ kind: "idle" });
     setTitle(`Voice-Notiz ${fmtTimestamp()}`);

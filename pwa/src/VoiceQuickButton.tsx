@@ -33,6 +33,14 @@ interface VoiceQuickButtonProps {
    */
   onLiveEditorRequested?: (noteId: string, notePath: string) => void;
   onLiveEditorAppend?: (segment: string) => void;
+  /**
+   * Replace the live-interim "tail zone" (everything after the U+200E LRM
+   * marker the recorder writes) with `text`. Passing `text = ""` means
+   * "just strip the interim zone." Used for word-by-word ghost-text
+   * preview that updates as the recognizer revises its guess; see
+   * `VoiceRecorder` `onresult` for how it's wired.
+   */
+  onLiveEditorReplaceTail?: (text: string) => void;
   onLiveEditorStopped?: () => void;
   /** Parent reports the user switched tabs mid-live-recording. */
   liveEditorOffTarget?: boolean;
@@ -54,6 +62,7 @@ export function VoiceQuickButton({
   onImported,
   onLiveEditorRequested,
   onLiveEditorAppend,
+  onLiveEditorReplaceTail,
   onLiveEditorStopped,
   liveEditorOffTarget = false,
   isMobile: isMobileProp,
@@ -240,6 +249,7 @@ export function VoiceQuickButton({
               onLiveEditorRequested?.(noteId, notePath);
             }}
             onLiveEditorAppend={onLiveEditorAppend}
+            onLiveEditorReplaceTail={onLiveEditorReplaceTail}
             onLiveEditorStopped={onLiveEditorStopped}
             liveEditorOffTarget={liveEditorOffTarget}
           />
