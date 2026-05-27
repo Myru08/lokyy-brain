@@ -316,6 +316,16 @@ adminRoutes.get("/mcp-info", async (c) => {
   const httpToken = process.env.LOKYY_MCP_TOKEN ?? "<set-LOKYY_MCP_TOKEN-env-and-restart>";
   const publicHost = process.env.LOKYY_PUBLIC_HOST ?? "localhost";
 
+  // Coolify/Dokploy-style FQDN env wins over local-dev host:port. Result is
+  // built once and shared between the snippet args and the endpointUrl /
+  // healthUrl fields the PWA Settings page renders verbatim.
+  const fqdn = process.env.SERVICE_FQDN_LOKYY_MCP?.trim();
+  const remoteEndpoint =
+    fqdn && fqdn.length > 0
+      ? `https://${fqdn.replace(/^https?:\/\//, "").replace(/\/+$/, "")}/mcp`
+      : `http://${publicHost}:${httpPort}/mcp`;
+  const remoteHealth = `${remoteEndpoint}/health`;
+
   const sharedEnv = {
     LOKYY_DB_URL: maskDsn(config.databaseUrl),
     LOKYY_VAULT_DIR: config.vaultDir,
@@ -375,15 +385,15 @@ adminRoutes.get("/mcp-info", async (c) => {
               args: [
                 "-y",
                 "mcp-remote",
-                `http://${publicHost}:${httpPort}/mcp`,
+                remoteEndpoint,
                 "--header",
                 `Authorization:Bearer ${httpToken}`,
               ],
             },
           },
         },
-        endpointUrl: `http://${publicHost}:${httpPort}/mcp`,
-        healthUrl: `http://${publicHost}:${httpPort}/mcp/health`,
+        endpointUrl: remoteEndpoint,
+        healthUrl: remoteHealth,
         authNote:
           "Bearer-Token aus env LOKYY_MCP_TOKEN. Jeder Request muss `Authorization: Bearer <token>` mitschicken. Ohne Token startet der HTTP-Server gar nicht.",
       },

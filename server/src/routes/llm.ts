@@ -36,10 +36,36 @@ function isMaskedKey(value: string | null | undefined): boolean {
 
 llmRoutes.get("/config", async (c) => {
   const providers = await getLlmProviders();
-  const masked = providers.map((p) => ({
-    ...p,
-    apiKey: maskApiKey(p.apiKey ?? null),
-  }));
+  const envOllamaHost = process.env.OLLAMA_HOST ?? "http://localhost:11434";
+
+  const masked: ProviderConfig[] = providers.map((p) => {
+    const next: ProviderConfig = {
+      ...p,
+      apiKey: maskApiKey(p.apiKey ?? null) ?? undefined,
+    };
+    // Ollama's baseUrl falls back to process.env.OLLAMA_HOST when the user
+    // hasn't explicitly set one. Without this, the AI-Provider panel would
+    // display the hardcoded localhost placeholder even when the backend
+    // actually talks to an in-cluster Ollama (http://ollama-<UUID>:11434).
+    if (next.name === "ollama" && (!next.baseUrl || next.baseUrl.length === 0)) {
+      next.baseUrl = envOllamaHost;
+    }
+    return next;
+  });
+
+  // Inject a disabled Ollama placeholder when the user has never touched
+  // the AI-Provider panel — so the env-derived host is visible from the
+  // very first page load instead of "http://localhost:11434" (frontend
+  // placeholder). The provider stays `enabled: false` so it has no runtime
+  // side effect until the user actively opts in.
+  if (!masked.some((p) => p.name === "ollama")) {
+    masked.push({
+      name: "ollama",
+      enabled: false,
+      baseUrl: envOllamaHost,
+    });
+  }
+
   const routing = await getLlmRouting();
   const usage = await budgetTracker().listMonthlyUsage();
   return c.json({ providers: masked, routing, usage });
