@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
@@ -117,16 +117,50 @@ interface EditorProps {
   scrollToLine?: number | null;
 }
 
-export function Editor({
-  noteId,
-  initialBody,
-  onChange,
-  onOpenLink,
-  onOpenLinkSplit,
-  scrollToLine,
-}: EditorProps) {
+/**
+ * Imperative handle exposed to parents via `ref` — used by App.tsx's live-voice
+ * pipeline to capture the cursor position at the start of a recording session
+ * so transcribed text gets inserted at the user's current cursor instead of
+ * being appended to the end of the document.
+ *
+ * Keep this surface tiny. Adding more methods makes the parent → editor
+ * coupling sticky and tempts callers to drive CM6 directly, bypassing the
+ * setActive → initialBody-watcher path that owns cursor/scroll preservation.
+ */
+export interface EditorHandle {
+  /**
+   * Current caret position (`selection.main.head`) as an offset into the doc.
+   * Returns `null` if the view hasn't mounted yet. Callers should clamp to
+   * the post-mutation doc length themselves — we don't snapshot anything.
+   */
+  getCursorPos: () => number | null;
+}
+
+export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
+  {
+    noteId,
+    initialBody,
+    onChange,
+    onOpenLink,
+    onOpenLinkSplit,
+    scrollToLine,
+  },
+  ref,
+) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getCursorPos: () => {
+        const v = view.current;
+        if (!v) return null;
+        return v.state.selection.main.head;
+      },
+    }),
+    [],
+  );
 
   // Callbacks in Refs halten, damit die View nicht neu erzeugt werden muss
   const onChangeRef = useRef(onChange);
@@ -333,4 +367,4 @@ export function Editor({
   }, [scrollToLine]);
 
   return <div ref={host} style={{ height: "100%", overflow: "hidden" }} />;
-}
+});

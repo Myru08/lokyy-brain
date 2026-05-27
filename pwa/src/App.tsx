@@ -16,8 +16,9 @@ const GraphView = lazy(() =>
 );
 import { api, ApiError } from "./api.js";
 import { SplitView } from "./SplitView.js";
+import type { EditorHandle } from "./editor/Editor.js";
 import { prefetchTags } from "./editor/tagAutocomplete.js";
-import { FileTree } from "./FileTree.js";
+import { FileTree, type FileTreeHandle } from "./FileTree.js";
 import { ImportPanel } from "./ImportPanel.js";
 import { TagPane } from "./TagPane.js";
 import { PropertiesPanel } from "./PropertiesPanel.js";
@@ -351,6 +352,10 @@ export function App() {
   const dirtyBody = useRef<string>("");
   const activeRef = useRef<Note | null>(null);
   activeRef.current = active;
+  // Imperative handle on FileTree — used by the NoteHeader breadcrumb to
+  // jump to a folder (expand ancestors + scroll into view) without
+  // lifting all of FileTree's UI state into App.tsx.
+  const fileTreeRef = useRef<FileTreeHandle | null>(null);
 
   // Save-lifecycle tracking — surfaced to NoteHeader for the badge UI.
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
@@ -368,6 +373,36 @@ export function App() {
   const liveTargetNoteIdRef = useRef<string | null>(null);
   const [liveTargetNoteId, setLiveTargetNoteId] = useState<string | null>(null);
   liveTargetNoteIdRef.current = liveTargetNoteId;
+
+  /* ── Live-voice insertion-at-cursor anchor ───────────────────────
+   * The recorder used to append finals + interims to the end-of-doc
+   * regardless of where the user's cursor was. Now we anchor to the
+   * cursor at the START of the recording session and grow the insertion
+   * zone from there.
+   *
+   * `liveInsertAnchorRef` — char-offset into `active.body` where the
+   *   session's first segment lands. Captured lazily on the first
+   *   handleLiveVoiceAppend / handleLiveVoiceReplaceTail call
+   *   (recorder may fire either first). null = no active session.
+   *
+   * `liveInsertLengthRef` — total chars inserted at this anchor
+   *   (finals + current interim). Inserts go to
+   *   `anchor + liveInsertLength`, and after each successful insertion
+   *   we bump this so the next one lands directly after.
+   *
+   * Both reset on session stop (handleLiveVoiceStopped via the
+   * onLiveEditorStopped callback). If the user clicks elsewhere
+   * mid-session the anchor stays fixed — re-capturing on every cursor
+   * move would race with the recognizer's own dispatches and produce
+   * scrambled output. This is the documented v1 trade-off.
+   *
+   * Off-target case (user tab-switched mid-recording) doesn't apply:
+   * the anchor only governs the on-target setActive path; off-target
+   * still uses the API-PUT append-to-end flow unchanged.
+   * ─────────────────────────────────────────────────────────────── */
+  const editorRef = useRef<EditorHandle | null>(null);
+  const liveInsertAnchorRef = useRef<number | null>(null);
+  const liveInsertLengthRef = useRef<number>(0);
   // Conflict-banner payload: when a focus-pull discovers the server body
   // differs and the local copy is dirty, we surface a non-modal banner with
   // the fresh body cached here. Clobber is opt-in via "Server-Version laden".
@@ -734,28 +769,75 @@ export function App() {
   }
 
   /**
+   * Lazily capture the cursor position from the Editor's imperative handle.
+   * Called by both live-voice handlers on first dispatch of a session so the
+   * insertion anchor reflects where the user actually had focus when they
+   * pressed record (mostly — see jsdoc above).
+   *
+   * Returns the anchor (or null if no editor mounted) and stores it in the
+   * ref for the rest of the session. Idempotent: subsequent calls within
+   * the same session are no-ops and return the captured anchor.
+   *
+   * Clamping: we clamp the reported caret to the current body length
+   * defensively. The recorder might fire after a focus-pull rewrote the
+   * body (rare race) and CM6 would have already clamped the selection too,
+   * but reading the clamped value via getCursorPos is still cheaper than
+   * trusting the user to never have switched docs.
+   */
+  function ensureLiveInsertAnchor(body: string): number | null {
+    if (liveInsertAnchorRef.current !== null) return liveInsertAnchorRef.current;
+    const handle = editorRef.current;
+    if (!handle) return null;
+    const pos = handle.getCursorPos();
+    if (pos === null) return null;
+    const clamped = Math.min(Math.max(0, pos), body.length);
+    liveInsertAnchorRef.current = clamped;
+    liveInsertLengthRef.current = 0;
+    return clamped;
+  }
+
+  /**
+   * Find the LRM marker inside the insertion zone `[anchor, anchor+length)`
+   * and return its offset, or `-1` if no interim is currently present. We
+   * deliberately search only within the zone — a stale LRM outside the zone
+   * (left over from a previous bug or a polish operation) must NOT be
+   * touched by the live-voice flow.
+   */
+  function findInterimMarker(
+    body: string,
+    anchor: number,
+    length: number,
+  ): number {
+    const zoneEnd = Math.min(body.length, anchor + length);
+    const idx = body.indexOf("‎", anchor);
+    if (idx === -1 || idx >= zoneEnd) return -1;
+    return idx;
+  }
+
+  /**
    * Live-voice append. The VoiceQuickButton's "Live in neuen Editor
-   * schreiben" mode pushes each finalized speech segment here. We append
-   * to the LIVE-TARGET note (not necessarily the currently-active note)
-   * so a tab switch mid-recording doesn't accidentally inject speech into
-   * an unrelated note.
+   * schreiben" mode pushes each finalized speech segment here. We insert
+   * the segment at the SESSION ANCHOR (cursor position captured on the
+   * first dispatch) of the LIVE-TARGET note — not at end-of-doc.
    *
-   * Two append paths:
-   *   1. Target IS active — use the existing setActive + dirty flow. The
-   *      Editor's initialBody-watcher effect picks up the new body and
-   *      preserves cursor/scroll (see Editor.tsx case 2). The 5s
-   *      auto-save debounce persists it normally.
-   *   2. Target is NOT active — silently mutate the in-memory tab cache
-   *      we don't have, so we fall back to a direct PUT. That's an
-   *      acceptable cost: the user already wandered off, and the warning
-   *      chip in the recorder tells them what's happening.
+   * Two paths:
+   *   1. Target IS active — capture/use the anchor and splice the final
+   *      into `cur.body` at `anchor + liveInsertLength`. The Editor's
+   *      initialBody-watcher effect picks up the new body and CM6's
+   *      built-in selection mapping shifts the user's cursor past the
+   *      inserted text automatically. The 5s auto-save debounce persists
+   *      it normally.
+   *   2. Target is NOT active — anchor doesn't apply (user wandered off,
+   *      we have no live editor handle for that note). Fall back to the
+   *      original API-PUT append-to-end behavior.
    *
-   * Marker hygiene: any tail-interim zone (U+200E LRM anchor + italic
-   * wrap) is stripped BEFORE the final segment lands, so leftover ghost
-   * text never persists into the saved note body. This is the second
-   * strip site (the first lives in `handleLiveVoiceReplaceTail`); both
-   * exist as defense-in-depth — a missed interim cleanup elsewhere still
-   * gets wiped here.
+   * If the editor handle isn't available for the on-target case (e.g. the
+   * editor unmounted between record-start and the first dispatch), we
+   * degrade to end-of-doc append rather than dropping the segment.
+   *
+   * Marker hygiene: any tail-interim zone inside `[anchor, anchor+length)`
+   * is stripped BEFORE the final segment lands. We do NOT touch LRM
+   * markers outside the insertion zone — they belong to someone else.
    */
   function handleLiveVoiceAppend(segment: string) {
     const trimmed = segment.trim();
@@ -765,15 +847,72 @@ export function App() {
 
     const cur = activeRef.current;
     if (cur && cur.id === targetId) {
-      // Strip any U+200E LRM interim zone before appending the final.
-      // Pattern: LRM and everything after it through end-of-doc.
-      const stripped = cur.body.replace(/‎[\s\S]*$/, "").replace(/[ \t]+$/m, "");
-      // Same paragraph separator policy as the recorder's capture mode:
-      // segments are individual sentences, so a single newline keeps them
-      // readable without ballooning the doc. End-of-doc anchor matches
-      // the spec ("intentional — user can clean up after").
-      const sep = stripped.endsWith("\n") || stripped === "" ? "" : "\n";
-      const newBody = stripped + sep + trimmed + "\n";
+      const anchor = ensureLiveInsertAnchor(cur.body);
+      if (anchor === null) {
+        // Anchor capture failed (editor not mounted yet). Degrade to the
+        // legacy end-of-doc append so the segment isn't lost. This path
+        // is intentionally rare — recorder UX gates record-start on an
+        // open editor for live-target mode.
+        const stripped = cur.body
+          .replace(/‎[\s\S]*$/, "")
+          .replace(/[ \t]+$/m, "");
+        const sep = stripped.endsWith("\n") || stripped === "" ? "" : "\n";
+        const newBody = stripped + sep + trimmed + "\n";
+        dirtyBody.current = newBody;
+        setActive({ ...cur, body: newBody });
+        if (syncRef.current !== "saving") setSync("dirty");
+        if (saveTimer.current) window.clearTimeout(saveTimer.current);
+        saveTimer.current = window.setTimeout(() => {
+          saveTimer.current = null;
+          void flush();
+        }, SAVE_DEBOUNCE_MS);
+        return;
+      }
+
+      // Strip any interim within the insertion zone before splicing the
+      // final. `zoneEndAfterStrip` is where the cleaned insertion zone
+      // ends — the next final lands directly there.
+      let body = cur.body;
+      let length = liveInsertLengthRef.current;
+      const lrmIdx = findInterimMarker(body, anchor, length);
+      if (lrmIdx !== -1) {
+        // Cut from LRM to either the end of the zone or the next newline
+        // (whichever comes first). The recorder writes interims as
+        // ` ‎ *text* ` without a trailing newline, so "end of zone" is
+        // usually right. If a stray newline crept in we still respect it.
+        const zoneEnd = anchor + length;
+        const nl = body.indexOf("\n", lrmIdx);
+        const cutTo =
+          nl !== -1 && nl < zoneEnd ? nl : zoneEnd;
+        body = body.slice(0, lrmIdx) + body.slice(cutTo);
+        length -= cutTo - lrmIdx;
+      }
+
+      // Strip trailing spaces from the cleaned zone — interim writes
+      // typically leave a separating space that would now sit between
+      // two finals.
+      const zoneText = body.slice(anchor, anchor + length);
+      const trimmedZone = zoneText.replace(/[ \t]+$/, "");
+      if (trimmedZone.length !== zoneText.length) {
+        body = body.slice(0, anchor) + trimmedZone + body.slice(anchor + length);
+        length = trimmedZone.length;
+      }
+
+      // Same paragraph-separator policy as before: a single newline keeps
+      // sentences readable without ballooning the doc. The separator only
+      // applies when there's preceding text in the zone (or before the
+      // anchor on the same line) that doesn't already end in newline.
+      const zoneEndAfterStrip = anchor + length;
+      const charBefore = zoneEndAfterStrip > 0 ? body[zoneEndAfterStrip - 1] : "";
+      const needsLeadingNl =
+        zoneEndAfterStrip > 0 && charBefore !== "\n" && charBefore !== undefined;
+      const insertion = (needsLeadingNl ? "\n" : "") + trimmed + "\n";
+      const newBody =
+        body.slice(0, zoneEndAfterStrip) +
+        insertion +
+        body.slice(zoneEndAfterStrip);
+
+      liveInsertLengthRef.current = length + insertion.length;
       dirtyBody.current = newBody;
       setActive({ ...cur, body: newBody });
       if (syncRef.current !== "saving") setSync("dirty");
@@ -787,14 +926,17 @@ export function App() {
 
     // Off-target: append directly via API. Fire-and-forget; errors are
     // swallowed because the recorder is already showing the off-target
-    // warning chip and a per-segment alert would be noise.
+    // warning chip and a per-segment alert would be noise. Anchor doesn't
+    // apply here — user wandered off and we have no cursor to honor.
     void (async () => {
       try {
         const note = await api.getNote(targetId);
         // Same marker-strip defense as the on-target path. The off-target
         // note may still carry a stale interim zone from the last
         // replaceTail before the user switched tabs.
-        const stripped = note.body.replace(/‎[\s\S]*$/, "").replace(/[ \t]+$/m, "");
+        const stripped = note.body
+          .replace(/‎[\s\S]*$/, "")
+          .replace(/[ \t]+$/m, "");
         const sep =
           stripped.endsWith("\n") || stripped === "" ? "" : "\n";
         await api.putNote(targetId, stripped + sep + trimmed + "\n");
@@ -835,27 +977,74 @@ export function App() {
     // Off-target interim is intentionally a no-op (see jsdoc above).
     if (!cur || cur.id !== targetId) return;
 
-    // Strip from LRM marker to end-of-doc. If no marker present this is
-    // a no-op on the strip side, so the function also covers "first
-    // interim of a session" — just appends text at end of doc.
-    const stripped = cur.body
-      .replace(/‎[\s\S]*$/, "")
-      .replace(/[ \t]+$/m, "");
-    // For non-empty text: keep one separating space so the marker doesn't
-    // bleed into the last word of the permanent text. For empty text
-    // (caller wants strip-only), no separator.
+    const anchor = ensureLiveInsertAnchor(cur.body);
+    if (anchor === null) {
+      // No editor handle yet — degrade to legacy end-of-doc replace so
+      // the live preview still works in the edge case where the editor
+      // hasn't fully mounted. See `handleLiveVoiceAppend` for the same
+      // fallback rationale.
+      const stripped = cur.body
+        .replace(/‎[\s\S]*$/, "")
+        .replace(/[ \t]+$/m, "");
+      const sep =
+        text === ""
+          ? ""
+          : stripped === "" || stripped.endsWith("\n") || stripped.endsWith(" ")
+            ? ""
+            : " ";
+      const displayBody = stripped + sep + text;
+      if (displayBody === cur.body) return;
+      dirtyBody.current = displayBody;
+      setActive({ ...cur, body: displayBody });
+      return;
+    }
+
+    // Strip any existing interim within the insertion zone. The interim
+    // lives at the very end of the zone; we cut from the LRM to whichever
+    // comes first: a newline or the end of the zone.
+    let body = cur.body;
+    let length = liveInsertLengthRef.current;
+    const lrmIdx = findInterimMarker(body, anchor, length);
+    if (lrmIdx !== -1) {
+      const zoneEnd = anchor + length;
+      const nl = body.indexOf("\n", lrmIdx);
+      const cutTo = nl !== -1 && nl < zoneEnd ? nl : zoneEnd;
+      body = body.slice(0, lrmIdx) + body.slice(cutTo);
+      length -= cutTo - lrmIdx;
+    }
+
+    // Insertion point is the end of the cleaned zone — interims always
+    // live at the tail so the user sees the "growing word" effect there.
+    const insertPos = anchor + length;
+    // Separator policy mirrors the legacy implementation: when the
+    // preceding char inside the doc is whitespace/newline, no sep;
+    // otherwise insert a single space so the LRM marker doesn't fuse
+    // to the previous word. Empty `text` means "strip-only" — no sep.
+    const charBefore = insertPos > 0 ? body[insertPos - 1] : "";
     const sep =
       text === ""
         ? ""
-        : stripped === "" || stripped.endsWith("\n") || stripped.endsWith(" ")
+        : charBefore === "" ||
+            charBefore === "\n" ||
+            charBefore === " " ||
+            charBefore === undefined
           ? ""
           : " ";
-    const displayBody = stripped + sep + text;
+    const insertion = sep + text;
+    const displayBody =
+      body.slice(0, insertPos) + insertion + body.slice(insertPos);
+
     // No-op short-circuit — avoids a CM6 doc-swap on identical interim
-    // text (the recognizer occasionally re-emits the same string while
-    // it waits for the confidence window to close). Costs one string
-    // compare, saves one full-doc dispatch + reparse cycle.
-    if (displayBody === cur.body) return;
+    // text. Costs one string compare, saves one full-doc dispatch +
+    // reparse cycle.
+    if (displayBody === cur.body) {
+      // Even if the visible body is unchanged, our length bookkeeping
+      // may have changed (we just stripped & re-inserted the same text).
+      // Persist the recomputed length so the next call agrees with us.
+      liveInsertLengthRef.current = length + insertion.length;
+      return;
+    }
+    liveInsertLengthRef.current = length + insertion.length;
     dirtyBody.current = displayBody;
     setActive({ ...cur, body: displayBody });
     // INTENTIONALLY NOT touching `syncRef`/`saveTimer` directly here.
@@ -1389,6 +1578,14 @@ export function App() {
             // Track the recording target so subsequent appends find the
             // right note even if the user switches tabs.
             setLiveTargetNoteId(noteId);
+            // Defensive reset: if a prior session crashed without firing
+            // onLiveEditorStopped (e.g. tab-close race), the anchor refs
+            // could still carry stale offsets that would land the new
+            // session's first segment at the wrong place. Clearing here
+            // forces the lazy capture in handleLiveVoice* to read a
+            // fresh cursor position from the editor.
+            liveInsertAnchorRef.current = null;
+            liveInsertLengthRef.current = 0;
             // If the requested note is already open in the editor (the
             // "open-note" target path), DON'T re-open it — that would
             // re-fetch from the server and clobber any unsaved edits.
@@ -1404,6 +1601,11 @@ export function App() {
             // target so future live recordings don't inherit it.
             void flushNow();
             setLiveTargetNoteId(null);
+            // Reset the insertion anchor so the next recording session
+            // captures a fresh cursor position instead of reusing the
+            // previous one. Length resets along with it.
+            liveInsertAnchorRef.current = null;
+            liveInsertLengthRef.current = 0;
           }}
           liveEditorOffTarget={
             liveTargetNoteId !== null && active?.id !== liveTargetNoteId
@@ -1685,6 +1887,7 @@ export function App() {
           )}
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 8px" }}>
             <FileTree
+              ref={fileTreeRef}
               tree={tree}
               activeId={active?.id ?? null}
               onOpen={openAndCloseDrawer}
@@ -1749,6 +1952,7 @@ export function App() {
                   }}
                   onPolish={handlePolish}
                   onPolishUndo={handlePolishUndo}
+                  onFolderJump={(p) => fileTreeRef.current?.jumpToFolder(p)}
                 />
                 {pendingServerBody && (
                   <ServerConflictBanner
@@ -1772,6 +1976,7 @@ export function App() {
                     onClosePane={() => setSecondaryNoteId(null)}
                     onSecondaryOpen={onOpenLinkSplit}
                     primaryScrollToLine={scrollToLine}
+                    primaryEditorRef={editorRef}
                   />
                 </div>
                 <BacklinksPanel

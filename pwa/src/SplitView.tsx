@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Editor } from "./editor/Editor.js";
+import type { Ref } from "react";
+import { Editor, type EditorHandle } from "./editor/Editor.js";
 import { DragHandle, useResizableWidth } from "./Resizable.js";
 import { api } from "./api.js";
 import { C, FONT } from "./theme.js";
@@ -28,6 +29,13 @@ interface SplitViewProps {
   onSecondaryOpen: (id: string) => void;
   /** Outline-Jump für die Primary-Pane (siehe Editor.scrollToLine). */
   primaryScrollToLine?: number | null;
+  /**
+   * Optional ref forwarded to the PRIMARY editor only — used by the live-voice
+   * pipeline in App.tsx to capture the cursor position at the start of a
+   * recording session (insertion-at-cursor instead of append-to-end). We
+   * deliberately don't expose the secondary pane: live-voice never targets it.
+   */
+  primaryEditorRef?: Ref<EditorHandle>;
 }
 
 type LoadState =
@@ -47,6 +55,7 @@ export function SplitView({
   onClosePane,
   onSecondaryOpen,
   primaryScrollToLine,
+  primaryEditorRef,
 }: SplitViewProps): JSX.Element {
   // Primary pane width (pixels). Default seeded once; resizable handle updates it.
   const [primaryWidth, setPrimaryWidth] = useResizableWidth({
@@ -155,6 +164,7 @@ export function SplitView({
     return (
       <div style={{ height: "100%", width: "100%", overflow: "hidden" }}>
         <Editor
+          ref={primaryEditorRef}
           noteId={primaryNoteId}
           initialBody={primaryBody}
           onChange={onPrimaryChange}
@@ -190,6 +200,7 @@ export function SplitView({
         <PaneHeader title={primaryNoteId} />
         <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
           <Editor
+            ref={primaryEditorRef}
             noteId={primaryNoteId}
             initialBody={primaryBody}
             onChange={onPrimaryChange}
