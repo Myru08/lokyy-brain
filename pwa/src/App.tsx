@@ -438,7 +438,30 @@ export function App() {
     setErrorMsg(null);
     try {
       const saved = await api.putNote(note.id, body);
-      savedBodyRef.current = saved.body;
+      // Adopt the SERVER-canonical body as the new diff baseline. The server
+      // normalises trailing newlines, reorders frontmatter keys (gray-matter
+      // round-trip), and stamps `updated`. Storing what we SENT here would
+      // leave `savedBodyRef` mismatched against any subsequent GET (focus-pull,
+      // 30s tab poll) → ServerConflictBanner fires falsely on a no-op save.
+      // Defensive fallback: if `saved.body` came back missing (e.g. an
+      // alternate endpoint that just returns ok), keep the sent body as the
+      // baseline — still better than leaving the previous baseline stale.
+      const serverBody =
+        typeof saved.body === "string" ? saved.body : body;
+      savedBodyRef.current = serverBody;
+      // Reconcile the local dirty cache to the server-normalised body ONLY if
+      // the user did not keep typing during the in-flight PUT. If `dirtyBody`
+      // still equals what we just sent, no new local edits arrived — we can
+      // safely advance it to match the server canonical form. If it advanced
+      // (user kept typing), leave `dirtyBody` alone; the next debounce fire
+      // will save the newer text and that response then updates the baseline
+      // again. Net invariant: `savedBodyRef` = last-known-server-canonical,
+      // `dirtyBody` = local-unsent-changes. This is the "don't clobber while
+      // typing" protection from the save-lifecycle overhaul; it must stay
+      // intact.
+      if (dirtyBody.current === body) {
+        dirtyBody.current = serverBody;
+      }
       // Do NOT call setActive({...saved}) here — that would change the body
       // reference and trigger the Editor's initialBody-watcher effect, which
       // could disrupt the cursor if the user kept typing during the request.
