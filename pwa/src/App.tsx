@@ -40,15 +40,64 @@ import { C, FONT } from "./theme.js";
  * IndexedDB-Offline-Layer, Whisper-Handler für Sprachnachrichten.
  */
 
-type SyncState = "idle" | "saving" | "saved" | "conflict" | "error";
+/**
+ * SyncState — lifecycle the save badge cycles through.
+ *
+ *   idle      — nothing in flight, nothing dirty, no recent activity
+ *   dirty     — local changes not yet sent (debounce timer running or paused)
+ *   saving    — PUT in flight to /api/notes/:id
+ *   saved     — server returned 2xx within the last 30s
+ *   synced    — git push confirmed (we treat any 2xx PUT as synced, since the
+ *               server runs add→commit→pull→push synchronously inside putNote)
+ *   conflict  — server returned 409 (rebase failed)
+ *   error     — last save threw (network / 5xx / etc.)
+ */
+type SyncState =
+  | "idle"
+  | "dirty"
+  | "saving"
+  | "saved"
+  | "synced"
+  | "conflict"
+  | "error";
 
 const SYNC_LABEL: Record<SyncState, { text: string; color: string }> = {
   idle: { text: "synchron", color: C.ok },
+  dirty: { text: "ungespeichert", color: C.gold },
   saving: { text: "speichert…", color: C.gold },
-  saved: { text: "gespeichert · gepusht", color: C.ok },
+  saved: { text: "gespeichert", color: C.ok },
+  synced: { text: "synct ✓", color: C.ok },
   conflict: { text: "konflikt — bitte neu laden", color: C.err },
   error: { text: "fehler beim speichern", color: C.err },
 };
+
+/**
+ * Save debounce. The old value was 1200ms which committed a git revision
+ * almost every typing pause — too granular for diff history and visibly
+ * sluggish on slow disks. 5s is the sweet spot: any natural pause beyond
+ * a sentence flushes, but mid-paragraph editing stays as a single revision.
+ * `beforeunload` + `visibilitychange` + tab-switch are the safety nets that
+ * make this debounce window safe.
+ */
+const SAVE_DEBOUNCE_MS = 5000;
+
+/**
+ * Property-edit debounce — kept shorter than typing debounce because each
+ * PropertiesPanel edit is intentional (clicked a button / typed a field).
+ */
+const PROPS_DEBOUNCE_MS = 1500;
+
+/**
+ * "Saved" sticks visible for this long, then collapses back to idle so the
+ * badge stops shouting after the user moved on.
+ */
+const SAVED_FADE_MS = 30_000;
+
+/**
+ * isTyping window — any keystroke marks the editor as typing for this long.
+ * Used to gate focus-pull refetches so we don't clobber the cursor mid-flow.
+ */
+const TYPING_QUIET_MS = 2000;
 
 /** Pfad-unsichere Zeichen raus, Leerzeichen bleiben (Obsidian-treu). */
 function safeName(s: string): string {
@@ -132,6 +181,58 @@ export function App() {
   const dirtyBody = useRef<string>("");
   const activeRef = useRef<Note | null>(null);
   activeRef.current = active;
+
+  // Save-lifecycle tracking — surfaced to NoteHeader for the badge UI.
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Conflict-banner payload: when a focus-pull discovers the server body
+  // differs and the local copy is dirty, we surface a non-modal banner with
+  // the fresh body cached here. Clobber is opt-in via "Server-Version laden".
+  const [pendingServerBody, setPendingServerBody] = useState<{
+    body: string;
+    note: Note;
+  } | null>(null);
+  // isTyping is held in a ref so the focus-pull listener can read it without
+  // re-binding the event every keystroke. A debounced timer flips it back.
+  const isTypingRef = useRef<boolean>(false);
+  const typingTimer = useRef<number | null>(null);
+  // syncRef mirrors the latest sync state for handlers that can't easily
+  // close over the rendered value (visibilitychange, beforeunload).
+  const syncRef = useRef<SyncState>("idle");
+  syncRef.current = sync;
+  // Track the active note's body at the time the save badge last said "saved"
+  // so we can detect dirty status by simple body !== savedBody comparison.
+  const savedBodyRef = useRef<string>("");
+
+  /**
+   * Tell the lifecycle that the editor body just changed locally. Sets the
+   * isTyping flag for TYPING_QUIET_MS and updates the dirty body cache.
+   * Splitting this from the save-debounce makes the two concerns testable
+   * in isolation.
+   */
+  function markTyping() {
+    isTypingRef.current = true;
+    if (typingTimer.current) window.clearTimeout(typingTimer.current);
+    typingTimer.current = window.setTimeout(() => {
+      isTypingRef.current = false;
+      typingTimer.current = null;
+    }, TYPING_QUIET_MS);
+  }
+
+  /**
+   * Auto-collapse the "saved" badge to "idle" after SAVED_FADE_MS so the
+   * UI doesn't permanently show a noisy state.
+   */
+  useEffect(() => {
+    if (sync !== "saved" && sync !== "synced") return;
+    const t = window.setTimeout(() => {
+      // Only collapse if nothing newer happened — guard via the same ref.
+      if (syncRef.current === "saved" || syncRef.current === "synced") {
+        setSync("idle");
+      }
+    }, SAVED_FADE_MS);
+    return () => window.clearTimeout(t);
+  }, [sync, lastSavedAt]);
 
   const refreshTree = () =>
     api.tree().then(setTree).catch(console.error);
@@ -220,10 +321,19 @@ export function App() {
   }, [tagFilter, backlinksRefresh]);
 
   async function openNoteById(id: string) {
+    // Flush any pending edit on the *current* active note before swapping.
+    // Without this, hopping notes via Tabs / Quick Switcher would silently
+    // drop in-flight typing for the previous note.
+    await flushNow();
     try {
       const note = await api.getNote(id);
       if (note) {
+        dirtyBody.current = note.body;
+        savedBodyRef.current = note.body;
         setActive(note);
+        setSync("idle");
+        setErrorMsg(null);
+        setPendingServerBody(null);
         setOpenTabs((prev) => {
           if (prev.some((t) => t.id === note.id)) return prev;
           return [...prev, { id: note.id, title: note.title || note.id }];
@@ -277,70 +387,191 @@ export function App() {
 
   /* ---------- Notiz laden / speichern ---------- */
 
-  async function flush() {
+  /**
+   * Push the in-memory dirty body to the server. No-op if the body matches
+   * what the server last returned (avoids zero-diff git commits). Surfaces
+   * the lifecycle: dirty → saving → synced → (idle after SAVED_FADE_MS).
+   *
+   * Returns the saved Note on success, null on no-op. Errors are surfaced
+   * via syncState + errorMsg; the function does NOT re-throw to keep the
+   * fire-and-forget call sites simple.
+   */
+  async function flush(): Promise<Note | null> {
     const note = activeRef.current;
-    if (!note) return;
+    if (!note) return null;
     const body = dirtyBody.current;
-    if (!body || body === note.body) {
-      setSync("idle");
-      return;
+    if (!body || body === savedBodyRef.current) {
+      if (syncRef.current === "dirty" || syncRef.current === "saving") {
+        setSync("idle");
+      }
+      return null;
     }
     setSync("saving");
+    setErrorMsg(null);
     try {
       const saved = await api.putNote(note.id, body);
-      setActive(saved);
-      setSync("saved");
+      savedBodyRef.current = saved.body;
+      // Do NOT call setActive({...saved}) here — that would change the body
+      // reference and trigger the Editor's initialBody-watcher effect, which
+      // could disrupt the cursor if the user kept typing during the request.
+      // Only patch the title if the server normalised it (filename change).
+      if (saved.title !== note.title) {
+        setActive((prev) =>
+          prev && prev.id === saved.id ? { ...prev, title: saved.title } : prev,
+        );
+      }
+      setLastSavedAt(Date.now());
+      // The server runs add → commit → pull --rebase → push synchronously
+      // inside putNote, so a 2xx response means the change is in Forgejo.
+      // Surface that as "synced" directly — the intermediate "saved"
+      // sub-state is reserved for the future case where push becomes async.
+      setSync("synced");
       setBacklinksRefresh((n) => n + 1);
+      return saved;
     } catch (e) {
-      setSync(e instanceof ApiError && e.isConflict ? "conflict" : "error");
+      if (e instanceof ApiError && e.isConflict) {
+        setSync("conflict");
+        setErrorMsg("Server hat eine neuere Version. Bitte neu laden.");
+      } else {
+        setSync("error");
+        setErrorMsg(e instanceof Error ? e.message : "Speichern fehlgeschlagen");
+      }
+      return null;
     }
   }
 
-  async function open(id: string) {
+  /**
+   * Cancel a pending debounced save and flush immediately. Used by every
+   * navigation-away path (note switch, tab close, visibility change).
+   */
+  async function flushNow(): Promise<Note | null> {
     if (saveTimer.current) {
       window.clearTimeout(saveTimer.current);
       saveTimer.current = null;
-      await flush();
     }
+    return flush();
+  }
+
+  async function open(id: string) {
+    await flushNow();
+    setPendingServerBody(null);
     try {
       const note = await api.getNote(id);
       dirtyBody.current = note.body;
+      savedBodyRef.current = note.body;
       setActive(note);
       setSync("idle");
+      setErrorMsg(null);
     } catch (e) {
       console.error(e);
       setSync("error");
+      setErrorMsg(e instanceof Error ? e.message : "Notiz konnte nicht geladen werden");
     }
   }
 
   function onChange(body: string) {
     dirtyBody.current = body;
-    setSync("saving");
+    markTyping();
+    // Skip "dirty" flip if a save is already in flight — that PUT will
+    // resolve to "synced" and the new debounce timer below will pick up
+    // any further edits.
+    if (syncRef.current !== "saving") {
+      setSync("dirty");
+    }
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null;
       void flush();
-    }, 1200);
+    }, SAVE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Manual save — fired by the NoteHeader button and Cmd/Ctrl+S. Bypasses
+   * the debounce window entirely.
+   */
+  async function manualSave() {
+    await flushNow();
   }
 
   /**
    * Wird vom PropertiesPanel aufgerufen, wenn Frontmatter-Felder editiert
    * wurden. Der Panel liefert den vollen neuen Markdown-Body inkl.
    * Frontmatter. Wir aktualisieren active.body (Editor re-syncen seine Doc
-   * via dem initialBody-Effect) und triggern das normale Save-Debounce.
+   * via dem initialBody-Effect) und triggern ein eigenes, kürzeres Debounce
+   * — Property-Edits sind absichtlich (kein Tippen), also schneller speichern.
    */
   function handleUpdateBody(newBody: string) {
     const cur = activeRef.current;
     if (!cur) return;
     dirtyBody.current = newBody;
     setActive({ ...cur, body: newBody });
-    setSync("saving");
+    if (syncRef.current !== "saving") setSync("dirty");
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null;
       void flush();
-    }, 600);
+    }, PROPS_DEBOUNCE_MS);
   }
+
+  // Cmd/Ctrl+S → manual save. Registered after manualSave is defined so the
+  // closure captures the right reference. We don't preventDefault when no
+  // note is open so the browser's default save behavior is unaffected.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+        if (!activeRef.current) return;
+        e.preventDefault();
+        void manualSave();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Safety auto-save on tab close / visibility change / page hide. Together
+  // these cover: closing the tab (beforeunload), switching to another tab
+  // or app (visibilitychange), iOS Safari freeze (pagehide). The fetch is
+  // fire-and-forget — the browser typically holds the document alive long
+  // enough for the PUT to complete, and the beforeunload prompt gives the
+  // user a chance to cancel and wait if needed.
+  useEffect(() => {
+    function isDirty(): boolean {
+      const cur = activeRef.current;
+      if (!cur) return false;
+      return (
+        dirtyBody.current !== "" &&
+        dirtyBody.current !== savedBodyRef.current
+      );
+    }
+
+    function onBeforeUnload(e: BeforeUnloadEvent) {
+      if (!isDirty()) return;
+      void flushNow();
+      e.preventDefault();
+      e.returnValue = "";
+    }
+
+    function onVisibility() {
+      if (document.visibilityState === "hidden" && isDirty()) {
+        void flushNow();
+      }
+    }
+
+    function onPageHide() {
+      if (isDirty()) void flushNow();
+    }
+
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function onOpenLink(target: string) {
     const hit = flattenNotes(tree).find(
@@ -360,14 +591,11 @@ export function App() {
    * would skip the body-diff path the editor relies on.
    */
   async function handleForget(targetNoteId: string) {
-    if (saveTimer.current) {
-      window.clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-      await flush();
-    }
+    await flushNow();
     try {
       const updated = await api.forgetNote(targetNoteId);
       dirtyBody.current = updated.body;
+      savedBodyRef.current = updated.body;
       setActive(updated);
       setBacklinksRefresh((n) => n + 1);
     } catch (err) {
@@ -376,14 +604,11 @@ export function App() {
   }
 
   async function handleUnforget(targetNoteId: string) {
-    if (saveTimer.current) {
-      window.clearTimeout(saveTimer.current);
-      saveTimer.current = null;
-      await flush();
-    }
+    await flushNow();
     try {
       const updated = await api.unforgetNote(targetNoteId);
       dirtyBody.current = updated.body;
+      savedBodyRef.current = updated.body;
       setActive(updated);
       setBacklinksRefresh((n) => n + 1);
     } catch (err) {
@@ -404,18 +629,41 @@ export function App() {
     setSecondaryNoteId(hit ? hit.id : target);
   }
 
-  // Fenster wieder aktiv -> offene Notiz neu laden (Server pullt)
+  // Fenster wieder aktiv -> offene Notiz neu laden (Server pullt).
+  //
+  // Three guards prevent the old "refetch clobbers the editor" bug:
+  //   (a) skip entirely if a debounced save is pending — let it commit first
+  //   (b) skip if the user typed within the last 2s (isTypingRef) — focus
+  //       events sometimes fire mid-flow on some OSes and we don't want a
+  //       harmless app-switch to nuke the cursor
+  //   (c) if the editor has unsaved local changes AND the server body
+  //       differs, surface a non-modal banner instead of clobbering; the
+  //       user can compare and decide. Without this, accidental dual-tab
+  //       editing would silently lose data.
   useEffect(() => {
     function onFocus() {
       const note = activeRef.current;
       if (!note || saveTimer.current) return;
+      if (isTypingRef.current) return;
       api
         .getNote(note.id)
         .then((fresh) => {
-          if (fresh.body !== dirtyBody.current) {
-            dirtyBody.current = fresh.body;
-            setActive(fresh);
+          if (fresh.body === dirtyBody.current) return;
+          const localDirty =
+            dirtyBody.current !== "" &&
+            dirtyBody.current !== savedBodyRef.current;
+          if (localDirty) {
+            // Stash for the banner — let the user choose. Don't touch
+            // dirtyBody / setActive.
+            setPendingServerBody({ body: fresh.body, note: fresh });
+            return;
           }
+          // Clean local state — safe to adopt the server version directly.
+          // Editor's body-watcher effect will reconcile while preserving the
+          // current selection/scroll (see Editor.tsx).
+          dirtyBody.current = fresh.body;
+          savedBodyRef.current = fresh.body;
+          setActive(fresh);
         })
         .catch(() => {});
       void refreshTree();
@@ -423,6 +671,27 @@ export function App() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  /**
+   * Apply the server's version stashed in `pendingServerBody` — only fired
+   * from the conflict banner's "Server-Version laden" button. The local
+   * dirty body is discarded.
+   */
+  function acceptServerVersion() {
+    if (!pendingServerBody) return;
+    const { note: fresh } = pendingServerBody;
+    dirtyBody.current = fresh.body;
+    savedBodyRef.current = fresh.body;
+    setActive(fresh);
+    setSync("idle");
+    setErrorMsg(null);
+    setPendingServerBody(null);
+  }
+
+  /** Dismiss the banner and keep editing the local version. */
+  function keepLocalVersion() {
+    setPendingServerBody(null);
+  }
 
   /* ---------- Struktur-Operationen (Datei-Baum) ---------- */
 
@@ -500,6 +769,13 @@ export function App() {
       ) {
         setActive(null);
       }
+      // Tabs der gelöschten Notiz / aller Kinder-Notizen eines Ordners
+      // ebenfalls schließen — sonst zeigt der Tab eine 404-Phantomakte.
+      setOpenTabs((prev) =>
+        prev.filter(
+          (t) => t.id !== node.path && !t.id.startsWith(node.path + "/"),
+        ),
+      );
       await refreshTree();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Löschen fehlgeschlagen");
@@ -906,7 +1182,21 @@ export function App() {
                   body={active.body}
                   onForget={(id) => void handleForget(id)}
                   onUnforget={(id) => void handleUnforget(id)}
+                  syncState={sync}
+                  lastSavedAt={lastSavedAt}
+                  errorMsg={errorMsg}
+                  onManualSave={() => void manualSave()}
+                  onDismissError={() => {
+                    setErrorMsg(null);
+                    if (sync === "error") setSync("dirty");
+                  }}
                 />
+                {pendingServerBody && (
+                  <ServerConflictBanner
+                    onAcceptServer={acceptServerVersion}
+                    onKeepLocal={keepLocalVersion}
+                  />
+                )}
                 <PropertiesPanel
                   body={active.body}
                   onUpdateBody={handleUpdateBody}
@@ -1053,6 +1343,76 @@ export function App() {
         }}
         onCountChange={setPendingCount}
       />
+    </div>
+  );
+}
+
+/**
+ * Non-modal banner that appears between NoteHeader and PropertiesPanel
+ * when a focus-pull discovered the server has a newer body but the editor
+ * has unsaved local changes. The user must explicitly choose: keep editing
+ * the local version (banner dismisses) or discard local and load the
+ * server version. We deliberately don't auto-resolve — both branches lose
+ * data, and the user is the only one who knows which loss is acceptable.
+ */
+function ServerConflictBanner({
+  onAcceptServer,
+  onKeepLocal,
+}: {
+  onAcceptServer: () => void;
+  onKeepLocal: () => void;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "8px 12px",
+        background: "rgba(255, 169, 77, 0.12)",
+        borderBottom: `1px solid ${C.gold}`,
+        fontSize: 12,
+        fontFamily: FONT.ui,
+        color: C.text,
+        flexShrink: 0,
+      }}
+      role="alert"
+    >
+      <span style={{ flex: 1 }}>
+        ⚠ Server-Version unterscheidet sich von deiner lokalen Bearbeitung.
+      </span>
+      <button
+        type="button"
+        onClick={onAcceptServer}
+        style={{
+          background: C.elevated,
+          border: `1px solid ${C.border}`,
+          borderRadius: 5,
+          padding: "4px 10px",
+          color: C.text,
+          fontSize: 12,
+          cursor: "pointer",
+          fontFamily: FONT.ui,
+        }}
+      >
+        Server-Version laden
+      </button>
+      <button
+        type="button"
+        onClick={onKeepLocal}
+        style={{
+          background: "transparent",
+          border: `1px solid ${C.border}`,
+          borderRadius: 5,
+          padding: "4px 10px",
+          color: C.textDim,
+          fontSize: 12,
+          cursor: "pointer",
+          fontFamily: FONT.ui,
+        }}
+      >
+        Lokal weiterbearbeiten
+      </button>
     </div>
   );
 }

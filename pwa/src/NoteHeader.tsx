@@ -1,6 +1,21 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { Loader2, Save, RefreshCw } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { useIsMobile } from "./responsive.js";
+
+/**
+ * Save-lifecycle states. Mirrors `App.tsx#SyncState` — kept loosely
+ * coupled (the badge is purely presentational; it never decides the next
+ * state, only renders the one App.tsx hands it).
+ */
+export type SaveStatus =
+  | "idle"
+  | "dirty"
+  | "saving"
+  | "saved"
+  | "synced"
+  | "conflict"
+  | "error";
 
 /**
  * NoteHeader — compact header strip above the editor pane.
@@ -44,6 +59,24 @@ export interface NoteHeaderProps {
    */
   onForget?: (noteId: string) => void;
   onUnforget?: (noteId: string) => void;
+  /**
+   * Save-lifecycle props (Story: editor save-lifecycle overhaul).
+   * If omitted, the badge + manual-save button are hidden — keeps the
+   * header backwards-compatible with any caller that hasn't wired the
+   * new state yet.
+   */
+  syncState?: SaveStatus;
+  /** Epoch-ms of the last successful save — drives the "vor Xs" label. */
+  lastSavedAt?: number | null;
+  /** Last error message (any state, surfaced under the badge). */
+  errorMsg?: string | null;
+  /** Manual save handler — fires from the disk-icon button. */
+  onManualSave?: () => void;
+  /**
+   * Called when the user clicks "Erneut versuchen" on an error state.
+   * App.tsx clears errorMsg and (optionally) re-queues a save.
+   */
+  onDismissError?: () => void;
 }
 
 /** Strip a top-level YAML scalar value. No nested mapping support needed. */
@@ -286,12 +319,178 @@ const FORGOTTEN_SUBTITLE_STYLE: CSSProperties = {
   marginLeft: 8,
 };
 
+/**
+ * Manual-save button — disk icon. Distinct from the AI-Prompt pill so
+ * users don't confuse "copy prompt for AI" with "persist my edits NOW".
+ * Disabled in "saving" state to avoid double-submit; otherwise always
+ * clickable (even in "synced" state it harmlessly no-ops in App.tsx).
+ */
+const SAVE_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 32,
+  height: 32,
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 5,
+  cursor: "pointer",
+  color: C.textDim,
+  padding: 0,
+};
+
+const SAVE_BUTTON_STYLE_MOBILE: CSSProperties = {
+  ...SAVE_BUTTON_STYLE,
+  width: 40,
+  height: 40,
+};
+
+/**
+ * Compact save-status badge. The colour-dot encodes the state; the label
+ * spells it out for accessibility. Pulses while dirty (CSS keyframe
+ * defined inline because the project doesn't use a CSS-in-JS lib that
+ * supports keyframes — a single style tag is the least-intrusive option).
+ *
+ * The "vor Xs / vor Xm" label is computed from the parent's
+ * `lastSavedAt`; it ticks itself via a 5s setInterval while a value is
+ * present so the user sees freshness without manually re-rendering App.
+ */
+function SaveBadge({
+  status,
+  lastSavedAt,
+}: {
+  status: SaveStatus;
+  lastSavedAt: number | null | undefined;
+}) {
+  // Tick every 10s to refresh the "vor Xs" label without burdening App.tsx
+  // with a render every second. 10s precision matches what the human
+  // reads off the badge ("vor 12s", "vor 22s") without being noisy.
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!lastSavedAt) return;
+    const iv = window.setInterval(() => force((n) => n + 1), 10_000);
+    return () => window.clearInterval(iv);
+  }, [lastSavedAt]);
+
+  const meta = badgeMeta(status, lastSavedAt);
+  if (!meta) return null;
+
+  return (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        fontSize: 11,
+        fontFamily: FONT.mono,
+        color: meta.color,
+        whiteSpace: "nowrap",
+      }}
+      title={meta.tooltip}
+      aria-live="polite"
+    >
+      {status === "saving" ? (
+        <Loader2
+          size={12}
+          style={{
+            animation: "lokyy-spin 0.9s linear infinite",
+            color: meta.color,
+          }}
+        />
+      ) : (
+        <span
+          aria-hidden="true"
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: "50%",
+            background: meta.color,
+            display: "inline-block",
+            animation:
+              status === "dirty" ? "lokyy-pulse 1.4s ease-in-out infinite" : undefined,
+          }}
+        />
+      )}
+      {meta.label}
+    </span>
+  );
+}
+
+/**
+ * Map a SaveStatus + timestamp to a visible badge spec. Returns null when
+ * the badge should be hidden entirely (e.g. truly idle with no recent
+ * save). The "synced" + "saved" cases include the freshness suffix.
+ */
+function badgeMeta(
+  status: SaveStatus,
+  lastSavedAt: number | null | undefined,
+): { color: string; label: string; tooltip: string } | null {
+  switch (status) {
+    case "dirty":
+      return {
+        color: C.gold,
+        label: "ungespeichert",
+        tooltip: "Lokale Änderungen sind noch nicht gespeichert",
+      };
+    case "saving":
+      return {
+        color: C.gold,
+        label: "speichert…",
+        tooltip: "Server-Save läuft",
+      };
+    case "saved":
+      return {
+        color: C.ok,
+        label: `gespeichert${formatAgo(lastSavedAt)}`,
+        tooltip: "Lokal beim Server gespeichert",
+      };
+    case "synced":
+      return {
+        color: C.ok,
+        label: `synct ✓${formatAgo(lastSavedAt)}`,
+        tooltip: "Auf Forgejo gepusht",
+      };
+    case "conflict":
+      return {
+        color: C.err,
+        label: "konflikt",
+        tooltip: "Server hat eine neuere Version — bitte neu laden",
+      };
+    case "error":
+      return {
+        color: C.err,
+        label: "fehler",
+        tooltip: "Letzter Speicher-Versuch fehlgeschlagen",
+      };
+    case "idle":
+    default:
+      // Hide the badge entirely when there's nothing interesting to say.
+      // Reduces noise during quiet reading sessions.
+      return null;
+  }
+}
+
+/** "1m23s" → " · vor 1m" or " · vor 23s". Empty string if no timestamp. */
+function formatAgo(ts: number | null | undefined): string {
+  if (!ts) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (secs < 5) return " · jetzt";
+  if (secs < 60) return ` · vor ${secs}s`;
+  const mins = Math.floor(secs / 60);
+  return ` · vor ${mins}m`;
+}
+
 export function NoteHeader({
   noteId,
   title,
   body,
   onForget,
   onUnforget,
+  syncState,
+  lastSavedAt,
+  errorMsg,
+  onManualSave,
+  onDismissError,
 }: NoteHeaderProps) {
   const ulid = useMemo(() => extractFrontmatterUlid(body), [body]);
   const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
@@ -338,39 +537,101 @@ export function NoteHeader({
 
   // Notes without a ULID (legacy / hand-written w/o frontmatter) still
   // render the title — they just don't get the copy affordances.
+  // Manual-save button + badge. Rendered as a small group in both the
+  // no-ULID and full branches so legacy notes also get save feedback.
+  const saveControls =
+    syncState || onManualSave ? (
+      <>
+        {syncState && <SaveBadge status={syncState} lastSavedAt={lastSavedAt} />}
+        {errorMsg && (
+          <button
+            type="button"
+            onClick={() => onDismissError?.()}
+            title={errorMsg}
+            aria-label={`Save error: ${errorMsg}. Click to retry.`}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              background: "transparent",
+              border: `1px solid ${C.err}`,
+              borderRadius: 5,
+              padding: "2px 8px",
+              color: C.err,
+              fontSize: 11,
+              fontFamily: FONT.ui,
+              cursor: "pointer",
+            }}
+          >
+            <RefreshCw size={12} />
+            Erneut versuchen
+          </button>
+        )}
+        {onManualSave && (
+          <button
+            type="button"
+            onClick={onManualSave}
+            disabled={syncState === "saving"}
+            style={{
+              ...(isMobile ? SAVE_BUTTON_STYLE_MOBILE : SAVE_BUTTON_STYLE),
+              opacity: syncState === "saving" ? 0.45 : 1,
+              cursor: syncState === "saving" ? "default" : "pointer",
+            }}
+            title="Jetzt speichern (Cmd/Ctrl+S)"
+            aria-label="Save now"
+          >
+            {syncState === "saving" ? (
+              <Loader2
+                size={16}
+                style={{ animation: "lokyy-spin 0.9s linear infinite" }}
+              />
+            ) : (
+              <Save size={16} />
+            )}
+          </button>
+        )}
+      </>
+    ) : null;
+
   if (!ulid) {
     return (
-      <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
-        <span
-          style={{
-            ...TITLE_STYLE,
-            opacity: forgotten ? 0.6 : 1,
-          }}
-          title={title}
-        >
-          {title || noteId}
-        </span>
-        {forgotten && (
-          <span style={FORGOTTEN_SUBTITLE_STYLE}>
-            Forgotten — not visible in search
+      <>
+        <BadgeAnimationStyles />
+        <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
+          <span
+            style={{
+              ...TITLE_STYLE,
+              opacity: forgotten ? 0.6 : 1,
+            }}
+            title={title}
+          >
+            {title || noteId}
           </span>
-        )}
-        <span
-          style={{
-            fontSize: 10,
-            color: C.textFaint,
-            fontFamily: FONT.mono,
-          }}
-          title="Note has no ULID in frontmatter"
-        >
-          (no ULID)
-        </span>
-      </div>
+          {forgotten && (
+            <span style={FORGOTTEN_SUBTITLE_STYLE}>
+              Forgotten — not visible in search
+            </span>
+          )}
+          {saveControls}
+          <span
+            style={{
+              fontSize: 10,
+              color: C.textFaint,
+              fontFamily: FONT.mono,
+            }}
+            title="Note has no ULID in frontmatter"
+          >
+            (no ULID)
+          </span>
+        </div>
+      </>
     );
   }
 
   return (
-    <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
+    <>
+      <BadgeAnimationStyles />
+      <div style={forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE}>
       <span
         style={{
           ...TITLE_STYLE,
@@ -386,6 +647,7 @@ export function NoteHeader({
         </span>
       )}
       {toast && <span style={TOAST_STYLE}>{toast}</span>}
+      {saveControls}
       <button
         type="button"
         onClick={() => void handleCopyPrompt()}
@@ -445,6 +707,29 @@ export function NoteHeader({
           <span aria-hidden="true">📎</span>
         </button>
       )}
-    </div>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Inject the spin + pulse keyframes once. The project doesn't pull in a
+ * CSS-in-JS lib that supports `@keyframes`, so we drop them through a
+ * single <style> tag. Multiple instances are fine because we use the
+ * `data-lokyy-badge-anim` attribute so React de-dupes within the tree;
+ * worst-case duplicate tags resolve to the same keyframe definitions.
+ */
+function BadgeAnimationStyles() {
+  return (
+    <style data-lokyy-badge-anim>{`
+      @keyframes lokyy-spin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
+      }
+      @keyframes lokyy-pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.35; }
+      }
+    `}</style>
   );
 }
