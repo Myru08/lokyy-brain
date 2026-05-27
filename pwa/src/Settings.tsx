@@ -129,17 +129,75 @@ interface RuntimeInfo {
     databaseHost: string;
     ollamaHost: string;
     mcpPublicUrl: string;
+    /**
+     * Optional: present once the runtime endpoint exposes the self-hosted
+     * Whisper base-URL. Used by the Voice tab to grey out the
+     * "Whisper Self-Hosted" mode option until the operator deploys a
+     * whisper-asr-webservice instance and wires `WHISPER_BASE_URL`.
+     */
+    whisperBaseUrl?: string;
   };
 }
 
-/** Six top-level tabs. Order matches the visible tab bar. */
-type TabKey = "system" | "vault" | "ai" | "mcp" | "skills" | "wartung";
+/**
+ * Voice-capture defaults, served by the backend at
+ * `GET /api/voice/settings`. Persists across recorder sessions so the
+ * operator doesn't have to re-pick mode/language/folder every time.
+ *
+ * `mode`        — which transcription path is used when the recorder
+ *                  starts. `live` = SpeechRecognition in the browser
+ *                  (free, lower quality), `whisper-cloud` = OpenAI's
+ *                  Whisper-1 ($0.006/min, best quality), and
+ *                  `whisper-selfhosted` = a self-hosted
+ *                  whisper-asr-webservice instance (free, private).
+ * `folder`      — vault-relative folder where new voice-notes are written
+ *                  (default `30_captures/voice`).
+ * `titlePattern`— Mustache-light template; supported tokens:
+ *                  `{YYYY} {MM} {DD} {HH} {mm}` (UTC),
+ *                  `{slug}` (kebab-case of the first 5 words),
+ *                  `{transcript-first-words}` (first 80 chars).
+ * `language`    — ISO 639-1 hint passed to Whisper; `null` = auto-detect.
+ */
+type VoiceMode = "live" | "whisper-cloud" | "whisper-selfhosted";
+interface VoiceSettings {
+  mode: VoiceMode;
+  folder: string;
+  titlePattern: string;
+  language: string | null;
+}
+
+const VOICE_DEFAULTS: VoiceSettings = {
+  mode: "live",
+  folder: "30_captures/voice",
+  titlePattern: "Voice-Notiz {YYYY-MM-DD HH:mm}",
+  language: null,
+};
+
+const VOICE_LANGUAGES: { value: string | null; label: string }[] = [
+  { value: null, label: "Auto (Whisper erkennt)" },
+  { value: "de", label: "Deutsch (de)" },
+  { value: "en", label: "English (en)" },
+  { value: "fr", label: "Français (fr)" },
+  { value: "es", label: "Español (es)" },
+  { value: "it", label: "Italiano (it)" },
+];
+
+/** Seven top-level tabs. Order matches the visible tab bar. */
+type TabKey =
+  | "system"
+  | "vault"
+  | "ai"
+  | "mcp"
+  | "voice"
+  | "skills"
+  | "wartung";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "system", label: "System" },
   { key: "vault", label: "Vault" },
   { key: "ai", label: "AI Provider" },
   { key: "mcp", label: "MCP" },
+  { key: "voice", label: "Voice" },
   { key: "skills", label: "Skills" },
   { key: "wartung", label: "Wartung" },
 ];
@@ -213,6 +271,23 @@ export function Settings({ onClose }: { onClose: () => void }) {
     "idle" | "saving" | "ok" | "fail"
   >("idle");
   const [integrationsSaveError, setIntegrationsSaveError] = useState<string>();
+
+  // Voice-capture defaults (tab: voice). Loaded from `/api/voice/settings`
+  // on tab mount; PUTs back partial bodies on save.
+  //   - `voice` is null while loading and falls back to VOICE_DEFAULTS for
+  //     the form state so we never render uncontrolled inputs.
+  //   - `voiceLoaded` is the last-known-server snapshot used to compute
+  //     the "dirty" flag that drives the Save button's disabled state.
+  //   - `voiceCustomLang` lets the operator type an ISO 639-1 code that
+  //     isn't in the dropdown (e.g. `pt`, `ja`). When the dropdown is on
+  //     "custom" we read from this field instead.
+  const [voice, setVoice] = useState<VoiceSettings>(VOICE_DEFAULTS);
+  const [voiceLoaded, setVoiceLoaded] = useState<VoiceSettings | null>(null);
+  const [voiceCustomLang, setVoiceCustomLang] = useState("");
+  const [voiceSaveState, setVoiceSaveState] = useState<
+    "idle" | "saving" | "ok" | "fail"
+  >("idle");
+  const [voiceSaveError, setVoiceSaveError] = useState<string>();
 
   // Vault maintenance — ULID-Backfill (Phase D Wave D1 / Story 1)
   const [backfillStatus, setBackfillStatus] = useState<{
@@ -357,6 +432,73 @@ export function Settings({ onClose }: { onClose: () => void }) {
     }
   }
 
+  /**
+   * Fetch the persisted voice defaults. 404 / network errors leave the
+   * form on `VOICE_DEFAULTS` so the operator can still type and save.
+   */
+  async function loadVoiceSettings() {
+    try {
+      const res = await fetch("/api/voice/settings", {
+        credentials: "include",
+      });
+      if (!res.ok) {
+        console.debug("[Settings] /api/voice/settings →", res.status);
+        return;
+      }
+      const data = (await res.json()) as Partial<VoiceSettings>;
+      const merged: VoiceSettings = {
+        mode: (data.mode as VoiceMode) ?? VOICE_DEFAULTS.mode,
+        folder: data.folder ?? VOICE_DEFAULTS.folder,
+        titlePattern: data.titlePattern ?? VOICE_DEFAULTS.titlePattern,
+        language: data.language ?? null,
+      };
+      setVoice(merged);
+      setVoiceLoaded(merged);
+      // If the persisted language isn't in the dropdown, surface it via
+      // the custom-language input so the user sees it without losing it.
+      if (
+        merged.language &&
+        !VOICE_LANGUAGES.some((l) => l.value === merged.language)
+      ) {
+        setVoiceCustomLang(merged.language);
+      } else {
+        setVoiceCustomLang("");
+      }
+    } catch (err) {
+      console.debug("[Settings] /api/voice/settings failed", err);
+    }
+  }
+
+  async function saveVoiceSettings() {
+    setVoiceSaveState("saving");
+    setVoiceSaveError(undefined);
+    try {
+      const res = await fetch("/api/voice/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(voice),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setVoiceSaveState("fail");
+        setVoiceSaveError(
+          (data as { message?: string; error?: string }).message ??
+            (data as { error?: string }).error ??
+            "Fehler",
+        );
+        return;
+      }
+      setVoiceSaveState("ok");
+      setVoiceLoaded(voice);
+      // Auto-clear the success flash after a few seconds.
+      setTimeout(() => setVoiceSaveState("idle"), 2500);
+    } catch (err) {
+      setVoiceSaveState("fail");
+      setVoiceSaveError(err instanceof Error ? err.message : "Fehler");
+    }
+  }
+
   useEffect(() => {
     void load();
     void loadForgejoProbe();
@@ -448,6 +590,16 @@ export function Settings({ onClose }: { onClose: () => void }) {
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runtime?.env?.mcpPublicUrl]);
+
+  // Lazy-load voice defaults: first time the operator switches to the
+  // Voice tab we GET /api/voice/settings. Re-fetching on every tab swap
+  // would clobber unsaved edits, so we gate on `voiceLoaded === null`.
+  useEffect(() => {
+    if (tab === "voice" && voiceLoaded === null) {
+      void loadVoiceSettings();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   async function changeVaultUrl() {
     // Vault-ID can come from either payload — runtime is preferred but the
@@ -1174,6 +1326,23 @@ export function Settings({ onClose }: { onClose: () => void }) {
             />
           )}
         </Section>
+      )}
+
+      {/* ───── Tab: Voice ───── */}
+      {tab === "voice" && (
+        <VoiceTab
+          voice={voice}
+          setVoice={setVoice}
+          voiceLoaded={voiceLoaded}
+          customLang={voiceCustomLang}
+          setCustomLang={setVoiceCustomLang}
+          selfHostedConfigured={Boolean(
+            runtime?.env?.whisperBaseUrl?.trim(),
+          )}
+          saveState={voiceSaveState}
+          saveError={voiceSaveError}
+          onSave={() => void saveVoiceSettings()}
+        />
       )}
 
       {/* ───── Tab: Skills ───── */}
@@ -2096,6 +2265,435 @@ function KV({ label, value }: { label: string; value: string }) {
         {value}
       </code>
     </div>
+  );
+}
+
+/**
+ * Pure renderer for voice-note title patterns. Supports two token
+ * conventions side-by-side:
+ *
+ *   - Composite literal: `{YYYY-MM-DD HH:mm}` → "2026-05-27 14:32"
+ *   - Atomic tokens:     `{YYYY} {MM} {DD} {HH} {mm}`
+ *   - Slug:              `{slug}` → kebab-case of first 5 words of transcript
+ *   - First-words:       `{transcript-first-words}` → first 80 chars
+ *
+ * All time tokens use UTC so a vault synced across timezones doesn't
+ * produce duplicate filenames. The `now` arg is injectable so the preview
+ * stays stable during a single render pass.
+ */
+function renderTitlePattern(
+  pattern: string,
+  transcript: string,
+  now: Date,
+): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const Y = String(now.getUTCFullYear());
+  const M = pad(now.getUTCMonth() + 1);
+  const D = pad(now.getUTCDate());
+  const HH = pad(now.getUTCHours());
+  const mm = pad(now.getUTCMinutes());
+  const words = transcript.trim().split(/\s+/).filter(Boolean);
+  const slug =
+    words
+      .slice(0, 5)
+      .join("-")
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "") || "voice-note";
+  const firstWords = transcript.trim().slice(0, 80);
+  return pattern
+    .replace(/\{YYYY-MM-DD HH:mm\}/g, `${Y}-${M}-${D} ${HH}:${mm}`)
+    .replace(/\{YYYY-MM-DD\}/g, `${Y}-${M}-${D}`)
+    .replace(/\{HH:mm\}/g, `${HH}:${mm}`)
+    .replace(/\{YYYY\}/g, Y)
+    .replace(/\{MM\}/g, M)
+    .replace(/\{DD\}/g, D)
+    .replace(/\{HH\}/g, HH)
+    .replace(/\{mm\}/g, mm)
+    .replace(/\{slug\}/g, slug)
+    .replace(/\{transcript-first-words\}/g, firstWords);
+}
+
+/**
+ * Compares two VoiceSettings shapes by value. Used to drive the Save
+ * button's `disabled` state — we only PUT when something actually
+ * changed. Cheaper than JSON.stringify and avoids key-order pitfalls.
+ */
+function voiceEq(a: VoiceSettings, b: VoiceSettings): boolean {
+  return (
+    a.mode === b.mode &&
+    a.folder === b.folder &&
+    a.titlePattern === b.titlePattern &&
+    (a.language ?? null) === (b.language ?? null)
+  );
+}
+
+/**
+ * Voice tab content. Pure presentation — the parent owns all state and
+ * passes mutation callbacks down. `selfHostedConfigured = false` greys
+ * out the "Whisper Self-Hosted" radio with a hint pointing at the
+ * deploy doc.
+ */
+function VoiceTab({
+  voice,
+  setVoice,
+  voiceLoaded,
+  customLang,
+  setCustomLang,
+  selfHostedConfigured,
+  saveState,
+  saveError,
+  onSave,
+}: {
+  voice: VoiceSettings;
+  setVoice: (v: VoiceSettings) => void;
+  voiceLoaded: VoiceSettings | null;
+  customLang: string;
+  setCustomLang: (s: string) => void;
+  selfHostedConfigured: boolean;
+  saveState: "idle" | "saving" | "ok" | "fail";
+  saveError: string | undefined;
+  onSave: () => void;
+}) {
+  // Stable "now" for the title-preview so it doesn't flicker on every
+  // keystroke. Recomputed on each render — which is fine; the user only
+  // perceives the seconds-resolution Mustache tokens (HH:mm) anyway.
+  const now = new Date();
+  const previewTranscript =
+    "Beispieltranskript für die Vorschau dieser Notiz";
+  const renderedTitle = renderTitlePattern(
+    voice.titlePattern || "",
+    previewTranscript,
+    now,
+  );
+
+  const dirty = voiceLoaded === null ? false : !voiceEq(voice, voiceLoaded);
+
+  // Dropdown options + a synthetic "custom" entry. We map `null`
+  // (auto-detect) to the sentinel string "__auto__" because <select>
+  // values must be strings; same trick for the custom-ISO branch.
+  const selectedLangKey =
+    voice.language === null
+      ? "__auto__"
+      : VOICE_LANGUAGES.some((l) => l.value === voice.language)
+        ? voice.language
+        : "__custom__";
+
+  function handleLanguageChange(key: string) {
+    if (key === "__auto__") {
+      setVoice({ ...voice, language: null });
+      return;
+    }
+    if (key === "__custom__") {
+      setVoice({ ...voice, language: customLang.trim() || null });
+      return;
+    }
+    setVoice({ ...voice, language: key });
+  }
+
+  const modes: {
+    value: VoiceMode;
+    icon: string;
+    label: string;
+    sub: string;
+    disabled?: boolean;
+    disabledHint?: string;
+  }[] = [
+    {
+      value: "live",
+      icon: "🎙",
+      label: "Live (Browser, kostenlos)",
+      sub: "Web-SpeechRecognition. Audio bleibt im Browser, kein API-Call. Qualität schwankt nach Browser/Sprache, am besten in Chrome auf Englisch oder Deutsch.",
+    },
+    {
+      value: "whisper-cloud",
+      icon: "☁️",
+      label: "Whisper Cloud (OpenAI)",
+      sub: "Beste Qualität & Mehrsprachigkeit. $0.006/min. Audio wird zu OpenAI gesendet — nicht für vertrauliche Inhalte.",
+    },
+    {
+      value: "whisper-selfhosted",
+      icon: "🧠",
+      label: "Whisper Self-Hosted",
+      sub: "Eigener whisper-asr-webservice-Container. Kostenlos, privat, lokale Latenz. Erfordert WHISPER_BASE_URL.",
+      disabled: !selfHostedConfigured,
+      disabledHint:
+        "WHISPER_BASE_URL nicht gesetzt — folge DEPLOY-LEAN.md Phase 1.3 für Setup.",
+    },
+  ];
+
+  return (
+    <>
+      <Section title="Voice-Capture — Standardwerte">
+        <p
+          style={{
+            color: C.textDim,
+            fontSize: 13,
+            margin: "0 0 16px 0",
+            lineHeight: 1.5,
+          }}
+        >
+          Diese Defaults werden bei jedem neuen Voice-Recorder-Start
+          übernommen. Pro Aufnahme kannst du sie weiterhin im Recorder
+          überschreiben.
+        </p>
+
+        {/* ── Modus ───────────────────────────────────────────── */}
+        <div style={{ marginBottom: 22 }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: C.textDim,
+              marginBottom: 8,
+              fontFamily: FONT.mono,
+              letterSpacing: 0.5,
+            }}
+          >
+            DEFAULT-MODUS
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {modes.map((m) => {
+              const checked = voice.mode === m.value;
+              const isDisabled = Boolean(m.disabled);
+              return (
+                <label
+                  key={m.value}
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 12,
+                    padding: 12,
+                    background: C.elevated,
+                    border: `1px solid ${checked ? C.accent : C.border}`,
+                    borderRadius: 6,
+                    cursor: isDisabled ? "not-allowed" : "pointer",
+                    opacity: isDisabled ? 0.5 : 1,
+                  }}
+                >
+                  <input
+                    type="radio"
+                    name="voice-mode"
+                    value={m.value}
+                    checked={checked}
+                    disabled={isDisabled}
+                    onChange={() =>
+                      !isDisabled && setVoice({ ...voice, mode: m.value })
+                    }
+                    style={{ marginTop: 3 }}
+                  />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        color: C.text,
+                        marginBottom: 2,
+                      }}
+                    >
+                      <span aria-hidden style={{ marginRight: 6 }}>
+                        {m.icon}
+                      </span>
+                      {m.label}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: C.textFaint,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      {m.sub}
+                    </div>
+                    {isDisabled && m.disabledHint && (
+                      <div
+                        style={{
+                          marginTop: 6,
+                          fontSize: 11,
+                          color: C.gold,
+                          fontFamily: FONT.mono,
+                        }}
+                      >
+                        ⚠ {m.disabledHint}
+                      </div>
+                    )}
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── Folder ──────────────────────────────────────────── */}
+        <div style={{ marginBottom: 18 }}>
+          <Field
+            label="Standard-Ordner"
+            value={voice.folder}
+            onChange={(v) => setVoice({ ...voice, folder: v })}
+          />
+          <div
+            style={{
+              fontSize: 11,
+              color: C.textFaint,
+              marginTop: -6,
+              marginBottom: 8,
+            }}
+          >
+            Muss mit einem Vault-Root beginnen (z.B.{" "}
+            <code style={{ color: C.textDim }}>30_captures</code>,{" "}
+            <code style={{ color: C.textDim }}>20_notes</code>,{" "}
+            <code style={{ color: C.textDim }}>70_pai/captures</code>, …).
+          </div>
+        </div>
+
+        {/* ── Title pattern ───────────────────────────────────── */}
+        <div style={{ marginBottom: 18 }}>
+          <Field
+            label="Titel-Pattern"
+            value={voice.titlePattern}
+            onChange={(v) => setVoice({ ...voice, titlePattern: v })}
+          />
+          <div
+            style={{
+              padding: "8px 10px",
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 6,
+              marginBottom: 8,
+              fontSize: 12,
+            }}
+          >
+            <span style={{ color: C.textDim, marginRight: 6 }}>
+              Vorschau:
+            </span>
+            <code
+              style={{
+                color: C.gold,
+                fontFamily: FONT.mono,
+                fontSize: 12,
+              }}
+            >
+              {renderedTitle || "(leer)"}
+            </code>
+          </div>
+          <pre
+            style={{
+              padding: 8,
+              background: C.panel,
+              border: `1px solid ${C.border}`,
+              borderRadius: 4,
+              fontFamily: FONT.mono,
+              fontSize: 11,
+              color: C.textDim,
+              margin: 0,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+{`{YYYY} {MM} {DD} {HH} {mm}  → Datum/Zeit (UTC)
+{slug}                       → kebab-case der ersten 5 Wörter
+{transcript-first-words}     → erste 80 Zeichen`}
+          </pre>
+        </div>
+
+        {/* ── Language ────────────────────────────────────────── */}
+        <div style={{ marginBottom: 18 }}>
+          <div
+            style={{
+              fontSize: 11,
+              color: C.textDim,
+              marginBottom: 4,
+              fontFamily: FONT.mono,
+            }}
+          >
+            STANDARD-SPRACHE
+          </div>
+          <select
+            value={selectedLangKey}
+            onChange={(e) => handleLanguageChange(e.target.value)}
+            style={{
+              width: "100%",
+              padding: "8px 10px",
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 6,
+              color: C.text,
+              fontFamily: FONT.mono,
+              fontSize: 13,
+              outline: "none",
+            }}
+          >
+            {VOICE_LANGUAGES.map((l) => (
+              <option
+                key={l.value ?? "__auto__"}
+                value={l.value ?? "__auto__"}
+              >
+                {l.label}
+              </option>
+            ))}
+            <option value="__custom__">Andere (ISO 639-1)</option>
+          </select>
+          {selectedLangKey === "__custom__" && (
+            <input
+              type="text"
+              value={customLang}
+              placeholder="z.B. pt, ja, nl"
+              onChange={(e) => {
+                const v = e.target.value;
+                setCustomLang(v);
+                setVoice({ ...voice, language: v.trim() || null });
+              }}
+              style={{
+                width: "100%",
+                marginTop: 8,
+                padding: "8px 10px",
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 6,
+                color: C.text,
+                fontFamily: FONT.mono,
+                fontSize: 13,
+                outline: "none",
+              }}
+            />
+          )}
+        </div>
+
+        {/* ── Save ────────────────────────────────────────────── */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            onClick={onSave}
+            disabled={!dirty || saveState === "saving"}
+            style={{
+              ...btn,
+              opacity: !dirty || saveState === "saving" ? 0.5 : 1,
+              cursor:
+                !dirty || saveState === "saving" ? "not-allowed" : "pointer",
+            }}
+          >
+            {saveState === "saving" && (
+              <Loader2 size={14} className="sw-spin" />
+            )}
+            Speichern
+          </button>
+          {saveState === "ok" && (
+            <span style={{ color: C.ok, fontSize: 13 }}>
+              <Check size={14} /> gespeichert
+            </span>
+          )}
+          {saveState === "fail" && (
+            <span style={{ color: C.err, fontSize: 13 }}>
+              <X size={14} /> {saveError}
+            </span>
+          )}
+        </div>
+      </Section>
+    </>
   );
 }
 
