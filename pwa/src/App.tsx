@@ -1105,6 +1105,11 @@ export function App() {
             // Track the recording target so subsequent appends find the
             // right note even if the user switches tabs.
             setLiveTargetNoteId(noteId);
+            // If the requested note is already open in the editor (the
+            // "open-note" target path), DON'T re-open it — that would
+            // re-fetch from the server and clobber any unsaved edits.
+            // Just register the target above and we're done.
+            if (active?.id === noteId) return;
             void refreshTree().then(() => open(noteId));
           }}
           onLiveEditorAppend={handleLiveVoiceAppend}
@@ -1119,6 +1124,8 @@ export function App() {
           liveEditorOffTarget={
             liveTargetNoteId !== null && active?.id !== liveTargetNoteId
           }
+          currentNoteId={active?.id}
+          currentNoteTitle={active?.title}
           isMobile={isMobile}
         />
         {/* Phase D Wave D1 — non-essential text buttons (Vorlagen, Review,

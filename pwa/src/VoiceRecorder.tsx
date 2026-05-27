@@ -137,13 +137,22 @@ type State =
   | { kind: "live-saving" }
   /** Editor-target Live recording finished — show a "Fertig" button that
    * just closes the panel via onTranscribed (parent treats it as "open
-   * note", which it already did at start). */
-  | { kind: "live-editor-finished"; noteId: string; notePath: string; durationMs: number };
+   * note", which it already did at start). `attachedToOpenNote` flags
+   * whether the recording appended into an already-open note (true) vs.
+   * created a fresh one (false) — used to vary the success copy. */
+  | { kind: "live-editor-finished"; noteId: string; notePath: string; durationMs: number; attachedToOpenNote: boolean; noteTitle?: string };
 
 type Mode = "live" | "whisper";
 
-/** Live-mode destination for the finalized speech segments. */
-type LiveTarget = "capture" | "editor";
+/** Live-mode destination for the finalized speech segments.
+ *
+ *  - "capture":   accumulate locally, save as a new capture-note on Stop
+ *  - "editor":    create a brand-new note up-front, open it in the editor,
+ *                 stream finalized segments into it as the user speaks
+ *  - "open-note": append finalized segments into the note that is ALREADY
+ *                 open in the editor (no new note is created)
+ */
+type LiveTarget = "capture" | "editor" | "open-note";
 
 interface VoiceRecorderProps {
   /** Called with the resulting note id when transcription finishes. */
@@ -187,6 +196,16 @@ interface VoiceRecorderProps {
    * decides the destination is.
    */
   liveEditorOffTarget?: boolean;
+  /**
+   * Optional: id and title of the note currently open in the editor. When
+   * BOTH are provided AND `onLiveEditorAppend` is wired, a third live-target
+   * radio appears: "In offene Notiz appenden". Picking it makes the recorder
+   * stream finalized segments into the open note instead of creating a new
+   * one. When `currentNoteId` is undefined the third option is hidden and
+   * the "editor" default still wins.
+   */
+  currentNoteId?: string;
+  currentNoteTitle?: string;
 }
 
 /** Pick the first supported audio mime-type — prefer opus for size + quality. */
@@ -383,6 +402,8 @@ export function VoiceRecorder({
   onLiveEditorReplaceTail,
   onLiveEditorStopped,
   liveEditorOffTarget = false,
+  currentNoteId,
+  currentNoteTitle,
 }: VoiceRecorderProps) {
   const [state, setState] = useState<State>({ kind: "idle" });
   const [title, setTitle] = useState<string>(`Voice-Notiz ${fmtTimestamp()}`);
@@ -392,16 +413,38 @@ export function VoiceRecorder({
    * persistence needed). Only meaningful when `onLiveEditorAppend` is wired
    * up; otherwise the toggle is hidden and the value is ignored.
    *
-   * Default: in the slide-over context (VoiceQuickButton, where the parent
-   * registers `onLiveEditorAppend`), the user-as-first-class flow is
-   * Google-Docs-style live writing into a fresh editor — so we default to
-   * "editor". The ImportPanel instance does NOT pass `onLiveEditorAppend`,
-   * so it keeps the legacy "capture" default (the toggle is hidden there).
+   * Default precedence (highest wins):
+   *   1. "open-note"  — `currentNoteId` is set (a note is open in the editor)
+   *                     AND the editor sink is wired. Most ergonomic: append
+   *                     into what the user is already looking at.
+   *   2. "editor"     — editor sink wired but no note open → create a fresh
+   *                     one and stream into it (the Google-Docs-style flow).
+   *   3. "capture"    — no editor sink (ImportPanel context). The toggle is
+   *                     hidden there and we save as a capture-note on Stop.
+   *
+   * The default is computed lazily ONCE per mount; if the user opens the
+   * slide-over with no note open, picks "editor", then opens a note, we
+   * don't want to silently reset their pick. They can switch manually.
    */
   const liveEditorAvailable = typeof onLiveEditorAppend === "function";
-  const [liveTarget, setLiveTarget] = useState<LiveTarget>(() =>
-    liveEditorAvailable ? "editor" : "capture",
-  );
+  const openNoteTargetAvailable =
+    liveEditorAvailable && typeof currentNoteId === "string" && currentNoteId.length > 0;
+  const [liveTarget, setLiveTarget] = useState<LiveTarget>(() => {
+    if (openNoteTargetAvailable) return "open-note";
+    if (liveEditorAvailable) return "editor";
+    return "capture";
+  });
+  // Defensive: if the user-selected target is no longer reachable (e.g. they
+  // had "open-note" picked, then closed the only open note), drop back to a
+  // valid default rather than letting `startLive("open-note")` blow up.
+  useEffect(() => {
+    if (liveTarget === "open-note" && !openNoteTargetAvailable) {
+      setLiveTarget(liveEditorAvailable ? "editor" : "capture");
+    }
+    if (liveTarget === "editor" && !liveEditorAvailable) {
+      setLiveTarget("capture");
+    }
+  }, [liveTarget, openNoteTargetAvailable, liveEditorAvailable]);
   /** Stable ref the recognition onresult reads (no re-binding per render). */
   const liveTargetRef = useRef<LiveTarget>(liveTarget);
   liveTargetRef.current = liveTarget;
@@ -906,12 +949,50 @@ export function VoiceRecorder({
     interimZoneActiveRef.current = false;
     lastInterimTextRef.current = "";
 
+    // ── Open-note target: skip the POST + PUT entirely (the note already
+    // exists and is open in the editor). We just register the existing
+    // note id as the live target with the parent — App.tsx's append/
+    // replace-tail handlers will then route segments into the active note.
+    //
+    // NOTE: the actual POST+PUT skip is RIGHT HERE — this whole branch
+    // returns/falls through without the HTTP roundtrip that the "editor"
+    // branch below performs. We still wait one rAF tick to keep the
+    // open/start ordering consistent with the editor flow.
+    if (target === "open-note") {
+      if (!liveEditorAvailable) {
+        setState({
+          kind: "error",
+          message:
+            "Live-in-Editor nicht verfügbar — parent component hat keinen onLiveEditorAppend-Callback registriert.",
+        });
+        return;
+      }
+      if (!currentNoteId) {
+        setState({
+          kind: "error",
+          message:
+            "Keine offene Notiz gefunden — öffne erst eine Notiz oder wähle ein anderes Ziel.",
+        });
+        return;
+      }
+      // Register the existing note as the live target with the parent.
+      // App.tsx detects "id already matches active.id" and just sets the
+      // target — does NOT call open() (which would re-fetch from server
+      // and clobber any unsaved edits).
+      liveEditorNoteRef.current = {
+        id: currentNoteId,
+        path: currentNoteTitle ?? currentNoteId,
+      };
+      onLiveEditorRequested?.(currentNoteId, currentNoteTitle ?? currentNoteId);
+      // One paint cycle for state-consistency parity with the editor flow.
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+      // Fall through into the regular live-recognition setup below.
+    } else if (target === "editor") {
     // ── Editor-target pre-recording: create the empty note FIRST so it's
     // open in the editor before the user says a word. We deliberately
     // serialize the two HTTP calls (POST + PUT capture frontmatter) here
     // — speech recognition won't start until the note exists. The user
     // sees a brief "Bereite Notiz vor…" state via live-saving spinner.
-    if (target === "editor") {
       if (!liveEditorAvailable) {
         setState({
           kind: "error",
@@ -1062,8 +1143,18 @@ export function VoiceRecorder({
       const liveEditorReplaceTail = onLiveEditorReplaceTailRef.current;
       const liveEditorAppend = onLiveEditorAppendRef.current;
 
-      if (liveTargetRef.current === "editor") {
-        // ── Editor mode ──────────────────────────────────────────────
+      if (
+        liveTargetRef.current === "editor" ||
+        liveTargetRef.current === "open-note"
+      ) {
+        // ── Editor / open-note mode ──────────────────────────────────
+        // Both targets stream into the currently-open editor doc. The
+        // only difference is upstream (the editor branch creates a new
+        // note first; open-note attaches to whatever is already open).
+        // From the onresult handler's perspective they are identical:
+        // hand each segment to the parent's App.tsx callback and let it
+        // decide which note id receives the write.
+        //
         // Two distinct write paths, both routed through the parent's
         // App.tsx callbacks. Order matters: final BEFORE interim so the
         // marker (which `liveEditorAppend` also strips defensively)
@@ -1145,11 +1236,13 @@ export function VoiceRecorder({
         prev.kind === "live-listening"
           ? {
               ...prev,
-              // For editor-target the local finalText stays empty (parent
-              // owns it); for capture it mirrors the ref so the on-screen
-              // transcript box updates.
+              // For editor-bound targets the local finalText stays empty
+              // (the parent's editor owns the text); for capture it mirrors
+              // the ref so the on-screen transcript box updates.
               finalText:
-                prev.target === "editor" ? "" : finalTextRef.current,
+                prev.target === "editor" || prev.target === "open-note"
+                  ? ""
+                  : finalTextRef.current,
               interimText: interim,
             }
           : prev,
@@ -1294,10 +1387,10 @@ export function VoiceRecorder({
       recognitionRef.current.onend = null;
     }
 
-    if (target === "editor") {
-      // ── Fix 1 flush site (editor-mode): ship the trailing interim
-      // text (if any) as a final segment so it lands in the open editor
-      // before we tell the parent the live session is over.
+    if (target === "editor" || target === "open-note") {
+      // ── Fix 1 flush site (editor / open-note mode): ship the trailing
+      // interim text (if any) as a final segment so it lands in the open
+      // editor before we tell the parent the live session is over.
       //
       // Two writes: first wipe any LRM-marked interim zone (the doc
       // currently shows ghost text — we don't want it to land as
@@ -1326,6 +1419,8 @@ export function VoiceRecorder({
         noteId: noteInfo?.id ?? "",
         notePath: noteInfo?.path ?? "(unbekannt)",
         durationMs,
+        attachedToOpenNote: target === "open-note",
+        noteTitle: target === "open-note" ? currentNoteTitle : undefined,
       });
       return;
     }
@@ -1595,10 +1690,13 @@ export function VoiceRecorder({
                 Echtzeit auf.
               </p>
 
-              {/* Live-target chooser: capture-note vs. live-editor.
-                * Only rendered when the parent registered the editor sink
-                * (onLiveEditorAppend); otherwise the capture-note path is
-                * the only sane option and we don't pretend otherwise. */}
+              {/* Live-target chooser: capture-note vs. live-editor vs.
+                * append-to-open-note. Only rendered when the parent
+                * registered the editor sink (onLiveEditorAppend);
+                * otherwise the capture-note path is the only sane option
+                * and we don't pretend otherwise. The third "open-note"
+                * radio is also conditional on having a currently-open
+                * note id from the parent. */}
               {liveEditorAvailable && (
                 <fieldset
                   style={{
@@ -1642,7 +1740,7 @@ export function VoiceRecorder({
                     <span>
                       In Capture-Note speichern{" "}
                       <span style={{ color: C.textFaint, fontSize: 11 }}>
-                        (Standard — Notiz wird nach Stop angelegt)
+                        (Notiz wird nach Stop angelegt)
                       </span>
                     </span>
                   </label>
@@ -1668,15 +1766,54 @@ export function VoiceRecorder({
                     <span>
                       Live in neuen Editor schreiben{" "}
                       <span style={{ color: C.textFaint, fontSize: 11 }}>
-                        (Notiz wird sofort angelegt, Text erscheint während du sprichst)
+                        (öffnet neue Notiz
+                        {openNoteTargetAvailable ? "" : " — Standard"})
                       </span>
                     </span>
                   </label>
+                  {openNoteTargetAvailable && (
+                    <label
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "flex-start",
+                        cursor: "pointer",
+                        fontSize: 12,
+                        color: C.text,
+                        lineHeight: 1.4,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="live-target"
+                        value="open-note"
+                        checked={liveTarget === "open-note"}
+                        onChange={() => setLiveTarget("open-note")}
+                        style={{ marginTop: 2 }}
+                      />
+                      <span>
+                        In offene Notiz appenden{" "}
+                        <span style={{ color: C.textFaint, fontSize: 11 }}>
+                          (Standard — Text erscheint in{" "}
+                          <code
+                            style={{
+                              fontFamily: FONT.mono,
+                              color: C.gold,
+                              fontSize: 11,
+                            }}
+                          >
+                            {currentNoteTitle || currentNoteId}
+                          </code>
+                          )
+                        </span>
+                      </span>
+                    </label>
+                  )}
                 </fieldset>
               )}
 
-              {/* Explainer only when the editor-target default is in effect
-                * — keeps the slide-over flow obvious without nagging the
+              {/* Explainer only when an editor-bound target is selected —
+                * keeps the slide-over flow obvious without nagging the
                 * user when they've explicitly switched back to capture. */}
               {liveEditorAvailable && liveTarget === "editor" && (
                 <div
@@ -1696,27 +1833,59 @@ export function VoiceRecorder({
                   klick Stop und bearbeite die Notiz weiter.
                 </div>
               )}
-
-              <label style={{ fontSize: 11, color: C.textDim }}>
-                Titel
-                <input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
+              {liveEditorAvailable && liveTarget === "open-note" && (
+                <div
                   style={{
-                    width: "100%",
-                    boxSizing: "border-box",
-                    marginTop: 4,
-                    background: C.bg,
-                    border: `1px solid ${C.border}`,
-                    borderRadius: 7,
-                    color: C.text,
-                    fontSize: 13,
-                    fontFamily: FONT.ui,
                     padding: "8px 10px",
-                    outline: "none",
+                    background: C.bg,
+                    border: `1px dashed ${C.border}`,
+                    borderRadius: 7,
+                    color: C.textDim,
+                    fontSize: 11,
+                    lineHeight: 1.5,
                   }}
-                />
-              </label>
+                >
+                  Tipp: Dein gesprochener Text wird Wort für Wort in die
+                  offene Notiz{" "}
+                  <code
+                    style={{
+                      fontFamily: FONT.mono,
+                      color: C.gold,
+                      fontSize: 11,
+                    }}
+                  >
+                    {currentNoteTitle || currentNoteId}
+                  </code>{" "}
+                  angehängt — es wird keine neue Notiz angelegt.
+                </div>
+              )}
+
+              {/* Title input is irrelevant when appending to an already
+                * open note — we never create a new note, so the field
+                * would just confuse. Hide for "open-note", show for the
+                * other two targets. */}
+              {liveTarget !== "open-note" && (
+                <label style={{ fontSize: 11, color: C.textDim }}>
+                  Titel
+                  <input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    style={{
+                      width: "100%",
+                      boxSizing: "border-box",
+                      marginTop: 4,
+                      background: C.bg,
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 7,
+                      color: C.text,
+                      fontSize: 13,
+                      fontFamily: FONT.ui,
+                      padding: "8px 10px",
+                      outline: "none",
+                    }}
+                  />
+                </label>
+              )}
               <label style={{ fontSize: 11, color: C.textDim }}>
                 Sprache
                 <select
@@ -2245,7 +2414,9 @@ export function VoiceRecorder({
             <span style={{ color: C.err, fontWeight: 600, fontSize: 13 }}>
               {state.target === "editor"
                 ? "Live → Editor läuft"
-                : "Live-Modus läuft"}
+                : state.target === "open-note"
+                  ? "Live → offene Notiz läuft"
+                  : "Live-Modus läuft"}
             </span>
             <span style={{ flex: 1 }} />
             <span
@@ -2260,33 +2431,34 @@ export function VoiceRecorder({
             </span>
           </div>
 
-          {state.target === "editor" && liveEditorOffTarget && (
-            <div
-              role="alert"
-              style={{
-                display: "flex",
-                gap: 8,
-                padding: "8px 12px",
-                background: "rgba(255,169,77,0.10)",
-                border: `1px solid ${C.gold}`,
-                borderRadius: 7,
-                color: C.gold,
-                fontSize: 11.5,
-                lineHeight: 1.45,
-              }}
-            >
-              <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
-              <span>
-                Du hast die Notiz gewechselt — Text geht weiter in die
-                ursprüngliche Live-Notiz.
-              </span>
-            </div>
-          )}
+          {(state.target === "editor" || state.target === "open-note") &&
+            liveEditorOffTarget && (
+              <div
+                role="alert"
+                style={{
+                  display: "flex",
+                  gap: 8,
+                  padding: "8px 12px",
+                  background: "rgba(255,169,77,0.10)",
+                  border: `1px solid ${C.gold}`,
+                  borderRadius: 7,
+                  color: C.gold,
+                  fontSize: 11.5,
+                  lineHeight: 1.45,
+                }}
+              >
+                <AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 1 }} />
+                <span>
+                  Du hast die Notiz gewechselt — Text geht weiter in die
+                  ursprüngliche Live-Notiz.
+                </span>
+              </div>
+            )}
 
-          {state.target === "editor" ? (
-            /* Editor-target: just show the interim ghost text. The
-             * finalized text already lives in the open editor; mirroring
-             * it here would be noise and risks drift. */
+          {state.target === "editor" || state.target === "open-note" ? (
+            /* Editor / open-note target: just show the interim ghost text.
+             * The finalized text already lives in the open editor;
+             * mirroring it here would be noise and risks drift. */
             <div
               aria-live="polite"
               style={{
@@ -2568,16 +2740,34 @@ export function VoiceRecorder({
           >
             <Check size={16} style={{ flexShrink: 0, marginTop: 2 }} />
             <div>
-              Live-Aufnahme beendet — Text steht im Editor.{" "}
-              <code
-                style={{
-                  fontFamily: FONT.mono,
-                  color: C.text,
-                  wordBreak: "break-all",
-                }}
-              >
-                {state.notePath}
-              </code>
+              {state.attachedToOpenNote ? (
+                <>
+                  Text in{" "}
+                  <code
+                    style={{
+                      fontFamily: FONT.mono,
+                      color: C.text,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {state.noteTitle || state.notePath}
+                  </code>{" "}
+                  eingefügt.
+                </>
+              ) : (
+                <>
+                  Live-Aufnahme beendet — neue Notiz erstellt.{" "}
+                  <code
+                    style={{
+                      fontFamily: FONT.mono,
+                      color: C.text,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {state.notePath}
+                  </code>
+                </>
+              )}
               <div
                 style={{
                   marginTop: 4,

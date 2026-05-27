@@ -44,6 +44,14 @@ interface VoiceQuickButtonProps {
   onLiveEditorStopped?: () => void;
   /** Parent reports the user switched tabs mid-live-recording. */
   liveEditorOffTarget?: boolean;
+  /**
+   * The note currently open in the editor. Forwarded to <VoiceRecorder>
+   * so it can offer the third live-target option ("In offene Notiz
+   * appenden") when a note is open. When undefined the recorder hides
+   * that radio and keeps the "editor" default.
+   */
+  currentNoteId?: string;
+  currentNoteTitle?: string;
   /** Touch-target sizing on mobile — matches the rest of the top-bar. */
   isMobile?: boolean;
 }
@@ -65,6 +73,8 @@ export function VoiceQuickButton({
   onLiveEditorReplaceTail,
   onLiveEditorStopped,
   liveEditorOffTarget = false,
+  currentNoteId,
+  currentNoteTitle,
   isMobile: isMobileProp,
 }: VoiceQuickButtonProps) {
   const isMobileHook = useIsMobile();
@@ -252,6 +262,8 @@ export function VoiceQuickButton({
             onLiveEditorReplaceTail={onLiveEditorReplaceTail}
             onLiveEditorStopped={onLiveEditorStopped}
             liveEditorOffTarget={liveEditorOffTarget}
+            currentNoteId={currentNoteId}
+            currentNoteTitle={currentNoteTitle}
           />
         </div>
       </aside>
