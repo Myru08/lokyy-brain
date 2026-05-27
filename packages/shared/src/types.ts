@@ -84,6 +84,19 @@ export interface SharePayload {
    * System-Settings zurück und am Ende auf `"30_captures"`.
    */
   targetFolder?: string;
+  /**
+   * Voice-Pipe (Whisper). Pfad zur bereits im Vault liegenden Audio-Datei,
+   * relativ zum Vault-Root (z.B. `30_captures/voice/2026-05-27-01H….webm`).
+   * Wird von der Route gesetzt, NACHDEM die Audio-Bytes via gitService
+   * committet wurden. Der voiceHandler liest die Datei von Disk und postet
+   * sie an die OpenAI-Whisper-API.
+   */
+  audioPath?: string;
+  /**
+   * Voice-Pipe (Whisper). Optionaler ISO-639-1-Sprachcode (z.B. "de",
+   * "en"). Fehlt das Feld, lässt Whisper die Sprache automatisch erkennen.
+   */
+  language?: string;
 }
 
 export type PipeType = "youtube" | "voice" | "url" | "crawl" | "unknown";

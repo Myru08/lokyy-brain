@@ -53,6 +53,8 @@ import {
 import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
+import { voiceHandler } from "./pipes/handlers/voiceHandler.js";
+import { voiceRoutes } from "./routes/voice.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -268,6 +270,11 @@ app.use("/api/templates/*", setupGate);
 app.route("/api/notes", notesRoutes);
 app.route("/api/vault", vaultRoutes);
 app.route("/api/graph", graphRoutes);
+// Voice pipe: multipart upload endpoint. Sub-route under /api/pipes/voice
+// (already covered by the /api/pipes/* setupGate above). Must be mounted
+// before the generic pipesRoutes so Hono dispatches the more specific
+// path first.
+app.route("/api/pipes/voice", voiceRoutes);
 app.route("/api/pipes", pipesRoutes);
 app.route("/api", searchRoutes);
 app.route("/api/dataview", dataviewRoutes);
@@ -283,7 +290,7 @@ app.route("/api/settings", settingsRoutes);
 registerHandler("youtube", youtubeHandler);
 registerHandler("url", scrapeHandler); // einzelne Seite
 registerHandler("crawl", crawlHandler); // ganze Website
-// registerHandler("voice", voiceHandler);  // TODO: self-hosted Whisper
+registerHandler("voice", voiceHandler); // OpenAI Whisper (cloud)
 
 async function main() {
   initCore(config);
