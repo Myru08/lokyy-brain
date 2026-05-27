@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { ChevronRight, Loader2, Save, RefreshCw, Sparkles, Undo2 } from "lucide-react";
+import {
+  ChevronRight,
+  Loader2,
+  Save,
+  RefreshCw,
+  Sparkles,
+  Undo2,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { useIsMobile } from "./responsive.js";
 
@@ -172,6 +181,78 @@ function hasRawTranscript(body: string): boolean {
     if (/^raw_transcript\s*:/.test(line)) return true;
   }
   return false;
+}
+
+/**
+ * Extract the `lang:` value from the YAML frontmatter so the TTS button
+ * can pick the right voice. Returns the raw string (e.g. `de-DE`,
+ * `en-US`) or null when absent. We do not validate format here — the
+ * Speech Synthesis API accepts BCP-47 tags and silently falls back when
+ * unknown, so a malformed value just degrades to default.
+ */
+function extractFrontmatterLang(body: string): string | null {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(body);
+  if (!m) return null;
+  const block = m[1] ?? "";
+  for (const line of block.split(/\r?\n/)) {
+    const km = /^lang\s*:\s*(.+?)\s*$/.exec(line);
+    if (!km) continue;
+    const raw = (km[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    return raw || null;
+  }
+  return null;
+}
+
+/**
+ * Strip frontmatter + rough markdown formatting so the TTS engine reads
+ * the prose, not the markup. We intentionally do NOT pull in a real
+ * markdown parser (remark, marked) — for read-aloud, a few `regex` passes
+ * cover the 95% case (headings, lists, bold/italic, code fences, inline
+ * code, links) and any leftover punctuation just lands in the speech
+ * which is harmless. Heavy markdown will still read OK, just with the
+ * occasional "asterisk asterisk" if a bold marker survives.
+ *
+ * Passes (in order):
+ *   1. drop frontmatter block (`---\n…\n---`)
+ *   2. drop fenced code blocks (```lang\n…\n```) — the recognizer would
+ *      try to read each character of code which is unbearable
+ *   3. drop inline code spans (`foo`)
+ *   4. drop heading hashes at line-start (`# `, `## `, etc.)
+ *   5. drop list bullet markers at line-start (`- `, `* `, `+ `, `1. `)
+ *   6. drop blockquote markers at line-start (`> `)
+ *   7. unwrap bold/italic markers (`**`, `__`, `*`, `_`)
+ *   8. replace `[text](url)` with `text`
+ *   9. drop bare wikilink brackets `[[…]]` → `…`
+ *   10. collapse 3+ newlines to 2 so the speech engine pauses naturally
+ */
+function stripMarkdownForSpeech(body: string): string {
+  let text = body;
+  // 1. frontmatter
+  text = text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+  // 2. fenced code blocks
+  text = text.replace(/```[\s\S]*?```/g, "");
+  // 3. inline code
+  text = text.replace(/`[^`\n]*`/g, "");
+  // 4. heading hashes
+  text = text.replace(/^#{1,6}\s+/gm, "");
+  // 5. list bullets
+  text = text.replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "");
+  // 6. blockquote markers
+  text = text.replace(/^\s*>\s?/gm, "");
+  // 7. bold/italic — non-greedy, word-bound to avoid eating `_foo_bar_`
+  text = text.replace(/\*\*([^*]+?)\*\*/g, "$1");
+  text = text.replace(/__([^_]+?)__/g, "$1");
+  text = text.replace(/\*([^*\n]+?)\*/g, "$1");
+  text = text.replace(/(^|[\s(])_([^_\n]+?)_(?=$|[\s).,!?;:])/g, "$1$2");
+  // 8. markdown links — keep label, drop URL
+  text = text.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+  // 9. wikilinks — keep the visible portion (after `|` if aliased)
+  text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, target, alias) =>
+    alias ?? target,
+  );
+  // 10. trim runs of blank lines
+  text = text.replace(/\n{3,}/g, "\n\n");
+  return text.trim();
 }
 
 /** Middle-truncate so first 8 + last 4 chars stay legible. */
@@ -510,6 +591,44 @@ const SAVE_BUTTON_STYLE_MOBILE: CSSProperties = {
 };
 
 /**
+ * TTS read-aloud button — same icon-square shape as Save so the two
+ * single-icon affordances look like one visual group. Color shifts when
+ * actively reading so the user can find the stop button without reading
+ * the tooltip.
+ */
+const TTS_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 32,
+  height: 32,
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 5,
+  cursor: "pointer",
+  color: C.textDim,
+  padding: 0,
+};
+
+const TTS_BUTTON_STYLE_MOBILE: CSSProperties = {
+  ...TTS_BUTTON_STYLE,
+  width: 40,
+  height: 40,
+};
+
+const TTS_BUTTON_STYLE_ACTIVE: CSSProperties = {
+  ...TTS_BUTTON_STYLE,
+  color: C.accent,
+  borderColor: C.accent,
+};
+
+const TTS_BUTTON_STYLE_ACTIVE_MOBILE: CSSProperties = {
+  ...TTS_BUTTON_STYLE_MOBILE,
+  color: C.accent,
+  borderColor: C.accent,
+};
+
+/**
  * Polish (sparkle) button — promotes "AI cleanup" from the recorder's
  * post-stop auto-toggle to a deliberate per-note action available from
  * the editor header. Distinct purple/violet tint so it doesn't compete
@@ -740,10 +859,19 @@ export function NoteHeader({
   const ulid = useMemo(() => extractFrontmatterUlid(body), [body]);
   const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
   const rawTranscriptPresent = useMemo(() => hasRawTranscript(body), [body]);
+  const lang = useMemo(() => extractFrontmatterLang(body), [body]);
   const breadcrumbSegments = useMemo(
     () => buildBreadcrumbSegments(noteId),
     [noteId],
   );
+  // TTS — Web Speech Synthesis. Feature-detect at render time so older
+  // browsers (no SpeechSynthesis) and embedded webviews that disable it
+  // get a greyed-out button with an explanatory tooltip rather than a
+  // crash on click.
+  const ttsSupported =
+    typeof window !== "undefined" && "speechSynthesis" in window;
+  const [isReading, setIsReading] = useState(false);
+  const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   // Polish lifecycle — independent of save lifecycle: polish triggers a
@@ -784,8 +912,31 @@ export function NoteHeader({
       if (polishErrTimer.current !== null) {
         window.clearTimeout(polishErrTimer.current);
       }
+      // Cancel any in-flight TTS on unmount so a stale utterance doesn't
+      // outlive the editor (Chrome will happily keep reading after the
+      // tree is gone otherwise).
+      if (ttsSupported) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {
+          /* ignore — defensive only */
+        }
+      }
     };
-  }, []);
+  }, [ttsSupported]);
+
+  // Switching notes mid-read is jarring — cancel and reset on noteId change
+  // so the user gets a clean slate when they navigate.
+  useEffect(() => {
+    if (!ttsSupported) return;
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      /* ignore */
+    }
+    setIsReading(false);
+    utteranceRef.current = null;
+  }, [noteId, ttsSupported]);
 
   // Reset polish state when the active note changes so a stale "✓ poliert"
   // flash from note A doesn't linger after the user switches to note B.
@@ -877,6 +1028,50 @@ export function NoteHeader({
       }, 6000);
     } finally {
       setUndoBusy(false);
+    }
+  }
+
+  /**
+   * TTS toggle. Click → read aloud; click while reading → stop. We track
+   * `isReading` locally and also listen for the utterance's own `onend`
+   * so the icon flips back when the engine naturally finishes a long
+   * note. SpeechSynthesis is global per-tab, so we always `cancel()`
+   * before queuing a new utterance to avoid stacking.
+   */
+  function handleToggleSpeech() {
+    if (!ttsSupported) return;
+    if (isReading) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        /* ignore */
+      }
+      setIsReading(false);
+      utteranceRef.current = null;
+      return;
+    }
+    const plain = stripMarkdownForSpeech(body);
+    if (!plain) return;
+    try {
+      // Belt-and-suspenders: nuke any leftover queue from a previous
+      // partial read before queuing the new one.
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(plain);
+      u.lang = lang ?? "de-DE";
+      u.onend = () => {
+        setIsReading(false);
+        if (utteranceRef.current === u) utteranceRef.current = null;
+      };
+      u.onerror = () => {
+        setIsReading(false);
+        if (utteranceRef.current === u) utteranceRef.current = null;
+      };
+      utteranceRef.current = u;
+      window.speechSynthesis.speak(u);
+      setIsReading(true);
+    } catch {
+      setIsReading(false);
+      utteranceRef.current = null;
     }
   }
 
@@ -975,6 +1170,43 @@ export function NoteHeader({
     </>
   ) : null;
 
+  // TTS button — same icon-square shape as Save. Always rendered (so
+  // users can see the affordance) but visually disabled + tooltipped
+  // when the browser lacks SpeechSynthesis support. Tooltip changes
+  // based on read/stop state for parity with Polish/Save patterns.
+  const ttsActiveStyle = isMobile
+    ? TTS_BUTTON_STYLE_ACTIVE_MOBILE
+    : TTS_BUTTON_STYLE_ACTIVE;
+  const ttsIdleStyle = isMobile ? TTS_BUTTON_STYLE_MOBILE : TTS_BUTTON_STYLE;
+  const ttsButton = (
+    <button
+      type="button"
+      onClick={handleToggleSpeech}
+      disabled={!ttsSupported}
+      style={{
+        ...(isReading ? ttsActiveStyle : ttsIdleStyle),
+        opacity: ttsSupported ? 1 : 0.4,
+        cursor: ttsSupported ? "pointer" : "not-allowed",
+      }}
+      title={
+        ttsSupported
+          ? isReading
+            ? "Vorlesen stoppen"
+            : "Notiz vorlesen"
+          : "Browser unterstützt keine Sprachausgabe"
+      }
+      aria-label={
+        ttsSupported
+          ? isReading
+            ? "Stop reading aloud"
+            : "Read note aloud"
+          : "Text-to-speech not supported by browser"
+      }
+    >
+      {isReading ? <VolumeX size={16} /> : <Volume2 size={16} />}
+    </button>
+  );
+
   // Notes without a ULID (legacy / hand-written w/o frontmatter) still
   // render the title — they just don't get the copy affordances.
   // Manual-save button + badge. Rendered as a small group in both the
@@ -1057,6 +1289,7 @@ export function NoteHeader({
             </span>
           )}
           {polishControls}
+          {ttsButton}
           {saveControls}
           <span
             style={{
@@ -1097,6 +1330,7 @@ export function NoteHeader({
       )}
       {toast && <span style={TOAST_STYLE}>{toast}</span>}
       {polishControls}
+      {ttsButton}
       {saveControls}
       <button
         type="button"

@@ -1,5 +1,7 @@
 import {
+  forwardRef,
   useEffect,
+  useImperativeHandle,
   useRef,
   useState,
   type MouseEvent,
@@ -45,6 +47,18 @@ interface FileTreeProps {
 }
 
 /**
+ * Imperative handle exposed via `ref` so the NoteHeader breadcrumb (and
+ * any future caller) can jump to a folder without lifting all of
+ * FileTree's UI state into App.tsx. `jumpToFolder` expands every
+ * ancestor + the target itself, marks the folder selected, and scrolls
+ * the row into view on the next frame. No-op when the path isn't found
+ * in the current tree (e.g. tag filter is pruning it out).
+ */
+export interface FileTreeHandle {
+  jumpToFolder: (path: string) => void;
+}
+
+/**
  * Recursive prune: drop note-children not in `keep`, drop folders that
  * become empty after pruning their subtree.
  */
@@ -74,16 +88,19 @@ function parentOf(path: string): string {
   return i === -1 ? "" : path.slice(0, i);
 }
 
-export function FileTree({
-  tree,
-  activeId,
-  onOpen,
-  onCreate,
-  onRename,
-  onMove,
-  onDelete,
-  tagFilteredNoteIds,
-}: FileTreeProps) {
+export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileTree(
+  {
+    tree,
+    activeId,
+    onOpen,
+    onCreate,
+    onRename,
+    onMove,
+    onDelete,
+    tagFilteredNoteIds,
+  },
+  ref,
+) {
   const visibleTree = tagFilteredNoteIds
     ? pruneTree(tree, tagFilteredNoteIds)
     : tree;
@@ -102,11 +119,70 @@ export function FileTree({
   // Ref auf die DOM-Zeile der aktiven Notiz, damit wir sie bei jedem
   // Wechsel sanft in den sichtbaren Bereich scrollen können.
   const activeRowRef = useRef<HTMLDivElement | null>(null);
+  // DOM-Refs für JEDEN Folder-Pfad, damit `jumpToFolder` (siehe
+  // useImperativeHandle weiter unten) die Zeile gezielt in den
+  // sichtbaren Bereich rollen kann. Wird in Row registriert/abgemeldet.
+  const folderRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  // Wenn jumpToFolder gerufen wird, merken wir uns das Ziel — der Folder
+  // muss nach setExpanded() erst gerendert sein, bevor wir scrollen
+  // können. Ein useEffect schließt die Lücke.
+  const [pendingScrollFolder, setPendingScrollFolder] = useState<string | null>(
+    null,
+  );
+
+  function registerFolderRow(path: string, el: HTMLDivElement | null) {
+    if (el) folderRowRefs.current.set(path, el);
+    else folderRowRefs.current.delete(path);
+  }
 
   useEffect(() => {
     if (!activeId) return;
     activeRowRef.current?.scrollIntoView({ block: "nearest" });
   }, [activeId]);
+
+  // Scroll the jumped-to folder into view once it has actually been
+  // rendered (post-expanded() reconcile). We deliberately do this in an
+  // effect rather than synchronously inside jumpToFolder because the
+  // ancestor expand may insert new rows in the same render — the DOM
+  // node for the target only exists AFTER the commit.
+  useEffect(() => {
+    if (!pendingScrollFolder) return;
+    const el = folderRowRefs.current.get(pendingScrollFolder);
+    if (el) {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    }
+    setPendingScrollFolder(null);
+  }, [pendingScrollFolder, expanded]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      jumpToFolder(path: string) {
+        if (!path) return;
+        // Find the node so we can confirm it still exists (e.g. a tag
+        // filter may have pruned it). No-op silently if it's gone.
+        if (!findNode(tree, path)) return;
+        // Expand every ancestor + the target itself in a single state
+        // update so React re-renders once.
+        const parts = path.split("/").filter(Boolean);
+        const ancestors: string[] = [];
+        let acc = "";
+        for (const seg of parts) {
+          acc = acc ? `${acc}/${seg}` : seg;
+          ancestors.push(acc);
+        }
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          for (const p of ancestors) next.add(p);
+          return next;
+        });
+        setActiveFolder(path);
+        // Trigger the scroll-on-next-paint effect above.
+        setPendingScrollFolder(path);
+      },
+    }),
+    [tree],
+  );
 
   // Wenn der gemerkte Ordner nach einem Rename / Delete / Tag-Filter aus
   // dem Baum verschwindet, fällt die Auswahl auf den Vault-Root zurück —
@@ -240,6 +316,7 @@ export function FileTree({
             activeFolder={activeFolder}
             dropTarget={dropTarget}
             activeRowRef={activeRowRef}
+            registerFolderRow={registerFolderRow}
             onToggle={toggle}
             onOpen={onOpen}
             onSelectFolder={setActiveFolder}
@@ -277,7 +354,7 @@ export function FileTree({
       </div>
     </div>
   );
-}
+});
 
 /* ---------------- Zeile (rekursiv) ---------------- */
 
@@ -290,6 +367,7 @@ interface RowProps {
   activeFolder: string;
   dropTarget: string | null;
   activeRowRef: MutableRefObject<HTMLDivElement | null>;
+  registerFolderRow: (path: string, el: HTMLDivElement | null) => void;
   onToggle: (path: string) => void;
   onOpen: (id: string) => void;
   onSelectFolder: (path: string) => void;
@@ -312,6 +390,7 @@ function Row(props: RowProps) {
     activeFolder,
     dropTarget,
     activeRowRef,
+    registerFolderRow,
     onToggle,
     onOpen,
     onSelectFolder,
@@ -347,7 +426,17 @@ function Row(props: RowProps) {
   return (
     <>
       <div
-        ref={isActive ? activeRowRef : undefined}
+        ref={(el) => {
+          // Two consumers may want this row's element:
+          //   (1) the active-note scroll effect (activeRowRef) when this
+          //       row is the currently-open note
+          //   (2) the breadcrumb jump-to-folder path (registerFolderRow)
+          //       for any folder row, so jumpToFolder can scroll it in
+          // We wire both from a single callback ref because React 18
+          // doesn't allow forwarding to multiple refs natively.
+          if (isActive) activeRowRef.current = el;
+          if (isFolder) registerFolderRow(node.path, el);
+        }}
         draggable
         onDragStart={(e) => {
           e.stopPropagation();
