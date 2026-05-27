@@ -11,10 +11,15 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Folder,
+  Mic,
+  Link as LinkIcon,
 } from "lucide-react";
 import { api } from "./api.js";
 import { C, FONT } from "./theme.js";
 import { useIsMobile } from "./responsive.js";
+import { VoiceRecorder } from "./VoiceRecorder.js";
+
+type Tab = "url" | "voice";
 
 const FALLBACK_FOLDER = "30_captures";
 
@@ -83,6 +88,7 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
   // Phase D Wave D1 — Slide-over goes full-width on phones; the type-grid
   // and folder browser inside the panel become unusable below ~340px wide.
   const isMobile = useIsMobile();
+  const [tab, setTab] = useState<Tab>("url");
   const [url, setUrl] = useState("");
   const [type, setType] = useState<PipeType | "auto">("auto");
   const [jobs, setJobs] = useState<PipeJob[]>([]);
@@ -262,7 +268,65 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
           </button>
         </header>
 
-        {/* Eingabe */}
+        {/* Tab-Strip — URL/YouTube vs. Sprachaufnahme. Beide Streams landen
+            in derselben Pipe-Queue (Anzeige unten), nur die Eingabe differiert. */}
+        <div
+          role="tablist"
+          aria-label="Import-Quelle"
+          style={{
+            display: "flex",
+            borderBottom: `1px solid ${C.border}`,
+            flexShrink: 0,
+          }}
+        >
+          {([
+            { key: "url" as const, label: "Web / YouTube", icon: LinkIcon },
+            { key: "voice" as const, label: "Sprachaufnahme", icon: Mic },
+          ]).map((t) => {
+            const active = tab === t.key;
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.key}
+                role="tab"
+                aria-selected={active}
+                onClick={() => setTab(t.key)}
+                style={{
+                  flex: 1,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  padding: "10px 0",
+                  background: active ? C.elevated : "transparent",
+                  border: "none",
+                  borderBottom: `2px solid ${active ? C.accent : "transparent"}`,
+                  color: active ? C.text : C.textDim,
+                  cursor: "pointer",
+                  fontSize: 12.5,
+                  fontFamily: FONT.ui,
+                  fontWeight: active ? 600 : 500,
+                }}
+              >
+                <Icon size={14} style={{ color: active ? C.accent : C.textFaint }} />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Eingabe — Tab-abhängig */}
+        {tab === "voice" ? (
+          <div style={{ borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
+            <VoiceRecorder
+              active={open && tab === "voice"}
+              onTranscribed={(noteId) => {
+                onImported(noteId);
+                onClose();
+              }}
+            />
+          </div>
+        ) : (
         <div
           style={{
             padding: 14,
@@ -536,6 +600,7 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
             </div>
           )}
         </div>
+        )}
 
         {/* Queue */}
         <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
