@@ -1,12 +1,13 @@
 import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import {
   database,
   systemConfig,
   vaults,
+  forgejoOauthTokens,
   initCore,
   getIntegrationSettings,
   setSupadataApiKey,
@@ -100,15 +101,49 @@ adminRoutes.put("/system-settings/vault-url", async (c) => {
   }
 
   // ── 1. Remote reachability ─────────────────────────────────────────────
+  //
+  // Forgejo with REQUIRE_SIGNIN_VIEW rejects anonymous `git ls-remote` even
+  // for public-looking URLs. The canonical (untokenised) URL is what the DB
+  // stores, but the test request has to inject the OAuth token from the
+  // vault owner's `forgejo_oauth_tokens` row — same pattern that
+  // `setupVaultFromForgejo` uses for the initial clone.
+  //
+  // Token never leaks: it lives only in the authedUrl passed to `git
+  // ls-remote`. The stored URL stays canonical. Any error message coming
+  // back from git is sanitised before being returned to the client.
+  const vaultRow = (
+    await database().select().from(vaults).where(eq(vaults.id, vaultId)).limit(1)
+  )[0];
+  if (!vaultRow) {
+    return c.json({ error: "vault-not-found" }, 404);
+  }
+
+  const candidateHost = extractHost(gitRemote);
+  const oauthToken = candidateHost
+    ? await findOauthTokenForHost(vaultRow.ownerId, candidateHost)
+    : null;
+  const authedUrl = oauthToken ? injectOauthToken(gitRemote, oauthToken) : gitRemote;
+  const tokenWasInjected = authedUrl !== gitRemote;
+
   try {
-    await exec("git", ["ls-remote", "--heads", gitRemote, gitBranch], {
+    await exec("git", ["ls-remote", "--heads", authedUrl, gitBranch], {
       timeout: 10_000,
     });
   } catch (err) {
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    // Strip the token before returning — even though we built the authed
+    // URL locally, git's stderr can echo the full URL back.
+    const safeMessage = oauthToken
+      ? stripTokenFromMessage(rawMessage, oauthToken)
+      : rawMessage;
+    const hint =
+      !tokenWasInjected && candidateHost
+        ? " Hostname not connected via OAuth. Verbinde dich erst in Schritt 1 des Setup-Wizards."
+        : "";
     return c.json(
       {
         error: "remote-unreachable",
-        message: err instanceof Error ? err.message : String(err),
+        message: safeMessage + hint,
       },
       400,
     );
@@ -121,16 +156,28 @@ adminRoutes.put("/system-settings/vault-url", async (c) => {
     .where(eq(vaults.id, vaultId));
 
   // ── 3. Working-copy git remote swap ────────────────────────────────────
+  //
+  // The working-copy's `.git/config` needs the TOKENISED URL so subsequent
+  // `git fetch/push origin` (stages 5/5c) can authenticate against Forgejo
+  // — same as what `setupVaultFromForgejo` bakes in on the initial clone.
+  // The DB column above (`vaults.git_remote`) stays canonical; only the
+  // local `.git/config` carries the token. If no OAuth token is available,
+  // fall through with the canonical URL and let fetch/push fail explicitly.
   const workdir = config.vaultDir;
+  const remoteForWorkingCopy = authedUrl;
   const stages: { step: string; ok: boolean; message?: string }[] = [];
   try {
-    await exec("git", ["-C", workdir, "remote", "set-url", "origin", gitRemote]);
+    await exec("git", ["-C", workdir, "remote", "set-url", "origin", remoteForWorkingCopy]);
     stages.push({ step: "remote-set-url", ok: true });
   } catch (err) {
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    const safeMessage = oauthToken
+      ? stripTokenFromMessage(rawMessage, oauthToken)
+      : rawMessage;
     stages.push({
       step: "remote-set-url",
       ok: false,
-      message: err instanceof Error ? err.message : String(err),
+      message: safeMessage,
     });
   }
 
@@ -145,6 +192,13 @@ adminRoutes.put("/system-settings/vault-url", async (c) => {
   stages.push({ step: "core-config-hot-swap", ok: true });
 
   // ── 5. Fetch + intelligent integration ─────────────────────────────────
+  //
+  // `git fetch origin` uses the URL in `.git/config` — which we just set to
+  // `remoteForWorkingCopy` (tokenised when available). Stderr can echo that
+  // URL back on failure; every error message below is filtered through
+  // `stripTokenFromMessage` before it leaves the server.
+  const sanitize = (msg: string) =>
+    (oauthToken ? stripTokenFromMessage(msg, oauthToken) : msg).slice(0, 300);
   try {
     await exec("git", ["-C", workdir, "fetch", "origin", gitBranch], {
       timeout: 30_000,
@@ -154,7 +208,7 @@ adminRoutes.put("/system-settings/vault-url", async (c) => {
     stages.push({
       step: "fetch",
       ok: false,
-      message: err instanceof Error ? err.message.slice(0, 300) : String(err),
+      message: err instanceof Error ? sanitize(err.message) : String(err),
     });
   }
 
@@ -189,10 +243,10 @@ adminRoutes.put("/system-settings/vault-url", async (c) => {
         rebaseStatus = "ok-unrelated-histories-merged";
       } catch (mergeErr) {
         await exec("git", ["-C", workdir, "merge", "--abort"]).catch(() => {});
-        rebaseStatus = `fail: ${mergeErr instanceof Error ? mergeErr.message.slice(0, 200) : "unknown"}`;
+        rebaseStatus = `fail: ${mergeErr instanceof Error ? sanitize(mergeErr.message).slice(0, 200) : "unknown"}`;
       }
     } else {
-      rebaseStatus = `fail: ${msg.slice(0, 200)}`;
+      rebaseStatus = `fail: ${sanitize(msg).slice(0, 200)}`;
     }
   }
   stages.push({ step: "pull-rebase", ok: rebaseStatus.startsWith("ok"), message: rebaseStatus });
@@ -210,7 +264,7 @@ adminRoutes.put("/system-settings/vault-url", async (c) => {
       stages.push({
         step: "push",
         ok: false,
-        message: err instanceof Error ? err.message.slice(0, 300) : String(err),
+        message: err instanceof Error ? sanitize(err.message) : String(err),
       });
     }
   } else {
@@ -457,6 +511,99 @@ adminRoutes.get("/skills", async (c) => {
 
 function maskDsn(dsn: string): string {
   return dsn.replace(/(:)([^@]+)(@)/, "$1***$3");
+}
+
+/**
+ * Extract the bare host (no scheme, no path) from a clone URL.
+ *
+ *   https://forgejo.example.com/oliver/vault.git → "forgejo.example.com"
+ *
+ * Returns null for SSH/bare slugs/anything we can't parse — caller treats
+ * null as "not OAuth-eligible, fall back to anonymous test".
+ */
+function extractHost(gitRemote: string): string | null {
+  try {
+    const u = new URL(gitRemote);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+    return u.host;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Find a `forgejo_oauth_tokens` row for `(userId, host)`.
+ *
+ * The token row stores `forgejo_base_url` like `https://forgejo.example.com`
+ * — we match by host so an HTTPS clone URL with the same hostname picks up
+ * the right token regardless of whether the stored base ends in a slash or
+ * has a path suffix.
+ */
+async function findOauthTokenForHost(
+  userId: string,
+  host: string,
+): Promise<string | null> {
+  const rows = await database()
+    .select({
+      accessToken: forgejoOauthTokens.accessToken,
+      forgejoBaseUrl: forgejoOauthTokens.forgejoBaseUrl,
+    })
+    .from(forgejoOauthTokens)
+    .where(eq(forgejoOauthTokens.userId, userId));
+  // `forgejo_base_url` is whatever the operator set in env — normalize to
+  // host before comparing so trailing-slash / scheme drift doesn't matter.
+  for (const r of rows) {
+    let tokenHost: string;
+    try {
+      tokenHost = new URL(r.forgejoBaseUrl).host;
+    } catch {
+      tokenHost = r.forgejoBaseUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+    }
+    if (tokenHost === host) return r.accessToken;
+  }
+  // Defensive secondary path: re-query with exact `forgejoBaseUrl` match in
+  // case the env stored an exact `https://host` form. Avoids importing the
+  // server config here.
+  const exact = await database()
+    .select({ accessToken: forgejoOauthTokens.accessToken })
+    .from(forgejoOauthTokens)
+    .where(
+      and(
+        eq(forgejoOauthTokens.userId, userId),
+        eq(forgejoOauthTokens.forgejoBaseUrl, `https://${host}`),
+      ),
+    )
+    .limit(1);
+  return exact[0]?.accessToken ?? null;
+}
+
+/**
+ * Inject `oauth2:<token>@` into an HTTPS clone URL. Same convention
+ * `setupVaultFromForgejo` uses in `gitService.ts`. Token NEVER touches the
+ * stored `vaults.git_remote` column — only the in-flight `git ls-remote`
+ * argument.
+ */
+function injectOauthToken(gitRemote: string, accessToken: string): string {
+  try {
+    const u = new URL(gitRemote);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return gitRemote;
+    return `${u.protocol}//oauth2:${accessToken}@${u.host}${u.pathname}${u.search}`;
+  } catch {
+    return gitRemote;
+  }
+}
+
+/**
+ * Remove the OAuth token from any error string before returning it to the
+ * client / logs. Git tends to echo the full URL back in stderr; we never
+ * want the token to surface there.
+ */
+function stripTokenFromMessage(message: string, token: string): string {
+  if (!token) return message;
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return message
+    .replace(new RegExp(`oauth2:${escaped}@`, "g"), "oauth2:***@")
+    .replace(new RegExp(escaped, "g"), "***");
 }
 
 async function checkForgejo(remote: string, branch: string) {
