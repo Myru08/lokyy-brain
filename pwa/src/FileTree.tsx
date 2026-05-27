@@ -1,4 +1,11 @@
-import { useRef, useState, type MouseEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type MouseEvent,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import type { TreeNode } from "@lokyy/shared";
 import {
   ChevronRight,
@@ -85,6 +92,30 @@ export function FileTree({
   const [editing, setEditing] = useState<Editing>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const dragged = useRef<TreeNode | null>(null);
+  /**
+   * Zuletzt geklickter Ordner — wird beim Erstellen einer neuen Notiz /
+   * eines neuen Ordners aus der Kopfzeile als Parent verwendet. Ohne
+   * Auswahl (oder wenn der Ordner ausgeblendet wird) fällt das Verhalten
+   * auf den Vault-Root zurück.
+   */
+  const [activeFolder, setActiveFolder] = useState<string>("");
+  // Ref auf die DOM-Zeile der aktiven Notiz, damit wir sie bei jedem
+  // Wechsel sanft in den sichtbaren Bereich scrollen können.
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!activeId) return;
+    activeRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [activeId]);
+
+  // Wenn der gemerkte Ordner nach einem Rename / Delete / Tag-Filter aus
+  // dem Baum verschwindet, fällt die Auswahl auf den Vault-Root zurück —
+  // sonst zeigt die Kopfzeile dauerhaft einen Tooltip auf einen Pfad,
+  // den es nicht mehr gibt.
+  useEffect(() => {
+    if (!activeFolder) return;
+    if (!findNode(tree, activeFolder)) setActiveFolder("");
+  }, [tree, activeFolder]);
 
   function toggle(path: string) {
     setExpanded((prev) => {
@@ -134,14 +165,34 @@ export function FileTree({
           VAULT
         </span>
         <IconButton
-          title="Neue Notiz"
-          onClick={() => setEditing({ mode: "new-note", parentPath: "" })}
+          title={
+            activeFolder
+              ? `Neue Notiz in "${activeFolder}"`
+              : "Neue Notiz im Vault-Root"
+          }
+          onClick={() => {
+            // Sticky-Folder: neue Einträge landen im zuletzt gewählten
+            // Ordner; ohne Auswahl im Vault-Root.
+            if (activeFolder) {
+              setExpanded((prev) => new Set(prev).add(activeFolder));
+            }
+            setEditing({ mode: "new-note", parentPath: activeFolder });
+          }}
         >
           <FilePlus size={18} />
         </IconButton>
         <IconButton
-          title="Neuer Ordner"
-          onClick={() => setEditing({ mode: "new-folder", parentPath: "" })}
+          title={
+            activeFolder
+              ? `Neuer Ordner in "${activeFolder}"`
+              : "Neuer Ordner im Vault-Root"
+          }
+          onClick={() => {
+            if (activeFolder) {
+              setExpanded((prev) => new Set(prev).add(activeFolder));
+            }
+            setEditing({ mode: "new-folder", parentPath: activeFolder });
+          }}
         >
           <FolderPlus size={18} />
         </IconButton>
@@ -186,9 +237,12 @@ export function FileTree({
             expanded={expanded}
             editing={editing}
             activeId={activeId}
+            activeFolder={activeFolder}
             dropTarget={dropTarget}
+            activeRowRef={activeRowRef}
             onToggle={toggle}
             onOpen={onOpen}
+            onSelectFolder={setActiveFolder}
             onStartEdit={setEditing}
             onCommitEdit={commitEdit}
             onCancelEdit={() => setEditing(null)}
@@ -233,9 +287,12 @@ interface RowProps {
   expanded: Set<string>;
   editing: Editing;
   activeId: string | null;
+  activeFolder: string;
   dropTarget: string | null;
+  activeRowRef: MutableRefObject<HTMLDivElement | null>;
   onToggle: (path: string) => void;
   onOpen: (id: string) => void;
+  onSelectFolder: (path: string) => void;
   onStartEdit: (e: Editing) => void;
   onCommitEdit: (value: string) => void;
   onCancelEdit: () => void;
@@ -252,9 +309,12 @@ function Row(props: RowProps) {
     expanded,
     editing,
     activeId,
+    activeFolder,
     dropTarget,
+    activeRowRef,
     onToggle,
     onOpen,
+    onSelectFolder,
     onStartEdit,
     onCommitEdit,
     onCancelEdit,
@@ -268,6 +328,7 @@ function Row(props: RowProps) {
   const isFolder = node.type === "folder";
   const isOpen = expanded.has(node.path);
   const isActive = node.type === "note" && node.path === activeId;
+  const isFolderSelected = isFolder && node.path === activeFolder;
   const isRenaming = editing?.mode === "rename" && editing.path === node.path;
   const isDropHere = isFolder && dropTarget === node.path;
 
@@ -286,6 +347,7 @@ function Row(props: RowProps) {
   return (
     <>
       <div
+        ref={isActive ? activeRowRef : undefined}
         draggable
         onDragStart={(e) => {
           e.stopPropagation();
@@ -315,26 +377,49 @@ function Row(props: RowProps) {
         }
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
-        onClick={() => (isFolder ? onToggle(node.path) : onOpen(node.path))}
+        onClick={() => {
+          if (isFolder) {
+            // Sticky-Folder: jeder Folder-Click merkt sich den Pfad,
+            // damit folgende „Neue Notiz / Neuer Ordner"-Aktionen aus
+            // der Kopfzeile hier hineinarbeiten.
+            onSelectFolder(node.path);
+            onToggle(node.path);
+          } else {
+            onOpen(node.path);
+          }
+        }}
         style={{
           display: "flex",
           alignItems: "center",
           gap: 5,
           padding: "4px 6px",
-          paddingLeft: 6 + depth * 12,
+          // Linker Akzent-Balken bei aktiver Notiz / gewähltem Ordner.
+          // 3px Balken + 3px Innenabstand kompensieren das ursprüngliche
+          // 6px-Padding, damit die Zeile nicht „springt".
+          paddingLeft:
+            (isActive || isFolderSelected ? 3 : 6) + depth * 12,
+          borderLeft:
+            isActive
+              ? `3px solid ${C.accent}`
+              : isFolderSelected
+                ? `3px solid ${C.gold}`
+                : "3px solid transparent",
           marginBottom: 1,
           borderRadius: 6,
           cursor: "pointer",
           fontSize: 13.5,
           background: isActive
             ? C.selection
-            : isDropHere
-              ? C.hover
-              : hover
-                ? C.elevated
-                : "transparent",
+            : isFolderSelected
+              ? C.accentSoft
+              : isDropHere
+                ? C.hover
+                : hover
+                  ? C.elevated
+                  : "transparent",
           outline: isDropHere ? `1px dashed ${C.accent}` : "none",
           color: isActive ? C.text : C.textDim,
+          fontWeight: isActive ? 600 : 400,
         }}
       >
         {isFolder ? (
@@ -407,11 +492,16 @@ function Row(props: RowProps) {
               title="Löschen"
               onClick={(e) => {
                 e.stopPropagation();
-                if (
-                  window.confirm(
-                    `"${node.name}" wirklich löschen? Wird aus Forgejo entfernt.`,
-                  )
-                ) {
+                // Bei nicht-leeren Ordnern eine zusätzliche, deutlichere
+                // Warnung — Forgejo behält zwar die History, aber das
+                // Working-Copy-Delete kann ganze Unterbäume mitziehen.
+                const childCount = isFolder ? node.children.length : 0;
+                const base = `"${node.name}" wirklich löschen? Diese Aktion kann nicht rückgängig gemacht werden.`;
+                const message =
+                  isFolder && childCount > 0
+                    ? `WARNUNG: Der Ordner enthält ${childCount} Eintr${childCount === 1 ? "ag" : "äge"}, die ebenfalls gelöscht werden.\n\n${base}`
+                    : base;
+                if (window.confirm(message)) {
                   onDelete(node);
                 }
               }}
