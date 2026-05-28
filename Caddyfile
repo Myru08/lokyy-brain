@@ -2,6 +2,10 @@
 # Set LOKYY_DOMAIN in .env zu deiner echten Domain (z.B. lokyy.deine-domain.tld).
 #
 # Routes:
+#   /.well-known/oauth-*  → MCP OAuth metadata (oauth-protected-resource, oauth-authorization-server)
+#   /authorize            → OAuth authorization endpoint
+#   /token                → OAuth token endpoint
+#   /register             → OAuth Dynamic Client Registration endpoint
 #   /mcp/*       → MCP HTTP transport (claude.ai Custom Connector kommt hier rein)
 #   /api/*       → lokyy-brain REST API
 #   /            → PWA (Single-Page-App, fallback auf index.html für client-side routing)
@@ -20,6 +24,27 @@
 		Access-Control-Allow-Methods "GET, POST, DELETE, OPTIONS"
 		Access-Control-Allow-Headers "Content-Type, Authorization, Mcp-Session-Id"
 		Access-Control-Expose-Headers "Mcp-Session-Id"
+	}
+
+	# OAuth 2.1 metadata + endpoints (must come before catch-all PWA block)
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy lokyy-mcp-http:8788
+	}
+
+	handle /.well-known/oauth-authorization-server* {
+		reverse_proxy lokyy-mcp-http:8788
+	}
+
+	handle /authorize* {
+		reverse_proxy lokyy-mcp-http:8788
+	}
+
+	handle /token {
+		reverse_proxy lokyy-mcp-http:8788
+	}
+
+	handle /register {
+		reverse_proxy lokyy-mcp-http:8788
 	}
 
 	# MCP-Transport (für claude.ai Custom Connector)

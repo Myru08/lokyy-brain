@@ -2,19 +2,24 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { handleOAuthRoute, verifyToken, deriveBase } from "./oauth.js";
 
 /**
  * lokyy-brain MCP HTTP transport (companion to stdio).
  *
  * - Exposes a single POST/GET/DELETE `/mcp` endpoint per the MCP spec.
- * - Bearer-token auth: every request must carry `Authorization: Bearer <token>`
- *   where token comes from env `LOKYY_MCP_TOKEN`. If the env is empty, the
- *   server refuses to start (no anonymous access).
- * - Per-client session management via `StreamableHTTPServerTransport`.
+ * - Auth: Bearer token accepted as either:
+ *     1. Legacy static LOKYY_MCP_TOKEN (keeps existing CLI/Desktop header configs working)
+ *     2. OAuth-issued access_token JWT (verified via HMAC-SHA256, checked exp+aud)
+ * - On 401: includes WWW-Authenticate header with resource_metadata URI (RFC 9728).
+ * - OAuth endpoints (/.well-known/*, /register, /authorize, /token) are served
+ *   by oauth.ts BEFORE the /mcp block — no auth required on those paths.
+ * - Per-client session management via StreamableHTTPServerTransport.
  * - CORS allow-all for browser-based MCP clients.
  *
  * Use cases:
  *   - Remote Claude Desktop instances behind `mcp-remote` bridge
+ *   - claude.ai Custom Connector (OAuth flow)
  *   - Self-hosted lokyy-brain on a server, multiple clients per user
  *   - Docker-deployed instance with public ingress
  */
@@ -49,7 +54,7 @@ function setCors(res: ServerResponse) {
 }
 
 export async function startHttpServer(
-  server: Server,
+  serverFactory: () => Server | Promise<Server>,
   port: number,
   token: string,
 ): Promise<void> {
@@ -61,27 +66,55 @@ export async function startHttpServer(
   const http = createServer(async (req, res) => {
     setCors(res);
 
+    // ------------------------------------------------------------------
+    // OPTIONS preflight — handled globally for CORS; OAuth handler also
+    // short-circuits its own paths, so we handle top-level here first.
+    // ------------------------------------------------------------------
     if (req.method === "OPTIONS") {
       res.writeHead(204).end();
       return;
     }
 
+    // ------------------------------------------------------------------
+    // OAuth endpoints — must be checked BEFORE the /mcp block.
+    // handleOAuthRoute returns true if it handled the request.
+    // ------------------------------------------------------------------
+    const oauthHandled = await handleOAuthRoute(req, res);
+    if (oauthHandled) return;
+
+    // ------------------------------------------------------------------
+    // Unknown paths (not OAuth, not /mcp*)
+    // ------------------------------------------------------------------
     if (!req.url || !req.url.startsWith("/mcp")) {
       res.writeHead(404, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "not-found", hint: "POST /mcp" }));
       return;
     }
 
+    // ------------------------------------------------------------------
+    // Health check — unauthenticated
+    // ------------------------------------------------------------------
     if (req.url === "/mcp/health") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
       return;
     }
 
-    // Auth — Bearer token required on every request.
+    // ------------------------------------------------------------------
+    // Auth — Bearer token required on every /mcp request.
+    // Accepts: (1) legacy static LOKYY_MCP_TOKEN, (2) OAuth JWT access token.
+    // ------------------------------------------------------------------
     const auth = req.headers["authorization"];
-    if (auth !== `Bearer ${token}`) {
-      res.writeHead(401, { "Content-Type": "application/json" });
+    const bearerToken = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+    const isLegacyToken = bearerToken === token;
+    const isOAuthToken = bearerToken ? verifyToken(bearerToken, "access") : false;
+
+    if (!isLegacyToken && !isOAuthToken) {
+      const base = deriveBase(req);
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource", error="invalid_token"`,
+      });
       res.end(JSON.stringify({ error: "unauthorized" }));
       return;
     }
@@ -92,7 +125,11 @@ export async function startHttpServer(
     if (sessionId && sessions.has(sessionId)) {
       transport = sessions.get(sessionId)!;
     } else if (req.method === "POST") {
-      // New session — initialize transport
+      // New session — build a FRESH Server for this session. The MCP SDK
+      // forbids one Server/Protocol instance from connecting to more than one
+      // transport, so every session gets its own instance. The heavy global
+      // init (core/db/repo/scopes) already ran once via initServerDeps.
+      const sessionServer = await serverFactory();
       transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (sid) => {
@@ -106,7 +143,7 @@ export async function startHttpServer(
           console.error(`[lokyy-mcp-http] session closed: ${transport.sessionId}`);
         }
       };
-      await server.connect(transport);
+      await sessionServer.connect(transport);
     } else {
       res.writeHead(400, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: "no-session", hint: "POST to initialize" }));
@@ -126,6 +163,6 @@ export async function startHttpServer(
   });
 
   http.listen(port, () => {
-    console.error(`[lokyy-mcp-http] listening on http://localhost:${port}/mcp (bearer auth required)`);
+    console.error(`[lokyy-mcp-http] listening on http://localhost:${port}/mcp (bearer + OAuth auth)`);
   });
 }

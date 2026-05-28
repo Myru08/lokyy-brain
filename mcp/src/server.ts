@@ -66,17 +66,51 @@ Skills are reusable workflows the user has defined in the vault. To use one: cal
  * (Story 7.5) are deferred.
  */
 
-export async function buildServer(
+/**
+ * Module-level vault-id captured by `initServerDeps`. The CallTool handlers
+ * close over this so `createServer()` can mint a fresh `Server` per session
+ * without threading the id through every call. Set exactly once by
+ * `initServerDeps`; read by the handlers built in `createServer`.
+ */
+let activeVaultId = "";
+
+/**
+ * Module-level vault working-copy dir captured by `initServerDeps`. The skills
+ * handlers (`list_skills`/`run_skill`) read it; captured here so `createServer()`
+ * can close over it the same way it does `activeVaultId`.
+ */
+let activeVaultDir = "";
+
+/**
+ * One-time global initialization. Wires core (gitService + DB + memory),
+ * ensures the repo, loads scopes, and captures the vault-id for the handlers.
+ * Run this ONCE per process before constructing any Server instance.
+ *
+ * The HTTP path needs a separate `Server` per session (the MCP SDK forbids
+ * one Server/Protocol instance from connecting to multiple transports), so
+ * the heavy one-time init is deliberately separated from Server construction.
+ */
+export async function initServerDeps(
   coreConfig: CoreConfig,
   databaseUrl: string,
   vaultId: string,
   agentId: string,
-): Promise<Server> {
-  // Wire core (gitService + DB + memory) before serving any tool.
+): Promise<void> {
   initCore(coreConfig);
   initDb(databaseUrl);
   await ensureRepo();
   await loadScopes(coreConfig.vaultDir, agentId);
+  activeVaultId = vaultId;
+  activeVaultDir = coreConfig.vaultDir;
+}
+
+/**
+ * Build a FRESH `Server` with all request handlers. Safe to call multiple
+ * times (once per session for the HTTP transport). Requires `initServerDeps`
+ * to have run first — the handlers read module-level core/scope/vault state.
+ */
+export function createServer(): Server {
+  const vaultId = activeVaultId;
 
   const server = new Server(
     { name: "lokyy-brain", version: "0.0.1" },
@@ -265,7 +299,7 @@ export async function buildServer(
           // Skill notes are ordinary notes (canonically under 70_pai/skills/);
           // reading them already runs through the read-scope, so only return
           // skills whose note path is readable by this agent (AC#4).
-          const skills = await listSkillNotes(coreConfig.vaultDir);
+          const skills = await listSkillNotes(activeVaultDir);
           const summaries = skills
             .filter((s) => canRead(skillNotePath(s.skill_name)))
             .map((s) => ({
@@ -285,7 +319,7 @@ export async function buildServer(
           if (!canRead(skillNotePath(skillName))) {
             throw new ScopeViolation("read", `70_pai/skills/${skillName}`);
           }
-          const skills = await listSkillNotes(coreConfig.vaultDir);
+          const skills = await listSkillNotes(activeVaultDir);
           const skill = skills.find((s) => s.skill_name === skillName);
           if (!skill) {
             return text({ ok: false, error: "skill-not-found", skill_name: skillName });
@@ -334,6 +368,22 @@ export async function buildServer(
   });
 
   return server;
+}
+
+/**
+ * Convenience wrapper for the stdio path: run one-time init, then build a
+ * single Server. stdio uses one Server + one transport, so a single instance
+ * is correct here. The HTTP path instead calls `initServerDeps` once and
+ * `createServer` per session.
+ */
+export async function buildServer(
+  coreConfig: CoreConfig,
+  databaseUrl: string,
+  vaultId: string,
+  agentId: string,
+): Promise<Server> {
+  await initServerDeps(coreConfig, databaseUrl, vaultId, agentId);
+  return createServer();
 }
 
 export async function start(server: Server): Promise<void> {

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { resolve } from "node:path";
-import { buildServer } from "./server.js";
+import { initServerDeps, createServer } from "./server.js";
 import { startHttpServer } from "./httpServer.js";
 import { resolveVaultId } from "./resolveVaultId.js";
 
@@ -38,8 +38,12 @@ const coreConfig = {
   gitAuthorEmail: process.env.LOKYY_GIT_AUTHOR_EMAIL ?? "lokyy-brain@localhost",
 };
 
-const server = await buildServer(coreConfig, databaseUrl, vaultId, agentId);
-await startHttpServer(server, port, token);
+// One-time global init (core/db/repo/scopes + capture vault-id). Then pass a
+// factory so each MCP session gets its OWN Server instance — the SDK forbids
+// one Server connecting to multiple transports, and claude.ai opens many
+// sessions over a connector's lifetime (reconnects, new chats, token refresh).
+await initServerDeps(coreConfig, databaseUrl, vaultId, agentId);
+await startHttpServer(() => createServer(), port, token);
 
 function req(name: string): string {
   const v = process.env[name];

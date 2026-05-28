@@ -268,13 +268,18 @@ ${LOKYY_BRAIN_SYSTEM_PROMPT}`;
 
 function claudeAiSnippet(env: Record<string, string>): string {
   const httpUrl = env.LOKYY_PUBLIC_URL ?? "https://your-deployed-host.tld/mcp";
-  return `claude.ai Custom Connector setup:
-  1. Open claude.ai → Settings → Connectors → Add Custom Connector
-  2. Name:           lokyy-brain
-  3. MCP Server URL: ${httpUrl}
-  4. Auth:           Bearer
-  5. Token:          <your LOKYY_MCP_TOKEN>
-  6. Save → 5 tools should appear (read_note, search_vault, list_tree, create_note, update_note)
+  return `claude.ai Custom Connector setup (OAuth 2.1 — Dynamic Client Registration):
+  1. Open claude.ai → Settings → Connectors → Add custom connector
+  2. Name:                    lokyy-brain
+  3. Remote MCP Server URL:   ${httpUrl}
+  4. OAuth Client ID:         (leave empty — the server self-registers via Dynamic Client Registration)
+  5. OAuth Client Secret:     (leave empty — same as above)
+  6. Click Connect.
+     claude.ai will open a login/consent page hosted by the MCP server.
+     Enter the value of LOKYY_OAUTH_PASSWORD (or LOKYY_MCP_TOKEN if
+     LOKYY_OAUTH_PASSWORD is not set in your deployment).
+  7. After authorizing, the 5 tools should appear:
+     read_note, search_vault, list_tree, create_note, update_note
 
 claude.ai picks up the MCP \`instructions\` field automatically when the
 connector is added — no separate prompt needed. But for a more aggressive
