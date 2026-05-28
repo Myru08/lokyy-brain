@@ -376,6 +376,20 @@ adminRoutes.get("/mcp-info", async (c) => {
   const httpToken = process.env.LOKYY_MCP_TOKEN ?? "<set-LOKYY_MCP_TOKEN-env-and-restart>";
   const publicHost = process.env.LOKYY_PUBLIC_HOST ?? "localhost";
 
+  // OAuth consent password shown in the e_claude_ai_oauth card so the user can
+  // copy the exact value to enter on the consent page. LOKYY_OAUTH_PASSWORD
+  // wins; otherwise LOKYY_MCP_TOKEN doubles as the password (matches the
+  // mcp/oauth fallback). Mirrors the httpToken placeholder style above.
+  const consentPassword =
+    process.env.LOKYY_OAUTH_PASSWORD ??
+    process.env.LOKYY_MCP_TOKEN ??
+    "<setze LOKYY_OAUTH_PASSWORD oder LOKYY_MCP_TOKEN und starte neu>";
+  const consentPasswordSource = process.env.LOKYY_OAUTH_PASSWORD
+    ? "LOKYY_OAUTH_PASSWORD"
+    : process.env.LOKYY_MCP_TOKEN
+      ? "LOKYY_MCP_TOKEN"
+      : "nicht gesetzt";
+
   // Coolify/Dokploy-style FQDN env wins over local-dev host:port. Result is
   // built once and shared between the snippet args and the endpointUrl /
   // healthUrl fields the PWA Settings page renders verbatim.
@@ -433,7 +447,7 @@ adminRoutes.get("/mcp-info", async (c) => {
       c_native_http: {
         title: "Native HTTP — empfohlen für Claude Code / Claude Desktop",
         when:
-          "Du willst von beliebigen Rechnern/Clients ohne lokyy-brain checkout connecten. Server (lokyy-mcp-http) muss laufen. Funktioniert mit Claude Code, Claude Desktop ≥ recent, claude.ai Custom Connector — alle unterstützen nativen HTTP-Transport.",
+          "Du willst von Claude Code oder Claude Desktop (lokal) connecten. Der Bearer-Token wird direkt im Header mitgeschickt — das ist der richtige Weg für diese Clients. Für die claude.ai Web-App nutze stattdessen den neuen OAuth-Connector (e_claude_ai_oauth), da die claude.ai-Oberfläche kein manuelles Header-Feld anbietet.",
         precondition: [
           `Start server: pnpm --filter @lokyy/mcp start:http   (env: LOKYY_MCP_TOKEN=<token>, LOKYY_MCP_HTTP_PORT=${httpPort})`,
           `Bei public ingress: HTTPS-Reverse-Proxy davor (Caddy/nginx/traefik).`,
@@ -496,6 +510,31 @@ adminRoutes.get("/mcp-info", async (c) => {
         healthUrl: remoteHealth,
         authNote:
           "Bearer-Token aus env LOKYY_MCP_TOKEN. Jeder Request muss `Authorization: Bearer <token>` mitschicken. Ohne Token startet der HTTP-Server gar nicht.",
+      },
+
+      e_claude_ai_oauth: {
+        title: "claude.ai (Web & Desktop) — Custom Connector über OAuth",
+        when:
+          'Du willst lokyy-brain direkt in der claude.ai-Web-App oder Claude Desktop als „Eigenen Connector“ nutzen — ohne lokale Config-Datei. DAS ist der Weg, den die claude.ai-Oberfläche anbietet (sie hat kein Feld für einen Bearer-Token).',
+        precondition: [
+          "MCP-Server öffentlich per HTTPS erreichbar (lokyy-mcp-http hinter Reverse-Proxy).",
+          "In Coolify gesetzt: LOKYY_OAUTH_PASSWORD (das Passwort, das du beim Verbinden eingibst) + ein starkes, zufälliges LOKYY_OAUTH_SIGNING_SECRET. Ohne LOKYY_OAUTH_PASSWORD gilt LOKYY_MCP_TOKEN als Passwort.",
+        ],
+        steps: [
+          'In claude.ai: Einstellungen → Connectors → „Eigenen Connector hinzufügen".',
+          "Name: lokyy-brain",
+          `Remote MCP Server URL: ${remoteEndpoint}`,
+          "OAuth Client ID und OAuth Client Secret LEER lassen — der Server registriert sich automatisch (Dynamic Client Registration).",
+          'Auf „Hinzufügen"/„Verbinden" klicken. claude.ai öffnet eine Login-Seite, die der MCP-Server selbst hostet.',
+          "Auf der Login-Seite dein LOKYY_OAUTH_PASSWORD eingeben (bzw. LOKYY_MCP_TOKEN, falls kein OAuth-Passwort gesetzt ist) und autorisieren.",
+          "Fertig — die Tools erscheinen im Connector und du kannst lokyy-brain in claude.ai nutzen.",
+        ],
+        endpointUrl: remoteEndpoint,
+        healthUrl: remoteHealth,
+        consentPassword,
+        consentPasswordSource,
+        authNote:
+          "OAuth 2.1 (Dynamic Client Registration RFC 7591 + PKCE S256). Der Zugriffstoken ist ein zustandsloses HS256-JWT, signiert mit LOKYY_OAUTH_SIGNING_SECRET. Kein manueller Token nötig — claude.ai bekommt ihn über den OAuth-Flow. (Der bestehende LOKYY_MCP_TOKEN funktioniert parallel weiter für Header-basierte Clients wie Claude Code.)",
       },
     },
 

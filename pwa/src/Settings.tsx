@@ -55,7 +55,13 @@ interface McpVariant {
    * always reload the mcp-config cleanly.
    */
   instructions?: string;
-  snippet: Record<string, unknown>;
+  snippet?: Record<string, unknown>;
+  /**
+   * Ordered UI steps for connection methods that don't have a config-file
+   * snippet (e.g. `e_claude_ai_oauth` which walks through the claude.ai UI).
+   * When present, rendered as a numbered list under a "So geht's:" heading.
+   */
+  steps?: string[];
   /**
    * Optional additional sub-snippets (e.g. a `claude mcp add` CLI form
    * alongside the `claude_desktop_config.json` JSON). Each gets its own
@@ -68,6 +74,14 @@ interface McpVariant {
   }>;
   endpointUrl?: string;
   healthUrl?: string;
+  /**
+   * Consent-page password value + its env source, surfaced by
+   * `e_claude_ai_oauth` so the user can copy the exact string to enter on the
+   * OAuth consent page. Consistent with `c_native_http` already showing the
+   * LOKYY_MCP_TOKEN value inside its Bearer snippet on this admin page.
+   */
+  consentPassword?: string;
+  consentPasswordSource?: string;
   authNote?: string;
 }
 
@@ -82,8 +96,10 @@ interface McpInfo {
   variants?: {
     a_local_stdio: McpVariant;
     b_npx: McpVariant;
-    /** Native HTTP transport — recommended for modern clients. */
+    /** Native HTTP transport — recommended for Claude Code / Claude Desktop. */
     c_native_http: McpVariant;
+    /** OAuth 2.1 connector — for claude.ai web/desktop Custom Connector. */
+    e_claude_ai_oauth: McpVariant;
     /** Legacy mcp-remote bridge — fallback for clients without native HTTP. */
     d_mcp_remote_legacy: McpVariant;
   };
@@ -849,6 +865,11 @@ export function Settings({
         "d_mcp_remote_legacy",
         runtime,
       ),
+      e_claude_ai_oauth: applyRuntimeOverrides(
+        mcp.variants.e_claude_ai_oauth,
+        "e_claude_ai_oauth",
+        runtime,
+      ),
     };
   }, [mcp, runtime]);
 
@@ -1281,7 +1302,7 @@ export function Settings({
 
       {/* ───── Tab: MCP ───── */}
       {tab === "mcp" && (
-        <Section title="MCP-Anbindung — drei Wege">
+        <Section title="MCP-Anbindung — so verbindest du Claude">
           <VaultIdCard
             vaultId={vaultId}
             mcpHealthy={mcpHealthy}
@@ -1319,6 +1340,7 @@ export function Settings({
                       "a_local_stdio",
                       "b_npx",
                       "c_native_http",
+                      "e_claude_ai_oauth",
                       "d_mcp_remote_legacy",
                     ] as const
                   ).map((k) => {
@@ -1442,12 +1464,50 @@ export function Settings({
                         {v.instructions && (
                           <Note color={C.gold}>{v.instructions}</Note>
                         )}
-                        <CodeBlock
-                          label={`${v.title} — claude_desktop_config.json`}
-                          code={JSON.stringify(v.snippet, null, 2)}
-                          onCopy={(l, c) => copy(l, c)}
-                          copiedLabel={copied}
-                        />
+                        {v.steps && v.steps.length > 0 && (
+                          <div style={{ marginBottom: 8 }}>
+                            <p
+                              style={{
+                                color: C.textDim,
+                                fontSize: 12,
+                                margin: "0 0 4px 0",
+                                fontWeight: 600,
+                              }}
+                            >
+                              So geht's:
+                            </p>
+                            <ol
+                              style={{
+                                margin: "0 0 0 16px",
+                                padding: 0,
+                                color: C.textDim,
+                                fontSize: 13,
+                              }}
+                            >
+                              {v.steps.map((step, i) => (
+                                <li key={i} style={{ marginBottom: 4 }}>
+                                  {step}
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                        {v.consentPassword && (
+                          <CodeBlock
+                            label={`Login-Passwort (aus ${v.consentPasswordSource ?? "env"})`}
+                            code={v.consentPassword}
+                            onCopy={(l, c) => copy(l, c)}
+                            copiedLabel={copied}
+                          />
+                        )}
+                        {v.snippet && (
+                          <CodeBlock
+                            label={`${v.title} — claude_desktop_config.json`}
+                            code={JSON.stringify(v.snippet, null, 2)}
+                            onCopy={(l, c) => copy(l, c)}
+                            copiedLabel={copied}
+                          />
+                        )}
                         {v.extraSnippets?.map((sub, i) => (
                           <CodeBlock
                             key={`${k}-extra-${i}`}
@@ -1846,9 +1906,19 @@ function applyRuntimeOverrides(
     | "a_local_stdio"
     | "b_npx"
     | "c_native_http"
-    | "d_mcp_remote_legacy",
+    | "d_mcp_remote_legacy"
+    | "e_claude_ai_oauth",
   runtime: RuntimeInfo | null,
 ): McpVariant {
+  // e_claude_ai_oauth has no snippet to patch — just pass through with updated URLs.
+  if (key === "e_claude_ai_oauth") {
+    const publicUrl = runtime?.env.mcpPublicUrl?.trim();
+    if (!publicUrl) return variant;
+    const healthUrl = publicUrl.endsWith("/")
+      ? `${publicUrl}health`
+      : `${publicUrl}/health`;
+    return { ...variant, endpointUrl: publicUrl, healthUrl };
+  }
   if (key !== "c_native_http" && key !== "d_mcp_remote_legacy") return variant;
   const publicUrl = runtime?.env.mcpPublicUrl?.trim();
   if (!publicUrl) return variant;
@@ -1859,6 +1929,8 @@ function applyRuntimeOverrides(
     : `${publicUrl}/health`;
 
   // Patch the snippet so the copyable JSON points at the public URL too.
+  // snippet is required for c_native_http / d_mcp_remote_legacy — guard for type safety.
+  if (!variant.snippet) return { ...variant, endpointUrl: publicUrl, healthUrl };
   const patchedSnippet = JSON.parse(JSON.stringify(variant.snippet)) as Record<
     string,
     unknown
