@@ -77,7 +77,7 @@ lokyy-brain works on the **lokyy-vault** — a standardized Markdown vault with 
 - **Every `.md` file requires frontmatter** with: `id` (ULID, 26 chars, stable on rename), `type`, `title`, `created` (immutable), `updated` (hook sets automatically).
 - **`notesService` must never commit raw body without valid frontmatter.** A failed pre-commit hook must be surfaced as a distinct error type, not a generic git error.
 - **`createNote` generates complete schema-valid frontmatter.** `saveNote` preserves existing frontmatter and updates `updated`.
-- Doc types (`note`, `capture`, `project`, `task`, `decision`, `meeting`, `customer`, `workflow`, `intervention`, `content`) are a closed list defined by JSON schemas in `00_meta/schemas/`.
+- Doc types (`note`, `capture`, `project`, `task`, `decision`, `meeting`, `customer`, `workflow`, `intervention`, `content`, `skill`) are a closed list defined by JSON schemas in `00_meta/schemas/`. `skill` notes (under `70_pai/skills/`) define reusable workflows exposed via the MCP meta-tools `list_skills`/`run_skill` (Epic 9, see `_bmad-output/planning-artifacts/skills-prd-phase1.md`).
 - Pipe handlers write to `30_captures/{urls,youtube,voice,pdfs}/` with `type: capture` frontmatter (not `inbox/`).
 - Required utilities: frontmatter parse/serialize/validate (recommended: `gray-matter` + `ajv`) and ULID generator (recommended: `ulid`).
 

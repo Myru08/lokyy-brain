@@ -15,6 +15,9 @@ import {
   isUlid,
   saveNote,
   getMemoryProvider,
+  listSkillNotes,
+  validateSkillInput,
+  renderPrompt,
   type CoreConfig,
 } from "@lokyy/core";
 import { canRead, canWrite, activeScope, loadScopes, ScopeViolation } from "./scopes.js";
@@ -45,7 +48,9 @@ const LOKYY_BRAIN_INSTRUCTIONS = `You have access to Lokyy-Brain — the user's 
 
 Search uses Tier 1 (full-text + tags + wikilinks) and Tier 2 (semantic embeddings, when Ollama is up). Multi-token queries are supported. Empty folders appear with "(empty)" marker — they exist for the SPEC structure even before notes land there.
 
-Permission model: your scope is defined in the vault's \`00_meta/mcp-scopes.yaml\` under your agent-id. Scope violations return a structured error — treat them as hard limits, don't retry around them.`;
+Permission model: your scope is defined in the vault's \`00_meta/mcp-scopes.yaml\` under your agent-id. Scope violations return a structured error — treat them as hard limits, don't retry around them.
+
+Skills are reusable workflows the user has defined in the vault. To use one: call \`list_skills\` to see which skills are available, then call \`run_skill\` with the chosen skill — it returns a filled-in prompt. You then execute that returned prompt yourself, using the tools listed here (client-side execution). \`run_skill\` only renders the prompt; it does not run an LLM or write any note on your behalf.`;
 
 /**
  * lokyy-brain MCP server (Story 7.1–7.7).
@@ -175,6 +180,31 @@ export async function buildServer(
           required: ["path", "body"],
         },
       },
+      {
+        name: "list_skills",
+        description:
+          "List the Lokyy-Brain vault skills you can invoke — reusable prompt templates (`type: skill` notes) the user has defined. CALL THIS to discover what skills exist before running one. Each summary carries skill_name, title, description, the input_schema (what params it takes), execution target, and the advisory allowed_tools list. Only skills whose note is within your read-scope are returned.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "run_skill",
+        description:
+          "Run a Lokyy-Brain vault skill: validates your `input` against the skill's input_schema (applying defaults), renders the skill's prompt template with your values, and returns the filled prompt for YOU to execute with your own tool calls. This does NOT call an LLM and does NOT write any note — it only returns the execution payload. allowed_tools is advisory (which vault tools the skill expects you to use). Error forms: skill-not-found (unknown skill_name), invalid-input (with per-field errors), server-execution-not-supported (skills with execution: server are not runnable in Phase 1).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            skill_name: {
+              type: "string",
+              description: "The skill's stable name (lowercase, e.g. 'wochenrueckblick').",
+            },
+            input: {
+              type: "object",
+              description: "Parameter values for the skill's input_schema. Defaults apply for omitted keys.",
+            },
+          },
+          required: ["skill_name"],
+        },
+      },
     ],
   }));
 
@@ -231,6 +261,67 @@ export async function buildServer(
           const note = await saveNote(path, String(args.body ?? ""));
           return text({ updated: note, commitPrefix: activeScope().commitPrefix });
         }
+        case "list_skills": {
+          // Skill notes are ordinary notes (canonically under 70_pai/skills/);
+          // reading them already runs through the read-scope, so only return
+          // skills whose note path is readable by this agent (AC#4).
+          const skills = await listSkillNotes(coreConfig.vaultDir);
+          const summaries = skills
+            .filter((s) => canRead(skillNotePath(s.skill_name)))
+            .map((s) => ({
+              skill_name: s.skill_name,
+              title: s.title,
+              description: s.description,
+              ...(s.input_schema !== undefined ? { input_schema: s.input_schema } : {}),
+              execution: s.execution,
+              allowed_tools: s.allowed_tools,
+            }));
+          return text({ skills: summaries });
+        }
+        case "run_skill": {
+          const skillName = String(args.skill_name ?? "");
+          // Scope-gate before touching disk: same `<path>.md` read-gate the
+          // path-based tools use. Out-of-scope → structured ScopeViolation.
+          if (!canRead(skillNotePath(skillName))) {
+            throw new ScopeViolation("read", `70_pai/skills/${skillName}`);
+          }
+          const skills = await listSkillNotes(coreConfig.vaultDir);
+          const skill = skills.find((s) => s.skill_name === skillName);
+          if (!skill) {
+            return text({ ok: false, error: "skill-not-found", skill_name: skillName });
+          }
+          if (skill.execution === "server") {
+            return text({
+              ok: false,
+              error: "server-execution-not-supported",
+              skill_name: skillName,
+            });
+          }
+          const input = (args.input ?? {}) as Record<string, unknown>;
+          const validation = validateSkillInput(skill, input);
+          if (!validation.ok) {
+            return text({
+              ok: false,
+              error: "invalid-input",
+              skill_name: skillName,
+              field_errors: validation.errors ?? [],
+            });
+          }
+          const prompt = renderPrompt(skill, input);
+          // allowed_tools is advisory (PRD Q3): prepend a single hint line, do
+          // NOT block out-of-allowlist calls.
+          const finalPrompt =
+            skill.allowed_tools.length > 0
+              ? `You should only use these tools: ${skill.allowed_tools.join(", ")}.\n\n${prompt}`
+              : prompt;
+          return text({
+            ok: true,
+            skill_name: skillName,
+            prompt: finalPrompt,
+            allowed_tools: skill.allowed_tools,
+            ...(skill.output !== undefined ? { output: skill.output } : {}),
+          });
+        }
         default:
           return text({ error: "unknown-tool", name });
       }
@@ -249,6 +340,16 @@ export async function start(server: Server): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("[lokyy-mcp] connected via stdio");
+}
+
+/**
+ * Canonical on-disk path of a skill note (without VAULT_DIR prefix), used for
+ * the read-scope gate. Skills live under `70_pai/skills/` per the SPEC; the
+ * scope-resolver matches against this `<id>.md` form exactly like the other
+ * read-tools do.
+ */
+function skillNotePath(skillName: string): string {
+  return `70_pai/skills/${skillName}.md`;
 }
 
 function text(payload: unknown) {

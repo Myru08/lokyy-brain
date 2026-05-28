@@ -95,12 +95,13 @@ interface McpInfo {
 }
 
 interface SkillInfo {
-  name: string;
+  skill_name: string;
+  title: string;
   description: string;
-  installHint: string;
-  howToUse?: string;
-  examplePrompt?: string;
-  worksWith?: string[];
+  allowed_tools: string[];
+  // Vault-relative note id (no `.md`) — for the "im Editor öffnen" link.
+  // null when the backend couldn't locate the note's path.
+  path: string | null;
 }
 
 /**
@@ -228,7 +229,15 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "wartung", label: "Wartung" },
 ];
 
-export function Settings({ onClose }: { onClose: () => void }) {
+export function Settings({
+  onClose,
+  onOpenNote,
+}: {
+  onClose: () => void;
+  // Opens a vault note by id (vault-relative path without `.md`) in the CM6
+  // editor. Optional so Settings still renders if a caller omits it.
+  onOpenNote?: (id: string) => void;
+}) {
   const [tab, setTab] = useState<TabKey>("system");
 
   const [settings, setSettings] = useState<SystemSettings | null>(null);
@@ -1524,31 +1533,40 @@ export function Settings({ onClose }: { onClose: () => void }) {
 
       {/* ───── Tab: Skills ───── */}
       {tab === "skills" && (
-        <Section title="Empfohlene PAI Skills">
-          {skills.map((s) => (
-            <div
-              key={s.name}
-              style={{
-                padding: 14,
-                marginBottom: 12,
-                background: C.elevated,
-                border: `1px solid ${C.border}`,
-                borderRadius: 6,
-              }}
-            >
+        <Section title="Skills in deinem Vault">
+          {skills.length === 0 && (
+            <p style={{ color: C.textDim, fontSize: 13, margin: 0 }}>
+              Keine <code style={{ color: C.gold }}>type: skill</code>-Notes im
+              Vault gefunden. Lege Skills unter{" "}
+              <code style={{ color: C.gold }}>70_pai/skills/</code> an — dieser
+              Tab spiegelt sie dann automatisch.
+            </p>
+          )}
+          {skills.map((s) => {
+            const invocation = `Sag zu Claude: run_skill ${s.skill_name}`;
+            return (
               <div
-                style={{ display: "flex", alignItems: "baseline", gap: 10 }}
+                key={s.skill_name}
+                style={{
+                  padding: 14,
+                  marginBottom: 12,
+                  background: C.elevated,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 6,
+                }}
               >
-                <strong
-                  style={{
-                    color: C.accent,
-                    fontFamily: FONT.serif,
-                    fontSize: 16,
-                  }}
+                <div
+                  style={{ display: "flex", alignItems: "baseline", gap: 10 }}
                 >
-                  {s.name}
-                </strong>
-                {s.worksWith && (
+                  <strong
+                    style={{
+                      color: C.accent,
+                      fontFamily: FONT.serif,
+                      fontSize: 16,
+                    }}
+                  >
+                    {s.title}
+                  </strong>
                   <span
                     style={{
                       fontSize: 11,
@@ -1556,45 +1574,34 @@ export function Settings({ onClose }: { onClose: () => void }) {
                       fontFamily: FONT.mono,
                     }}
                   >
-                    nutzt: {s.worksWith.join(", ")}
+                    {s.skill_name}
                   </span>
-                )}
-              </div>
-              <p
-                style={{
-                  color: C.textDim,
-                  fontSize: 13,
-                  margin: "6px 0",
-                }}
-              >
-                {s.description}
-              </p>
-
-              {s.howToUse && (
-                <div
+                </div>
+                <p
                   style={{
-                    margin: "8px 0",
-                    padding: 8,
-                    background: C.panel,
-                    borderRadius: 4,
-                    fontSize: 12,
-                    color: C.text,
+                    color: C.textDim,
+                    fontSize: 13,
+                    margin: "6px 0",
                   }}
                 >
-                  <strong
+                  {s.description}
+                </p>
+
+                {s.allowed_tools.length > 0 && (
+                  <code
                     style={{
-                      color: C.gold,
+                      display: "block",
                       fontSize: 11,
-                      letterSpacing: 0.5,
+                      color: C.textFaint,
+                      fontFamily: FONT.mono,
                     }}
                   >
-                    SO BENUTZEN
-                  </strong>
-                  <p style={{ margin: "4px 0 0 0" }}>{s.howToUse}</p>
-                </div>
-              )}
+                    tools: {s.allowed_tools.join(", ")}
+                  </code>
+                )}
 
-              {s.examplePrompt && (
+                {/* "wie aufrufen" — adaptiert vom bisherigen Beispiel-Prompt-
+                    Block (Copy-Button-UX bewahrt, AC#8). */}
                 <div style={{ marginTop: 8 }}>
                   <div
                     style={{
@@ -1611,11 +1618,11 @@ export function Settings({ onClose }: { onClose: () => void }) {
                         fontFamily: FONT.mono,
                       }}
                     >
-                      BEISPIEL-PROMPT
+                      WIE AUFRUFEN
                     </span>
                     <button
                       onClick={() =>
-                        copy(`example-${s.name}`, s.examplePrompt!)
+                        copy(`invoke-${s.skill_name}`, invocation)
                       }
                       style={{
                         ...btn,
@@ -1624,7 +1631,7 @@ export function Settings({ onClose }: { onClose: () => void }) {
                       }}
                     >
                       <Copy size={10} />{" "}
-                      {copied === `example-${s.name}`
+                      {copied === `invoke-${s.skill_name}`
                         ? "kopiert"
                         : "kopieren"}
                     </button>
@@ -1640,24 +1647,32 @@ export function Settings({ onClose }: { onClose: () => void }) {
                       color: C.text,
                     }}
                   >
-                    {s.examplePrompt}
+                    {invocation}
                   </code>
                 </div>
-              )}
 
-              <code
-                style={{
-                  display: "block",
-                  marginTop: 8,
-                  fontSize: 11,
-                  color: C.textFaint,
-                  fontFamily: FONT.mono,
-                }}
-              >
-                {s.installHint}
-              </code>
-            </div>
-          ))}
+                {s.path && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenNote?.(s.path!);
+                    }}
+                    disabled={!onOpenNote}
+                    style={{
+                      ...btn,
+                      marginTop: 10,
+                      padding: "5px 10px",
+                      fontSize: 12,
+                      cursor: onOpenNote ? "pointer" : "default",
+                      opacity: onOpenNote ? 1 : 0.5,
+                    }}
+                  >
+                    im Editor öffnen
+                  </button>
+                )}
+              </div>
+            );
+          })}
         </Section>
       )}
 

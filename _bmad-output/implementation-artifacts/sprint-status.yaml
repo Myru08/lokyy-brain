@@ -152,3 +152,20 @@ development_status:
   8-5-intervention-review-api: backlog
   8-6-intervention-review-ui: backlog
   epic-8-retrospective: optional
+
+  # ── Epic 9: Skills — Client-Execution Foundation (Phase 1) ─────────────────
+  # Quelle: _bmad-output/planning-artifacts/skills-prd-phase1.md (+ skills-architecture.md)
+  # Skills = Vault-Notes (type: skill), exposed via MCP-Meta-Tools, client-seitig ausgeführt.
+  # Reihenfolge: 9-1 → (9-2 ∥ 9-5) → (9-3 ∥ 9-6) → 9-4
+  # Done 2026-05-28: implementiert (parallele Dev-Teams) + live E2E getestet
+  # (isolierter Setup-Flow → 4 Seeds → Playwright/Chrome-DevTools Skills-Tab).
+  # Fix unterwegs: gitService remote-aware (save/pull/saveBinary) — committet
+  # lokal ohne Remote statt zu werfen; nötig für seedSkills im remote-losen Vault.
+  epic-9: done
+  9-1-skill-doctype-spec-json-schema: done
+  9-2-skill-parser-token-renderer-core: done
+  9-3-mcp-meta-tools-list-skills-run-skill: done
+  9-4-mcp-instructions-skill-announcement: done
+  9-5-seed-skills-vault-scaffold: done
+  9-6-settings-skills-tab-reads-real-skills: done
+  epic-9-retrospective: optional

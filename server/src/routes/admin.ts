@@ -14,7 +14,11 @@ import {
   maskSupadataKey,
   getValidForgejoToken,
   loadAllTokensForUser,
+  listSkillNotes,
+  parseFrontmatter,
 } from "@lokyy/core";
+import { readdir, readFile } from "node:fs/promises";
+import { join, relative, sep } from "node:path";
 import { config } from "../config.js";
 
 
@@ -501,55 +505,81 @@ adminRoutes.get("/mcp-info", async (c) => {
   });
 });
 
-// GET /api/admin/skills — known PAI skills + concrete howToUse examples
+// GET /api/admin/skills — reads the real `type: skill` notes from the vault
+// (Story 9-6). The vault root is resolved exactly like every other admin
+// handler: from `config.vaultDir`. `listSkillNotes` returns typed SkillDefs
+// (no path), so we build a `skill_name → vault-relative note id` map by
+// scanning the same skills subtree and matching on `skill_name`. The id is
+// the path without `.md` — the form the PWA editor opens by.
 adminRoutes.get("/skills", async (c) => {
+  const vaultRoot = config.vaultDir;
+  const [skills, pathByName] = await Promise.all([
+    listSkillNotes(vaultRoot),
+    buildSkillPathMap(vaultRoot),
+  ]);
+
   return c.json({
-    skills: [
-      {
-        name: "Knowledge",
-        description:
-          "PAI Knowledge skill — speichert wiederverwendbare Knowledge-Entries als Vault-Notes.",
-        installHint: "Built-in zu PAI 5.0+. /knowledge in Claude Code.",
-        howToUse:
-          'In Claude Desktop / Claude Code: "Speichere als Knowledge-Entry: [Text]". Der Skill ruft via lokyy-brain MCP `create_note` mit `type: note` in `20_notes/knowledge/` auf.',
-        examplePrompt:
-          'Speichere als Knowledge: "Cosine similarity > 0.85 ist ein guter Cluster-Threshold für nomic-embed-text in 768-dim."',
-        worksWith: ["read_note", "search_vault", "create_note"],
-      },
-      {
-        name: "Telos",
-        description:
-          "Life-OS Goals/Strategies/Beliefs Tracking. Mirror's Daten als type: project / decision Notes in den Vault.",
-        installHint: "Built-in zu PAI. /interview startet TELOS-Setup; /telos update zum Bearbeiten.",
-        howToUse:
-          "Lokal in `~/.claude/PAI/USER/TELOS/*.md`. Mit lokyy-brain MCP zusätzlich `update_note` auf `10_projects/<goal>` oder `50_decisions/<key>` — dein Vault kennt dann deine Lebensziele.",
-        examplePrompt: "Update mein Ziel G1: Fortschritt — Skool auf 1000 Members.",
-        worksWith: ["read_note", "create_note", "update_note"],
-      },
-      {
-        name: "ZK Steward",
-        description:
-          "Zettelkasten-Maintenance — verlinkt verwandte Notes über Wikilinks, schlägt Topic-Notes vor.",
-        installHint: "Agent(subagent_type='ZK Steward') in Claude Code.",
-        howToUse:
-          'Agent("ZK Steward") starten: "Scan 20_notes auf orphans, schlag Verbindungen vor". Nutzt list_tree + read_note + update_note.',
-        examplePrompt:
-          'Agent("ZK Steward"): "Scan 20_notes und 30_captures auf orphan-notes und schlag Topic-Notes für recurring themes vor."',
-        worksWith: ["list_tree", "read_note", "update_note"],
-      },
-      {
-        name: "Research",
-        description:
-          "Multi-source web-research (Perplexity + Gemini + Claude). Output landet als capture-note im Vault.",
-        installHint: "Built-in zu PAI. /research für Quick, /research extensive für Deep.",
-        howToUse:
-          'In Claude Code: Skill("Research", "deep dive on pgvector HNSW tuning") — am Ende: "Speichere als Capture-Note in 30_captures/research/".',
-        examplePrompt: "Recherchiere drizzle-orm vs prisma für embedding-workloads. Output als Capture-Note.",
-        worksWith: ["create_note"],
-      },
-    ],
+    skills: skills.map((s) => ({
+      skill_name: s.skill_name,
+      title: s.title,
+      description: s.description,
+      allowed_tools: s.allowed_tools,
+      // `path` is the vault-relative id (no `.md`); null when the note can't
+      // be located (defensive — should not happen for a parsed skill).
+      path: pathByName.get(s.skill_name) ?? null,
+    })),
   });
 });
+
+// Recursively collect a `skill_name → vault-relative-id` map. Mirrors the
+// directory-resolution order of `listSkillNotes` (prefer `70_pai/skills/`,
+// fall back to the whole vault) so paths line up with the parsed skills.
+async function buildSkillPathMap(
+  vaultRoot: string,
+): Promise<Map<string, string>> {
+  const skillsDir = join(vaultRoot, "70_pai", "skills");
+  let files = await walkMarkdownFiles(skillsDir);
+  if (files.length === 0) files = await walkMarkdownFiles(vaultRoot);
+
+  const map = new Map<string, string>();
+  for (const abs of files) {
+    let raw: string;
+    try {
+      raw = await readFile(abs, "utf8");
+    } catch {
+      continue;
+    }
+    const { data } = parseFrontmatter(raw);
+    if (data.type !== "skill") continue;
+    const name = data.skill_name as string | undefined;
+    if (!name) continue;
+    const relId = relative(vaultRoot, abs)
+      .split(sep)
+      .join("/")
+      .replace(/\.md$/, "");
+    map.set(name, relId);
+  }
+  return map;
+}
+
+async function walkMarkdownFiles(
+  dir: string,
+  acc: string[] = [],
+): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return acc;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) await walkMarkdownFiles(full, acc);
+    else if (entry.name.endsWith(".md")) acc.push(full);
+  }
+  return acc;
+}
 
 function maskDsn(dsn: string): string {
   return dsn.replace(/(:)([^@]+)(@)/, "$1***$3");

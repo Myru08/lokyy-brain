@@ -130,6 +130,93 @@ describe("validateFrontmatter — capture", () => {
   });
 });
 
+const VALID_SKILL = {
+  id: "01JXYZABCDEFGHJKMNPQRSTVWX",
+  type: "skill" as const,
+  title: "Summarize URL",
+  skill_name: "summarize-url",
+  description: "Fetch a URL and write a concise capture note.",
+  execution: "client" as const,
+  allowed_tools: ["read_note", "create_note"],
+  created: "2026-05-24T10:00:00.000Z",
+  updated: "2026-05-24T10:05:00.000Z",
+};
+
+describe("validateFrontmatter — skill", () => {
+  it("accepts a valid client skill and round-trips it", () => {
+    const result = validateFrontmatter(VALID_SKILL, "skill");
+    expect(result.valid).toBe(true);
+    expect(result.errors).toEqual([]);
+
+    const serialized = serializeFrontmatter(VALID_SKILL, "# Summarize URL\n");
+    const reparsed = parseFrontmatter(serialized);
+    expect(reparsed.data).toEqual(VALID_SKILL);
+    expect(validateFrontmatter(reparsed.data, "skill").valid).toBe(true);
+  });
+
+  it("rejects skill_name with uppercase letters", () => {
+    const result = validateFrontmatter(
+      { ...VALID_SKILL, skill_name: "Summarize-URL" },
+      "skill",
+    );
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some(
+        (e) => e.instancePath === "/skill_name" && e.keyword === "pattern",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects skill_name with spaces", () => {
+    const result = validateFrontmatter(
+      { ...VALID_SKILL, skill_name: "summarize url" },
+      "skill",
+    );
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some(
+        (e) => e.instancePath === "/skill_name" && e.keyword === "pattern",
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects missing description", () => {
+    const { description: _description, ...without } = VALID_SKILL;
+    const result = validateFrontmatter(without as never, "skill");
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some(
+        (e) => e.keyword === "required" && e.params.missingProperty === "description",
+      ),
+    ).toBe(true);
+  });
+
+  it("accepts execution: server at the schema layer (runtime gating is run_skill's job)", () => {
+    const result = validateFrontmatter(
+      { ...VALID_SKILL, execution: "server" },
+      "skill",
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it("round-trips an output block", () => {
+    const withOutput = {
+      ...VALID_SKILL,
+      output: {
+        folder: "30_captures/urls",
+        type: "capture",
+        path_pattern: "{folder}/{YYYY-MM-DD}-{slug}",
+      },
+    };
+    expect(validateFrontmatter(withOutput, "skill").valid).toBe(true);
+
+    const serialized = serializeFrontmatter(withOutput, "# Summarize URL\n");
+    const reparsed = parseFrontmatter(serialized);
+    expect(reparsed.data).toEqual(withOutput);
+    expect(validateFrontmatter(reparsed.data, "skill").valid).toBe(true);
+  });
+});
+
 describe("validateFrontmatter — unknown type", () => {
   it("returns a synthetic enum error for unknown type", () => {
     const result = validateFrontmatter(VALID_NOTE, "alien" as never);

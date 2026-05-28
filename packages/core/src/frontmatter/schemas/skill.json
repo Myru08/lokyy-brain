@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/skill",
+  "type": "object",
+  "required": ["id", "type", "title", "skill_name", "description", "created", "updated"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "type": { "const": "skill" },
+    "title": { "type": "string", "minLength": 1 },
+    "skill_name": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "description": { "type": "string", "minLength": 1 },
+    "execution": {
+      "type": "string",
+      "enum": ["client", "server"],
+      "default": "client",
+      "description": "Where the skill runs. Phase 1 only executes 'client'; 'server' is schema-valid but rejected at runtime by run_skill (Story 9-3)."
+    },
+    "allowed_tools": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Advisory in Phase 1 (PRD Q3): no enum-lock on the 6 vault tools, forward-compatible with future tools."
+    },
+    "input_schema": { "type": "object" },
+    "output": {
+      "type": "object",
+      "properties": {
+        "folder": { "type": "string" },
+        "type": { "type": "string" },
+        "path_pattern": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
+  },
+  "additionalProperties": true
+}

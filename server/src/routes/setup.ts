@@ -18,6 +18,7 @@ import {
   vaultMemberships,
 } from "@lokyy/core";
 import { config } from "../config.js";
+import { seedSkills } from "../setup/seedSkills.js";
 
 const exec = promisify(execFile);
 
@@ -310,7 +311,24 @@ setupRoutes.post("/vault", async (c) => {
     );
   }
 
-  return c.json({ vaultId: id, cloneError });
+  // Story 9-5 — Seed-Skills in den frisch provisionierten Vault schreiben.
+  // Idempotentes create-if-absent: ein Re-Init überschreibt user-editierte
+  // Skills nicht. Best-effort — ein Seed-Fehler darf den Wizard nicht
+  // blockieren (die Vault-Row steht bereits), wird aber gemeldet. Übersprungen,
+  // wenn das Provisioning selbst fehlschlug (kein nutzbares Working-Copy).
+  let seedError: string | null = null;
+  if (!cloneError) {
+    try {
+      await seedSkills();
+    } catch (err) {
+      seedError = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[setup/vault] seedSkills failed for vault ${id}: ${seedError}`,
+      );
+    }
+  }
+
+  return c.json({ vaultId: id, cloneError, seedError });
 });
 
 /**

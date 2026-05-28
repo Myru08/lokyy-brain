@@ -23,6 +23,11 @@ export const DOC_TYPES = [
   // relationship with; the sleep-agent maintains relationship_strength,
   // ongoing_topics, traits, last_interaction over time.
   "peer",
+  // Epic 9 / Story 9-1 — a skill-note is a reusable prompt definition with
+  // an execution target (client | server) and an advisory allowed_tools
+  // list. Parser/renderer (9-2) and MCP run_skill (9-3) consume it; this
+  // type only adds the closed-list membership + schema validation.
+  "skill",
 ] as const;
 
 export type DocType = (typeof DOC_TYPES)[number];

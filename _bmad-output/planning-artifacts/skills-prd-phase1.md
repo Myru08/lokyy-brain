@@ -88,6 +88,10 @@ allowed_tools: [search_vault, read_note, create_note, ...]   # subset of the 6 v
 input_schema:            # optional JSON-schema-ish; properties with type + default
   type: object
   properties: { days: { type: number, default: 7 } }
+output:                  # optional — convention surfaced verbatim in run_skill return
+  folder: 70_pai/digests
+  type: note
+  path_pattern: "{YYYY-MM-DD}-wochenrueckblick"
 created / updated: <auto>
 ```
 Body below frontmatter = the prompt (with `{{tokens}}`).

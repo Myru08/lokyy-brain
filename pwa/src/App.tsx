@@ -1495,7 +1495,12 @@ export function App() {
   const status = SYNC_LABEL[sync];
 
   if (settingsOpen) {
-    return <Settings onClose={() => setSettingsOpen(false)} />;
+    return (
+      <Settings
+        onClose={() => setSettingsOpen(false)}
+        onOpenNote={(id) => void openNoteById(id)}
+      />
+    );
   }
 
   return (

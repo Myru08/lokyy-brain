@@ -57,6 +57,8 @@ export const ORIGIN_SCORES: Record<DocType, number> = {
   task: 0.5,
   intervention: 0.6,
   content: 0.6,
+  // Skill-notes are reusable structural definitions, peers to workflows.
+  skill: 0.5,
   capture: 0.3,
 };
 
@@ -80,6 +82,9 @@ export const HALF_LIFE_DAYS: Record<DocType, number> = {
   task: 90,
   intervention: 365,
   content: 180,
+  // Skill-notes stay relevant as long as workflows — they are durable
+  // reusable definitions, not time-bound content.
+  skill: 365,
 };
 
 /** Power-law decay exponent (Anderson & Schooler). */

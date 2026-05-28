@@ -171,6 +171,20 @@ export {
 
 export { FrontmatterValidationError } from "./errors/FrontmatterValidationError.js";
 
+// ─── Skill parser + token-renderer (Epic 9 / Story 9-2) ─────────────────
+// Parses `type: skill` notes into typed SkillDefs and renders their prompt
+// with `{{token}}` substitution. The MCP layer (9-3) consumes this surface;
+// pure functions + vault file-read only (no network / LLM).
+export {
+  parseSkill,
+  renderPrompt,
+  listSkillNotes,
+  validateSkillInput,
+  type SkillDef,
+  type SkillExecution,
+  type SkillOutput,
+} from "./skills/index.js";
+
 // ─── Database (Story 1.8) ───────────────────────────────────────────────
 export {
   initDb,

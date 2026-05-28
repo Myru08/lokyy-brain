@@ -187,11 +187,33 @@ function stripScheme(url: string): string {
 }
 
 /**
+ * Returns true if the working copy has an `origin` remote configured.
+ *
+ * We probe the actual git state (`git remote get-url origin`) instead of
+ * trusting `coreConfig().gitRemote`, because `setupVaultFromForgejo` writes
+ * the remote straight into `.git/config` — it does not necessarily round-trip
+ * through the in-memory config slice. `git remote get-url` exits non-zero
+ * (throws) when no `origin` exists; an empty stdout is treated the same way.
+ *
+ * No remote = the documented pre-setup state (server up, setup wizard hasn't
+ * wired a Forgejo repo yet). In that state pull/push have no target.
+ */
+async function hasRemote(): Promise<boolean> {
+  try {
+    const url = await git(["remote", "get-url", "origin"]);
+    return url !== "";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * `git pull --rebase --autostash`. Aufrufen bevor Notizen gelesen werden
  * (Notiz öffnen, Tab wieder aktiv).
  */
 export async function pull(): Promise<void> {
   return serialize(async () => {
+    if (!(await hasRemote())) return; // no remote = nothing to pull from
     await git(["pull", "--rebase", "--autostash", "origin", config().gitBranch]);
   });
 }
@@ -224,6 +246,11 @@ export async function save(
     }
 
     await git(["commit", "-m", message]);
+
+    // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
+    if (!(await hasRemote())) {
+      return git(["rev-parse", "HEAD"]);
+    }
 
     try {
       await git([
@@ -277,6 +304,11 @@ export async function saveBinary(
     }
 
     await git(["commit", "-m", message]);
+
+    // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
+    if (!(await hasRemote())) {
+      return git(["rev-parse", "HEAD"]);
+    }
 
     try {
       await git([
