@@ -1,5 +1,11 @@
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
+// Install the console.warn/error → ring-buffer capture as EARLY as possible so
+// startup warnings (LLM registry, sleep-agent scheduler) land in /api/logs.
+// This runs at module-eval time, before main() and before any other import's
+// side effects log anything.
+import { installConsoleCapture } from "./lib/logBuffer.js";
+installConsoleCapture();
 import { config } from "./config.js";
 import {
   ensureRepo,
@@ -57,6 +63,8 @@ import { voiceHandler } from "./pipes/handlers/voiceHandler.js";
 import { voiceRoutes, voiceTitleRoutes } from "./routes/voice.js";
 import { voiceSettingsRoutes } from "./routes/voice-settings.js";
 import { systemRoutes } from "./routes/system.js";
+import { diagnosticsRoutes } from "./routes/diagnostics.js";
+import { logsRoutes } from "./routes/logs.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -98,6 +106,18 @@ app.use("/api/llm/*", setupGate);
 app.route("/api/admin", adminRoutes);
 app.route("/api/llm", llmRoutes);
 app.route("/api/llm/migration", llmMigrationRoutes);
+
+// In-app diagnostics + log viewer (Observability epic). Lets the operator see
+// per-service self-test results and a recent-events ring buffer WITHOUT
+// Coolify/SSH. Both gated by setup state, consistent with the routes above.
+//   GET /api/diagnostics            per-service checks + ranAt
+//   GET /api/logs?limit=&level=&service=   ring-buffer events, newest-first
+app.use("/api/diagnostics", setupGate);
+app.use("/api/diagnostics/*", setupGate);
+app.use("/api/logs", setupGate);
+app.use("/api/logs/*", setupGate);
+app.route("/api/diagnostics", diagnosticsRoutes);
+app.route("/api/logs", logsRoutes);
 
 // Phase A Wave A1 / Story 1 — importance scoring.
 app.use("/api/scoring/*", setupGate);

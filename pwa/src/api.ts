@@ -229,6 +229,54 @@ export interface AgentReviewQueue {
   totalPending: number;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Diagnostics + Logs (Observability — in-app self-test suite + log viewer).
+ *
+ * Shapes mirror `server/src/routes/diagnostics.ts` + `server/src/routes/logs.ts`.
+ * The server's checks never 500 — a failed service surfaces as a check with
+ * `ok:false` + `detail`. The PWA renders these grouped by `service`.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export type DiagnosticSeverity = "info" | "warn" | "error";
+
+export interface DiagnosticCheck {
+  /** Stable service tag — `forgejo`, `postgres`, `ollama`, `embeddings`, `search`, `sleep-agent`, `mcp`, `git`. */
+  service: string;
+  /** Human-readable check name within the service. */
+  name: string;
+  ok: boolean;
+  detail?: string;
+  latencyMs?: number;
+  severity?: DiagnosticSeverity;
+}
+
+export interface DiagnosticsResult {
+  checks: DiagnosticCheck[];
+  /** ISO timestamp of when the suite ran. */
+  ranAt: string;
+}
+
+export type LogLevel = "info" | "warn" | "error";
+
+export interface LogEntry {
+  /** ISO-8601 timestamp (UTC). */
+  ts: string;
+  level: LogLevel;
+  service?: string;
+  message: string;
+}
+
+export interface LogsResult {
+  /** Newest-first. */
+  logs: LogEntry[];
+}
+
+export interface LogsQuery {
+  limit?: number;
+  level?: LogLevel;
+  service?: string;
+}
+
 /**
  * API-Client. Dünne fetch-Wrapper. Der Server pullt vor jedem Lesen selbst —
  * der Client muss sich um Git nicht kümmern.
@@ -900,5 +948,34 @@ export const api = {
       throw new ApiError(res.status, data.error ?? "backfill failed");
     }
     return { ok: true };
+  },
+
+  /* ──── Diagnostics + Logs (Observability) ──── */
+
+  /**
+   * Run the in-app per-service diagnostics suite. The server runs each check
+   * defensively (a failing service yields `ok:false` + `detail`, never a 500),
+   * so this resolves with a full `DiagnosticsResult` whenever the endpoint is
+   * reachable. The UI groups `checks` by `service`.
+   */
+  getDiagnostics: (): Promise<DiagnosticsResult> =>
+    fetch(`${BASE}/diagnostics`, { credentials: "include" }).then(
+      json<DiagnosticsResult>,
+    ),
+
+  /**
+   * Read recent important events from the server's in-process ring buffer.
+   * Optional filters: `limit` (default server-side 100, cap 500), `level`,
+   * and `service`. Newest-first. No Coolify/SSH needed to read it.
+   */
+  getLogs: (opts: LogsQuery = {}): Promise<LogsResult> => {
+    const params = new URLSearchParams();
+    if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+    if (opts.level) params.set("level", opts.level);
+    if (opts.service) params.set("service", opts.service);
+    const qs = params.toString();
+    return fetch(`${BASE}/logs${qs ? `?${qs}` : ""}`, {
+      credentials: "include",
+    }).then(json<LogsResult>);
   },
 };
