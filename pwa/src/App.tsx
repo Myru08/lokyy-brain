@@ -1,4 +1,4 @@
-import { lazy, Suspense, useContext, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Note, TreeNode } from "@lokyy/shared";
 import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot, Menu as MenuIcon, X as XIcon } from "lucide-react";
 import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
@@ -112,6 +112,22 @@ function safeName(s: string): string {
 function parentOf(path: string): string {
   const i = path.lastIndexOf("/");
   return i === -1 ? "" : path.slice(0, i);
+}
+
+/**
+ * Collect every folder PATH from the tree, recursively, in pre-order. Used to
+ * populate the VoiceReviewSheet folder picker so a new voice note can land
+ * anywhere in the vault, not just `30_captures/voice`.
+ */
+function collectFolderPaths(nodes: TreeNode[]): string[] {
+  const out: string[] = [];
+  for (const n of nodes) {
+    if (n.type === "folder") {
+      out.push(n.path);
+      out.push(...collectFolderPaths(n.children));
+    }
+  }
+  return out;
 }
 
 /** Notiz-Titel (H1/Dateiname) flach aus dem Baum — für Wikilink-Auflösung. */
@@ -295,6 +311,9 @@ function restorePrePolishBody(body: string): string | null {
 
 export function App() {
   const [tree, setTree] = useState<TreeNode[]>([]);
+  // All folder paths, derived recursively from the tree — feeds the
+  // VoiceReviewSheet folder picker for new voice notes.
+  const folderPaths = useMemo(() => collectFolderPaths(tree), [tree]);
   const [active, setActive] = useState<Note | null>(null);
   const [sync, setSync] = useState<SyncState>("idle");
   const [importOpen, setImportOpen] = useState(false);
@@ -1611,7 +1630,10 @@ export function App() {
    *
    * Throws on failure so the sheet can surface the message inline.
    */
-  async function handleVoiceInsert(transcript: string): Promise<void> {
+  async function handleVoiceInsert(
+    transcript: string,
+    opts?: { folderPath?: string; title?: string },
+  ): Promise<void> {
     const text = transcript.trim();
     if (!text) throw new Error("Transkript ist leer.");
 
@@ -1642,19 +1664,30 @@ export function App() {
     }
 
     // No note open — create a fresh capture-style note and open it.
+    // The folder + title come from the VoiceReviewSheet picker; both fall back
+    // to the historical defaults when omitted. A user-typed title drives the
+    // filename + `# heading`; an empty title uses the timestamped voice name.
     // Two voice captures inside the same minute derive the same filename;
     // route through `createNoteUnique` so the second one becomes
     // "…-voice-1830 2" instead of erroring out. The body is the transcript,
-    // independent of the (possibly suffixed) title.
+    // prefixed with an H1 only when the user supplied an explicit title.
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     const time = `${pad(now.getHours())}${pad(now.getMinutes())}`;
-    const baseName = `${date}-voice-${time}`;
+    const fallbackName = `${date}-voice-${time}`;
+
+    const folderPath = opts?.folderPath?.trim() || "30_captures/voice";
+    const userTitle = opts?.title?.trim();
+    const baseName = userTitle || fallbackName;
+
     const createdPath = await createNoteUnique(
       baseName,
-      "30_captures/voice",
-      () => `${text}\n`,
+      folderPath,
+      // When the user named the note, lead the body with the (possibly
+      // collision-suffixed) title as an H1 so the heading matches the file.
+      // Without a user title, keep the historical body-only capture shape.
+      (title) => (userTitle ? `# ${title}\n\n${text}\n` : `${text}\n`),
     );
     await refreshTree();
     await open(createdPath);
@@ -2379,6 +2412,7 @@ export function App() {
         onClose={() => setVoiceReviewOpen(false)}
         onInsert={handleVoiceInsert}
         targetTitle={active ? active.title || active.id : null}
+        folders={folderPaths}
       />
     </div>
   );

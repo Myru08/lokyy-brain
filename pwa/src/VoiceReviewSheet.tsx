@@ -74,15 +74,27 @@ export interface VoiceReviewSheetProps {
   /**
    * Insert the (possibly user-edited) transcript. App.tsx decides where it
    * lands: into the currently-open note via the save path, or — when no note
-   * is open — by creating/appending a capture note per existing conventions.
+   * is open — by creating a capture note in `opts.folderPath` with `opts.title`.
+   * The `opts` argument is only meaningful for the new-note case (no note
+   * open); when a note IS open it is ignored and the text appends to it.
    * Resolves on success; rejects with an Error whose `.message` is surfaced.
    */
-  onInsert: (transcript: string) => Promise<void>;
+  onInsert: (
+    transcript: string,
+    opts?: { folderPath?: string; title?: string },
+  ) => Promise<void>;
   /** Title of the note the transcript will be inserted into (display hint). */
   targetTitle?: string | null;
+  /**
+   * Vault folder paths (recursive) for the new-note folder picker. Only used
+   * when no note is open. Default selection is `30_captures/voice`.
+   */
+  folders?: string[];
   /** Default BCP-47 short language code ("de" | "en" | …). */
   defaultLang?: string;
 }
+
+const DEFAULT_VOICE_FOLDER = "30_captures/voice";
 
 type Phase =
   | { kind: "idle" }
@@ -124,6 +136,7 @@ export function VoiceReviewSheet({
   onClose,
   onInsert,
   targetTitle,
+  folders,
   defaultLang = "de",
 }: VoiceReviewSheetProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
@@ -133,8 +146,21 @@ export function VoiceReviewSheet({
     LIVE_LANGS.some((l) => l.value === defaultLang) ? defaultLang : "de",
   );
   const [hasWebSpeech, setHasWebSpeech] = useState<boolean>(false);
+  // New-note metadata (only relevant when no note is open). Folder defaults to
+  // the historical voice-capture folder; title is optional.
+  const [folderPath, setFolderPath] = useState<string>(DEFAULT_VOICE_FOLDER);
+  const [titleInput, setTitleInput] = useState<string>("");
+
+  // When a note is open, inserting appends to it — the folder/title picker is
+  // irrelevant and hidden. Otherwise we're creating a new note.
+  const isNewNote = !targetTitle;
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
+  // The transcript textarea — used for the near-bottom auto-scroll guard.
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  // True while the view is at/near the bottom; gates auto-scroll so we don't
+  // yank the user back down if they scrolled up to edit mid-recording.
+  const atBottomRef = useRef<boolean>(true);
   const userStoppedRef = useRef<boolean>(false);
   // Per-turn final segments, keyed by SpeechRecognition result index. Keying
   // by index + overwriting is what kills the Android resultIndex=0 re-emit
@@ -216,11 +242,38 @@ export function VoiceReviewSheet({
       setPhase({ kind: "idle" });
       setTranscript("");
       setInterim("");
+      setTitleInput("");
+      setFolderPath(DEFAULT_VOICE_FOLDER);
       finalSegmentsRef.current = new Map();
       committedPrefixRef.current = "";
       transcriptRef.current = "";
+      atBottomRef.current = true;
     }
   }, [open]);
+
+  // Distance (px) from the bottom still counted as "at the bottom". A small
+  // slack absorbs sub-pixel rounding and the line-height of the freshly
+  // appended word so streaming text keeps following without a hard equality.
+  const NEAR_BOTTOM_PX = 24;
+
+  function recomputeAtBottom(el: HTMLTextAreaElement) {
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    atBottomRef.current = distance <= NEAR_BOTTOM_PX;
+  }
+
+  // Auto-scroll the transcript to the bottom as text streams in WHILE
+  // recording — but ONLY when the view is already at/near the bottom. If the
+  // user scrolled up to edit, `atBottomRef` is false and we leave them be.
+  // After Stop (`phase` !== listening) we never force-scroll, honouring AC #2.
+  const listening = phase.kind === "listening";
+  useEffect(() => {
+    if (!listening) return;
+    const el = textareaRef.current;
+    if (!el) return;
+    if (atBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [transcript, interim, listening]);
 
   function startListening() {
     const Ctor = getSpeechRecognitionCtor();
@@ -236,6 +289,9 @@ export function VoiceReviewSheet({
     teardownRecognition();
     userStoppedRef.current = false;
     finalSegmentsRef.current = new Map();
+    // Fresh recording → follow the stream from the bottom until the user
+    // deliberately scrolls up (the onScroll handler then flips this off).
+    atBottomRef.current = true;
     // Rebase onto whatever is already in the textarea (user may have edited or
     // recorded a prior burst) so a new recording continues from there.
     committedPrefixRef.current = transcriptRef.current.trim();
@@ -411,7 +467,16 @@ export function VoiceReviewSheet({
     }
     setPhase({ kind: "inserting" });
     try {
-      await onInsert(text);
+      // Folder/title only matter for the new-note case; when a note is open
+      // App.tsx ignores opts and appends to it. Pass undefined there to keep
+      // the open-note path identical to before.
+      const opts = isNewNote
+        ? {
+            folderPath: folderPath || DEFAULT_VOICE_FOLDER,
+            title: titleInput.trim() || undefined,
+          }
+        : undefined;
+      await onInsert(text, opts);
       // Success — reset and close.
       setTranscript("");
       setInterim("");
@@ -433,9 +498,15 @@ export function VoiceReviewSheet({
 
   if (!open) return null;
 
-  const listening = phase.kind === "listening";
   const inserting = phase.kind === "inserting";
   const canInsert = transcript.trim().length > 0 && !inserting;
+
+  // Folder options for the new-note picker. Always include the default voice
+  // folder (the vault may not have surfaced it yet), de-dupe, and sort so the
+  // list is stable regardless of tree order.
+  const folderOptions = Array.from(
+    new Set([DEFAULT_VOICE_FOLDER, ...(folders ?? [])]),
+  ).sort((a, b) => a.localeCompare(b));
 
   return (
     <>
@@ -522,36 +593,80 @@ export function VoiceReviewSheet({
           </div>
         )}
 
-        {/* LIVE EDITABLE transcript */}
-        <label style={FIELD_LABEL_STYLE} htmlFor="voice-review-transcript">
-          Transkript {listening ? "(live — editierbar)" : "(editierbar)"}
-        </label>
-        <textarea
-          id="voice-review-transcript"
-          value={
-            // While listening, show committed + a greyed interim tail INLINE
-            // by appending it; we keep interim out of `transcript` state so an
-            // edit during recording doesn't fight the recognizer. The user can
-            // still place the caret and edit committed text directly.
-            interim && listening
-              ? `${transcript}${transcript ? " " : ""}${interim}`
-              : transcript
-          }
-          onChange={(e) => {
-            // Manual edits land in committed state. If listening, rebase the
-            // recognizer prefix so subsequent finals append after the edit.
-            const v = e.target.value;
-            setTranscript(v);
-            if (listening) {
-              committedPrefixRef.current = v;
-              finalSegmentsRef.current = new Map();
-              setInterim("");
+        {/* LIVE EDITABLE transcript — grows to fill the fullscreen sheet. */}
+        <div style={TRANSCRIPT_WRAP_STYLE}>
+          <label style={FIELD_LABEL_STYLE} htmlFor="voice-review-transcript">
+            Transkript {listening ? "(live — editierbar)" : "(editierbar)"}
+          </label>
+          <textarea
+            id="voice-review-transcript"
+            ref={textareaRef}
+            value={
+              // While listening, show committed + a greyed interim tail INLINE
+              // by appending it; we keep interim out of `transcript` state so an
+              // edit during recording doesn't fight the recognizer. The user can
+              // still place the caret and edit committed text directly.
+              interim && listening
+                ? `${transcript}${transcript ? " " : ""}${interim}`
+                : transcript
             }
-          }}
-          placeholder="Hier erscheint dein gesprochener Text — du kannst ihn vor dem Einfügen frei bearbeiten."
-          rows={6}
-          style={TEXTAREA_STYLE}
-        />
+            onChange={(e) => {
+              // Manual edits land in committed state. If listening, rebase the
+              // recognizer prefix so subsequent finals append after the edit.
+              const v = e.target.value;
+              setTranscript(v);
+              if (listening) {
+                committedPrefixRef.current = v;
+                finalSegmentsRef.current = new Map();
+                setInterim("");
+              }
+            }}
+            // Track whether the user is at/near the bottom so the streaming
+            // auto-scroll only kicks in when it won't fight a manual scroll-up.
+            onScroll={(e) => recomputeAtBottom(e.currentTarget)}
+            placeholder="Hier erscheint dein gesprochener Text — du kannst ihn vor dem Einfügen frei bearbeiten."
+            style={TEXTAREA_STYLE}
+          />
+        </div>
+
+        {/* New-note metadata — only when no note is open. */}
+        {isNewNote && (
+          <div style={NEWNOTE_FIELDS_STYLE}>
+            <div style={NEWNOTE_FIELD_STYLE}>
+              <label style={FIELD_LABEL_STYLE} htmlFor="voice-review-folder">
+                Ordner
+              </label>
+              <select
+                id="voice-review-folder"
+                value={folderPath}
+                onChange={(e) => setFolderPath(e.target.value)}
+                disabled={inserting}
+                aria-label="Zielordner"
+                style={NEWNOTE_INPUT_STYLE}
+              >
+                {folderOptions.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div style={NEWNOTE_FIELD_STYLE}>
+              <label style={FIELD_LABEL_STYLE} htmlFor="voice-review-title">
+                Titel (optional)
+              </label>
+              <input
+                id="voice-review-title"
+                type="text"
+                value={titleInput}
+                onChange={(e) => setTitleInput(e.target.value)}
+                disabled={inserting}
+                placeholder="Leer = Zeitstempel-Name"
+                style={NEWNOTE_INPUT_STYLE}
+              />
+            </div>
+          </div>
+        )}
 
         {targetTitle ? (
           <p style={TARGET_HINT_STYLE}>
@@ -562,7 +677,8 @@ export function VoiceReviewSheet({
           </p>
         ) : (
           <p style={TARGET_HINT_STYLE}>
-            Keine Notiz offen — Text wird als neue Capture-Notiz gespeichert.
+            Keine Notiz offen — Text wird als neue Notiz im gewählten Ordner
+            gespeichert.
           </p>
         )}
 
@@ -624,25 +740,44 @@ const BACKDROP_STYLE: CSSProperties = {
 };
 
 const SHEET_STYLE: CSSProperties = {
+  // Fullscreen, not a bottom sheet: cover the whole viewport. `100dvh` tracks
+  // the DYNAMIC viewport so mobile browser chrome (URL bar) doesn't clip the
+  // pinned actions. Safe-area insets keep the header below the notch and the
+  // actions above the gesture bar. The textarea region flex-grows to fill.
   position: "fixed",
-  left: 0,
-  right: 0,
-  bottom: 0,
+  inset: 0,
   zIndex: 71,
+  height: "100dvh",
   background: C.panel,
-  borderTop: `1px solid ${C.border}`,
-  borderTopLeftRadius: 16,
-  borderTopRightRadius: 16,
-  boxShadow: "0 -12px 40px rgba(0,0,0,0.55)",
+  boxShadow: "0 0 0 1px rgba(0,0,0,0.4)",
   display: "flex",
   flexDirection: "column",
   gap: 8,
   padding: "12px 14px",
+  paddingTop: "calc(12px + env(safe-area-inset-top, 0px))",
   paddingBottom: "calc(14px + env(safe-area-inset-bottom, 0px))",
-  maxHeight: "88vh",
-  overflowY: "auto",
+  paddingLeft: "calc(14px + env(safe-area-inset-left, 0px))",
+  paddingRight: "calc(14px + env(safe-area-inset-right, 0px))",
+  // No outer scroll — the transcript area scrolls internally so the header
+  // stays at the top and the actions stay pinned at the bottom.
+  overflow: "hidden",
+  boxSizing: "border-box",
   fontFamily: FONT.ui,
   color: C.text,
+};
+
+/**
+ * The transcript label + textarea share a flex column that GROWS to fill all
+ * space between the record controls and the pinned footer. `minHeight: 0` lets
+ * the textarea actually shrink/scroll inside the flex parent instead of
+ * forcing the sheet taller than the viewport.
+ */
+const TRANSCRIPT_WRAP_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 6,
+  flex: 1,
+  minHeight: 0,
 };
 
 const HEADER_STYLE: CSSProperties = {
@@ -717,8 +852,39 @@ const TEXTAREA_STYLE: CSSProperties = {
   fontSize: 15,
   lineHeight: 1.5,
   fontFamily: FONT.ui,
-  resize: "vertical",
-  minHeight: 120,
+  // Fill the growing wrapper; `flex:1 + minHeight:0` makes it scroll internally
+  // rather than push the pinned footer off-screen. No manual resize handle —
+  // the sheet is fullscreen so the field is already as large as it can be.
+  flex: 1,
+  minHeight: 0,
+  resize: "none",
+};
+
+const NEWNOTE_FIELDS_STYLE: CSSProperties = {
+  display: "flex",
+  gap: 10,
+  flexWrap: "wrap",
+};
+
+const NEWNOTE_FIELD_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 4,
+  flex: 1,
+  minWidth: 140,
+};
+
+const NEWNOTE_INPUT_STYLE: CSSProperties = {
+  width: "100%",
+  boxSizing: "border-box",
+  background: C.bg,
+  color: C.text,
+  border: `1px solid ${C.border}`,
+  borderRadius: 8,
+  padding: "8px 10px",
+  fontSize: 13,
+  fontFamily: FONT.ui,
+  minHeight: 38,
 };
 
 const TARGET_HINT_STYLE: CSSProperties = {
