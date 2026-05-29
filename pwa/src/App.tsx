@@ -27,6 +27,8 @@ import { QuickSwitcher } from "./QuickSwitcher.js";
 import { DailyNoteButton } from "./DailyNoteButton.js";
 import { TemplatePicker } from "./TemplatePicker.js";
 import { VoiceQuickButton } from "./VoiceQuickButton.js";
+import { BottomNav } from "./BottomNav.js";
+import { VoiceReviewSheet } from "./VoiceReviewSheet.js";
 import { SessionUserContext } from "./AuthGate.js";
 import { C, FONT } from "./theme.js";
 
@@ -341,6 +343,16 @@ export function App() {
   // full screen width. Desktop keeps the always-visible aside.
   const isMobile = useIsMobile();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Mobile bottom-nav Voice tab → editable Voice Review-Sheet (replaces the
+  // old live-into-editor flow that black-screened on Android).
+  const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
+  // Mobile-only Outline overlay (desktop shows the Outline pane inline; on a
+  // phone it's reachable via the "⋮" note-actions sheet → "Gliederung").
+  const [mobileOutlineOpen, setMobileOutlineOpen] = useState(false);
+  // Mobile top-bar "⋮" app-menu — holds the secondary app actions
+  // (Settings / Import / Graph / Daily / Vorlagen / Review) so the slim top
+  // bar stays at ☰ + logo + ⋮. Desktop shows these inline (menu never opens).
+  const [appMenuOpen, setAppMenuOpen] = useState(false);
   // Auto-close the drawer when navigating into a note (mobile UX: tap a note
   // → drawer slides out, full-screen editor remains).
   function openAndCloseDrawer(id: string) {
@@ -1514,6 +1526,65 @@ export function App() {
     }
   }
 
+  /**
+   * Insert a reviewed voice transcript (from VoiceReviewSheet) into a note.
+   *
+   * This REPLACES the old live-into-editor flow. There is no streaming, no
+   * `setActive({...null})` race: we read the current active note off the ref
+   * (null-guarded), splice the finished text at the end of its body, and route
+   * it through the SAME dirty/debounce save pipeline every other edit uses.
+   *
+   * Two cases:
+   *   1. A note is open → append the transcript (separated by a blank line)
+   *      and arm the standard save debounce. The editor's body-watcher picks
+   *      up the new body like any other programmatic edit.
+   *   2. No note is open → create a fresh note under 30_captures/voice/ with
+   *      the transcript as its body (createNote generates SPEC-valid
+   *      frontmatter), then open it.
+   *
+   * Throws on failure so the sheet can surface the message inline.
+   */
+  async function handleVoiceInsert(transcript: string): Promise<void> {
+    const text = transcript.trim();
+    if (!text) throw new Error("Transkript ist leer.");
+
+    const cur = activeRef.current;
+    if (cur) {
+      // Null-guarded splice into the open note. NEVER spread a null `active`.
+      const sep = cur.body.endsWith("\n\n")
+        ? ""
+        : cur.body.endsWith("\n")
+          ? "\n"
+          : cur.body === ""
+            ? ""
+            : "\n\n";
+      const newBody = cur.body + sep + text + "\n";
+      dirtyBody.current = newBody;
+      setActive({ ...cur, body: newBody });
+      setDirty(newBody !== savedBodyRef.current);
+      if (syncRef.current !== "saving") setSync("dirty");
+      if (saveTimer.current) window.clearTimeout(saveTimer.current);
+      saveTimer.current = window.setTimeout(() => {
+        saveTimer.current = null;
+        void flush();
+      }, SAVE_DEBOUNCE_MS);
+      // Flush immediately so the captured text reaches Forgejo without the
+      // 5s wait — voice capture is a "commit it now" intent.
+      await flushNow();
+      return;
+    }
+
+    // No note open — create a fresh capture-style note and open it.
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const time = `${pad(now.getHours())}${pad(now.getMinutes())}`;
+    const path = `30_captures/voice/${date}-voice-${time}`;
+    const created = await api.createNote(path, `${text}\n`);
+    await refreshTree();
+    await open(created.id);
+  }
+
   async function handleRename(node: TreeNode, newName: string) {
     const clean = safeName(newName);
     if (!clean) return;
@@ -1642,56 +1713,28 @@ export function App() {
           }}
         />
         <span style={{ flex: 1 }} />
-        <DailyNoteButton onOpenNote={(id) => void openNoteById(id)} />
-        {/* Voice-Quick-Capture — first-class one-click recording. Visible on
-            mobile too: voice is the most mobile-friendly capture mode and
-            the spec wants this prominent. The full recorder with mode-
-            switch + audio preview still lives in the ImportPanel for power
-            users. */}
-        <VoiceQuickButton
-          onImported={(id) => {
-            void refreshTree().then(() => open(id));
-          }}
-          onLiveEditorRequested={(noteId) => {
-            // Track the recording target so subsequent appends find the
-            // right note even if the user switches tabs.
-            setLiveTargetNoteId(noteId);
-            // Defensive reset: if a prior session crashed without firing
-            // onLiveEditorStopped (e.g. tab-close race), the anchor refs
-            // could still carry stale offsets that would land the new
-            // session's first segment at the wrong place. Clearing here
-            // forces the lazy capture in handleLiveVoice* to read a
-            // fresh cursor position from the editor.
-            liveInsertAnchorRef.current = null;
-            liveInsertLengthRef.current = 0;
-            // If the requested note is already open in the editor (the
-            // "open-note" target path), DON'T re-open it — that would
-            // re-fetch from the server and clobber any unsaved edits.
-            // Just register the target above and we're done.
-            if (active?.id === noteId) return;
-            void refreshTree().then(() => open(noteId));
-          }}
-          onLiveEditorAppend={handleLiveVoiceAppend}
-          onLiveEditorReplaceTail={handleLiveVoiceReplaceTail}
-          onLiveEditorStopped={() => {
-            // Flush any pending debounced save right away so the final
-            // segment lands in Forgejo without waiting 5s. Clear the
-            // target so future live recordings don't inherit it.
-            void flushNow();
-            setLiveTargetNoteId(null);
-            // Reset the insertion anchor so the next recording session
-            // captures a fresh cursor position instead of reusing the
-            // previous one. Length resets along with it.
-            liveInsertAnchorRef.current = null;
-            liveInsertLengthRef.current = 0;
-          }}
-          liveEditorOffTarget={
-            liveTargetNoteId !== null && active?.id !== liveTargetNoteId
-          }
-          currentNoteId={active?.id}
-          currentNoteTitle={active?.title}
-          isMobile={isMobile}
-        />
+        {/* Daily-note + the full Voice-Quick-Capture recorder stay on desktop.
+            On mobile the BottomNav "Voice" tab opens the new editable Voice
+            Review-Sheet instead, and Daily-note moves into the "⋮" app-menu.
+
+            CRASH FIX (story C): the old live-into-editor wiring
+            (onLiveEditorRequested → setLiveTargetNoteId + handleLiveVoiceAppend
+            → setActive({...}) race) is REMOVED. VoiceQuickButton no longer
+            receives any onLiveEditor* callbacks, so VoiceRecorder hides its
+            editor/open-note live targets entirely and only offers the safe
+            capture-note path. Nothing streams into the open CM6 doc anymore;
+            the review-sheet is the sole voice→note path. */}
+        {!isMobile && (
+          <>
+            <DailyNoteButton onOpenNote={(id) => void openNoteById(id)} />
+            <VoiceQuickButton
+              onImported={(id) => {
+                void refreshTree().then(() => open(id));
+              }}
+              isMobile={isMobile}
+            />
+          </>
+        )}
         {/* Phase D Wave D1 — non-essential text buttons (Vorlagen, Review,
             Import) are dropped on mobile to keep the toolbar from
             horizontal-scrolling. They remain reachable via Settings + the

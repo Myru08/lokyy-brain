@@ -15,10 +15,12 @@ import {
   Folder,
   FolderPlus,
   FilePlus,
+  MoreVertical,
   Pencil,
   Trash2,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
+import { useIsMobile } from "./responsive.js";
 
 /**
  * Datei-Baum. Bildet die Ordnerstruktur des Vaults ab und kann sie
@@ -101,6 +103,10 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
   },
   ref,
 ) {
+  // Touch fix: hover-only action buttons (rename/delete/new) are unreachable
+  // on touch devices. On mobile we render a tap-to-reveal "⋮" toggle per row
+  // instead of the hover affordance. Desktop hover behavior is unchanged.
+  const isMobile = useIsMobile();
   const visibleTree = tagFilteredNoteIds
     ? pruneTree(tree, tagFilteredNoteIds)
     : tree;
@@ -310,6 +316,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
             key={node.path}
             node={node}
             depth={0}
+            isMobile={isMobile}
             expanded={expanded}
             editing={editing}
             activeId={activeId}
@@ -361,6 +368,8 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
 interface RowProps {
   node: TreeNode;
   depth: number;
+  /** True on phone-width viewports — switches actions to tap-to-reveal. */
+  isMobile: boolean;
   expanded: Set<string>;
   editing: Editing;
   activeId: string | null;
@@ -384,6 +393,7 @@ function Row(props: RowProps) {
   const {
     node,
     depth,
+    isMobile,
     expanded,
     editing,
     activeId,
@@ -404,6 +414,13 @@ function Row(props: RowProps) {
   } = props;
 
   const [hover, setHover] = useState(false);
+  // Mobile tap-to-reveal: each row keeps its own "actions open" flag toggled
+  // by the trailing "⋮" button. Desktop ignores this and uses `hover`.
+  const [actionsOpen, setActionsOpen] = useState(false);
+  // Show the action buttons when hovering (desktop) or when this row's "⋮"
+  // toggle is open (mobile). Keeping both branches lets desktop behavior stay
+  // byte-for-byte identical to before.
+  const showActions = isMobile ? actionsOpen : hover;
   const isFolder = node.type === "folder";
   const isOpen = expanded.has(node.path);
   const isActive = node.type === "note" && node.path === activeId;
@@ -543,8 +560,22 @@ function Row(props: RowProps) {
           {node.name}
         </span>
 
-        {/* Aktionen beim Hovern */}
-        {hover && (
+        {/* Mobile: immer sichtbarer „⋮"-Schalter, der die Aktionszeile per
+            Tap ein-/ausblendet (Hover existiert auf Touch nicht). */}
+        {isMobile && (
+          <IconButton
+            title={actionsOpen ? "Aktionen ausblenden" : "Aktionen"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setActionsOpen((v) => !v);
+            }}
+          >
+            <MoreVertical size={16} />
+          </IconButton>
+        )}
+
+        {/* Aktionen beim Hovern (Desktop) bzw. nach Tap auf „⋮" (Mobile) */}
+        {showActions && (
           <span style={{ display: "flex", gap: 2, flexShrink: 0 }}>
             {isFolder && (
               <>

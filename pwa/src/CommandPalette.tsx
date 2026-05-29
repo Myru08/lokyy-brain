@@ -194,8 +194,8 @@ export function CommandPalette({
             <Item
               key={`action-${i}`}
               active={cursor === i}
-              onMouseEnter={() => setCursor(i)}
-              onClick={() => activate(i)}
+              onHover={() => setCursor(i)}
+              onActivate={() => activate(i)}
               title={a.label}
               right="↵ neu"
               accent
@@ -208,8 +208,8 @@ export function CommandPalette({
               <Item
                 key={h.noteId}
                 active={cursor === idx}
-                onMouseEnter={() => setCursor(idx)}
-                onClick={() => activate(idx)}
+                onHover={() => setCursor(idx)}
+                onActivate={() => activate(idx)}
                 title={h.title}
                 subtitle={h.noteId}
                 snippet={h.snippet}
@@ -257,8 +257,8 @@ function Item({
   subtitle,
   snippet,
   active,
-  onClick,
-  onMouseEnter,
+  onActivate,
+  onHover,
   right,
   accent,
 }: {
@@ -266,15 +266,48 @@ function Item({
   subtitle?: string;
   snippet?: string;
   active: boolean;
-  onClick: () => void;
-  onMouseEnter: () => void;
+  /** Fire the item (open note / new note). Wired to click + touch. */
+  onActivate: () => void;
+  /** Move the keyboard cursor onto this row (pointer/keyboard affordance). */
+  onHover: () => void;
   right?: React.ReactNode;
   accent?: boolean;
 }) {
+  // Touch fix: on Android a tap on a search result must select AND open it.
+  // `onMouseEnter` never fires on touch, so hover-only cursor movement left
+  // taps inert. We activate on `onPointerDown` — it fires for both mouse and
+  // touch before the synthetic click, and works even when the list re-renders
+  // out from under the tap (which can swallow the trailing click event).
+  // We guard against double-firing the same gesture (pointerdown → click) with
+  // a ref, while keeping a plain `onClick` fallback for any environment that
+  // doesn't emit pointer events. `onMouseEnter` stays for desktop hover.
+  const firedRef = useRef(false);
+  const handleActivate = () => {
+    if (firedRef.current) return;
+    firedRef.current = true;
+    onHover();
+    onActivate();
+    // Reset on the next tick so a later, distinct gesture can fire again.
+    setTimeout(() => {
+      firedRef.current = false;
+    }, 0);
+  };
   return (
     <div
-      onMouseEnter={onMouseEnter}
-      onClick={onClick}
+      role="button"
+      tabIndex={-1}
+      onMouseEnter={onHover}
+      onPointerDown={(e) => {
+        // Keep focus in the search input (preserves keyboard nav) and prevent
+        // the overlay's outside-click handler from also reacting.
+        e.preventDefault();
+        e.stopPropagation();
+        handleActivate();
+      }}
+      onClick={(e) => {
+        e.stopPropagation();
+        handleActivate();
+      }}
       style={{
         padding: "10px 16px",
         cursor: "pointer",

@@ -30,6 +30,13 @@ interface TagPaneProps {
   refreshKey?: number;
   activeTag: string | null;
   onSelectTag: (tag: string | null) => void;
+  /**
+   * Mobile-compact mode. On a phone the 320px-tall tag list dominates the
+   * drawer and pushes the file tree out of view. When `compact` is true we
+   * cap the list much shorter (≤180px) so the file tree stays the primary
+   * surface. Desktop leaves this undefined → the original 320px height.
+   */
+  compact?: boolean;
 }
 
 interface TagEntry {
@@ -43,7 +50,7 @@ type LoadState =
   | { status: "ready"; tags: TagEntry[] }
   | { status: "error"; message: string };
 
-export function TagPane({ refreshKey, activeTag, onSelectTag }: TagPaneProps) {
+export function TagPane({ refreshKey, activeTag, onSelectTag, compact }: TagPaneProps) {
   const [state, setState] = useState<LoadState>({ status: "loading" });
   // Tracks whether we've ever successfully loaded — so we know whether
   // to show the "loading" placeholder or quietly refetch in the
@@ -112,7 +119,7 @@ export function TagPane({ refreshKey, activeTag, onSelectTag }: TagPaneProps) {
         display: "flex",
         flexDirection: "column",
         minHeight: 0,
-        maxHeight: 320,
+        maxHeight: compact ? 180 : 320,
         overflowY: "auto",
       }}
     >

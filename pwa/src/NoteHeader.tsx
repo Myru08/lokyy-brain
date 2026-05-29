@@ -8,9 +8,11 @@ import {
   Undo2,
   Volume2,
   VolumeX,
+  MoreVertical,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
-import { useIsMobile } from "./responsive.js";
+import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
+import { NoteActionsSheet } from "./NoteActionsSheet.js";
 
 /**
  * Save-lifecycle states. Mirrors `App.tsx#SyncState` — kept loosely
@@ -135,6 +137,17 @@ export interface NoteHeaderProps {
    * renders as plain text (still visible — just non-interactive).
    */
   onFolderJump?: (folderPath: string) => void;
+  /**
+   * Mobile-only nav callbacks for the "⋮" NoteActionsSheet. On phones the
+   * inline action row is unreachable, so all actions move into a bottom sheet
+   * opened by a single "⋮" button. Properties/Backlinks/Outline live in App.tsx
+   * panels (not the header), so App passes these toggles down; the header owns
+   * the sheet itself + its own TTS/Polish/copy handlers. Optional — when
+   * omitted (desktop), the sheet is never rendered and the inline row shows.
+   */
+  onShowProperties?: () => void;
+  onShowBacklinks?: () => void;
+  onShowOutline?: () => void;
 }
 
 /** Strip a top-level YAML scalar value. No nested mapping support needed. */
@@ -903,6 +916,9 @@ export function NoteHeader({
   onPolish,
   onPolishUndo,
   onFolderJump,
+  onShowProperties,
+  onShowBacklinks,
+  onShowOutline,
 }: NoteHeaderProps) {
   const ulid = useMemo(() => extractFrontmatterUlid(body), [body]);
   const forgotten = useMemo(() => extractFrontmatterForgotten(body), [body]);
@@ -936,6 +952,8 @@ export function NoteHeader({
   const polishOkTimer = useRef<number | null>(null);
   const polishErrTimer = useRef<number | null>(null);
   const [undoBusy, setUndoBusy] = useState<boolean>(false);
+  // Mobile "⋮ more" sheet — collects every note action into touch rows.
+  const [actionsSheetOpen, setActionsSheetOpen] = useState<boolean>(false);
   // Phase D Wave D1 — collapse the ID-badge on mobile (it dominates a
   // 375px header and the AI-Prompt button already encodes the ULID in the
   // copy payload) and grow the remaining buttons to 40px tall.
@@ -1359,6 +1377,82 @@ export function NoteHeader({
         )}
       </>
     ) : null;
+
+  // ── Mobile: slim top bar + "⋮" actions sheet ──────────────────────────
+  // On phones every action button is unreachable in the inline row, so the
+  // header collapses to title + save-badge + a single "⋮" button that opens
+  // the NoteActionsSheet. The sheet reuses the SAME handlers (handlePolish,
+  // handleToggleSpeech, handleCopyId/Prompt, onManualSave, onSync, onForget…)
+  // — no behaviour is duplicated. Desktop keeps the inline row unchanged.
+  if (isMobile) {
+    return (
+      <>
+        <BadgeAnimationStyles />
+        <div
+          style={{
+            ...(forgotten ? HEADER_STYLE_FORGOTTEN : HEADER_STYLE),
+            flexWrap: "nowrap",
+          }}
+        >
+          <Breadcrumb segments={breadcrumbSegments} onFolderJump={onFolderJump} />
+          <span
+            style={{ ...TITLE_STYLE, opacity: forgotten ? 0.6 : 1 }}
+            title={title}
+          >
+            {title || noteId}
+          </span>
+          {syncState && <SaveBadge status={syncState} lastSavedAt={lastSavedAt} />}
+          {toast && <span style={TOAST_STYLE}>{toast}</span>}
+          <button
+            type="button"
+            onClick={() => setActionsSheetOpen(true)}
+            aria-label="Notiz-Aktionen"
+            title="Aktionen"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: TOUCH_TARGET_MIN,
+              height: TOUCH_TARGET_MIN,
+              flexShrink: 0,
+              background: C.elevated,
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+              cursor: "pointer",
+              color: C.text,
+            }}
+          >
+            <MoreVertical size={22} style={{ color: C.accent }} />
+          </button>
+        </div>
+        <NoteActionsSheet
+          open={actionsSheetOpen}
+          onClose={() => setActionsSheetOpen(false)}
+          noteId={noteId}
+          title={title || noteId}
+          isDirty={isDirty}
+          saving={syncState === "saving"}
+          syncing={syncing}
+          isReading={isReading}
+          ttsSupported={ttsSupported}
+          hasRawTranscript={rawTranscriptPresent}
+          forgotten={forgotten}
+          onManualSave={() => onManualSave?.()}
+          onSync={() => onSync?.()}
+          onToggleSpeech={handleToggleSpeech}
+          onPolish={() => void handlePolish()}
+          onPolishUndo={() => void handlePolishUndo()}
+          onProperties={() => onShowProperties?.()}
+          onBacklinks={() => onShowBacklinks?.()}
+          onOutline={() => onShowOutline?.()}
+          onCopyId={() => void handleCopyId()}
+          onCopyPrompt={() => void handleCopyPrompt()}
+          onForget={() => onForget?.(noteId)}
+          onUnforget={() => onUnforget?.(noteId)}
+        />
+      </>
+    );
+  }
 
   if (!ulid) {
     return (
