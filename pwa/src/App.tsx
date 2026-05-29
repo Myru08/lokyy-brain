@@ -300,6 +300,9 @@ export function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // Mobile Voice Review-Sheet (opened from the BottomNav Voice tab). Replaces
+  // the old live-into-editor flow — record → editable transcript → insert.
+  const [voiceReviewOpen, setVoiceReviewOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
   const [backlinksRefresh, setBacklinksRefresh] = useState(0);
   const [openTabs, setOpenTabs] = useState<TabRef[]>([]);
@@ -2032,6 +2035,7 @@ export function App() {
               activeTag={tagFilter}
               onSelectTag={setTagFilter}
               refreshKey={backlinksRefresh}
+              compact={isMobile}
             />
           </div>
         </aside>
@@ -2047,7 +2051,20 @@ export function App() {
         )}
 
         {/* Editor + Tabs + Backlinks */}
-        <main style={{ flex: 1, minWidth: 0, background: C.bg, display: "flex", flexDirection: "column" }}>
+        <main
+          style={{
+            flex: 1,
+            minWidth: 0,
+            background: C.bg,
+            display: "flex",
+            flexDirection: "column",
+            // Mobile: clear the fixed BottomNav (≈56px tab + home-indicator
+            // safe-area) so it never overlaps the editor / backlinks footer.
+            paddingBottom: isMobile
+              ? "calc(56px + env(safe-area-inset-bottom, 0px))"
+              : undefined,
+          }}
+        >
           <Tabs
             tabs={openTabs}
             activeId={active?.id ?? null}
@@ -2230,6 +2247,31 @@ export function App() {
           void openNoteById(id);
         }}
         onCountChange={setPendingCount}
+      />
+
+      {/* Mobile bottom tab bar — Story: Mobile Shell. Gated to mobile so the
+          desktop layout is untouched. Each tab is a thin callback into the
+          existing App handlers; Sync mirrors the live save/sync lifecycle. */}
+      {isMobile && (
+        <BottomNav
+          onDrawer={() => setSidebarOpen((o) => !o)}
+          onSearch={() => setPaletteOpen(true)}
+          onNew={() => void handleCreate("", "Neue Notiz", "note")}
+          onVoice={() => setVoiceReviewOpen(true)}
+          onSync={() => void handleSync()}
+          syncState={sync}
+          syncing={syncing}
+          drawerOpen={sidebarOpen}
+        />
+      )}
+
+      {/* Voice Review-Sheet — record → editable transcript → insert. Routes
+          through handleVoiceInsert (null-guarded; no live-editor crash path). */}
+      <VoiceReviewSheet
+        open={voiceReviewOpen}
+        onClose={() => setVoiceReviewOpen(false)}
+        onInsert={handleVoiceInsert}
+        targetTitle={active ? active.title || active.id : null}
       />
     </div>
   );
