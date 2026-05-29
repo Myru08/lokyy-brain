@@ -39,10 +39,60 @@ interface SystemSettings {
 }
 
 interface StatusResult {
-  forgejo: { ok: boolean; error?: string };
-  postgres: { ok: boolean; error?: string; pgvector?: string | null };
-  ollama: { ok: boolean; error?: string; hasNomicEmbed?: boolean };
+  forgejo: { service?: string; ok: boolean; error?: string };
+  postgres: {
+    service?: string;
+    ok: boolean;
+    error?: string;
+    pgvector?: string | null;
+  };
+  ollama: {
+    service?: string;
+    ok: boolean;
+    error?: string;
+    hasNomicEmbed?: boolean;
+  };
+  /**
+   * Derived from the Ollama probe by the backend: ok=false when Ollama is up
+   * but `nomic-embed-text` is missing (or when Ollama itself is unreachable).
+   * Optional so the page still renders against an older backend that doesn't
+   * yet emit this entry — in that case we synthesize it from
+   * `ollama.hasNomicEmbed`.
+   */
+  embeddings?: { service?: string; ok: boolean; error?: string };
 }
+
+/**
+ * Per-service remediation hint shown when a System-tab check fails. `local`
+ * is the command to run on the operator's own machine; `docker` is the
+ * docker-compose equivalent for a server deployment. `note` adds a one-line
+ * pointer (e.g. "check connection settings"). NOTHING here is ever executed —
+ * the UI only renders the strings with copy-to-clipboard buttons.
+ */
+interface ServiceRemediation {
+  local?: string;
+  docker?: string;
+  note?: string;
+}
+
+const SERVICE_REMEDIATION: Record<string, ServiceRemediation> = {
+  forgejo: {
+    docker: "docker compose up -d forgejo",
+    note: "Verbindung im Vault-Tab prüfen (GIT_REMOTE / Forgejo-Token).",
+  },
+  postgres: {
+    docker: "docker compose up -d postgres",
+    note: "Verbindungs-Einstellungen prüfen (DATABASE_URL).",
+  },
+  ollama: {
+    local: "ollama serve",
+    docker: "docker compose up -d ollama",
+  },
+  embeddings: {
+    local: "ollama pull nomic-embed-text",
+    note: "Embedding-Modell für die Tier-2 Semantik-Suche. Ollama muss laufen.",
+  },
+};
 
 interface McpVariant {
   title: string;
@@ -1002,12 +1052,16 @@ export function Settings({
       {tab === "system" && (
         <>
           <Section title="System-Status">
-            <StatusBar
+            <ServiceStatusRow
+              service="forgejo"
               label="Forgejo"
               ok={status.forgejo.ok}
               detail={status.forgejo.error}
+              onCopy={copy}
+              copiedLabel={copied}
             />
-            <StatusBar
+            <ServiceStatusRow
+              service="postgres"
               label="Postgres"
               ok={status.postgres.ok}
               detail={
@@ -1016,8 +1070,11 @@ export function Settings({
                   ? `pgvector v${status.postgres.pgvector}`
                   : "pgvector fehlt")
               }
+              onCopy={copy}
+              copiedLabel={copied}
             />
-            <StatusBar
+            <ServiceStatusRow
+              service="ollama"
               label="Ollama"
               ok={status.ollama.ok}
               detail={
@@ -1026,7 +1083,41 @@ export function Settings({
                   ? "nomic-embed-text bereit"
                   : "nomic-embed-text fehlt")
               }
+              onCopy={copy}
+              copiedLabel={copied}
             />
+            {(() => {
+              // Prefer the backend-derived `embeddings` entry; fall back to
+              // synthesizing it from the Ollama probe for older backends that
+              // don't emit it yet. Embeddings only make sense once Ollama is
+              // reachable — when it isn't, the row reflects that dependency.
+              const emb =
+                status.embeddings ??
+                (status.ollama.ok
+                  ? {
+                      ok: !!status.ollama.hasNomicEmbed,
+                      error: status.ollama.hasNomicEmbed
+                        ? undefined
+                        : "Modell nomic-embed-text nicht installiert",
+                    }
+                  : {
+                      ok: false,
+                      error:
+                        "Ollama nicht erreichbar — Embeddings-Modell nicht prüfbar",
+                    });
+              return (
+                <ServiceStatusRow
+                  service="embeddings"
+                  label="Embeddings"
+                  ok={emb.ok}
+                  detail={
+                    emb.error ?? "nomic-embed-text bereit"
+                  }
+                  onCopy={copy}
+                  copiedLabel={copied}
+                />
+              );
+            })()}
             <button
               onClick={() => void load()}
               style={{ ...btn, marginTop: 12 }}
@@ -2347,45 +2438,186 @@ function Section({
   );
 }
 
-function StatusBar({
-  label,
-  ok,
-  detail,
+/**
+ * Single command line + copy button. Renders inside a service's remediation
+ * block. `kind` labels whether this is the local or docker-compose variant.
+ * The command is NEVER executed — copy-to-clipboard only.
+ */
+function CommandLine({
+  copyKey,
+  kind,
+  command,
+  onCopy,
+  copiedLabel,
 }: {
-  label: string;
-  ok: boolean;
-  detail?: string;
+  copyKey: string;
+  kind: "local" | "docker";
+  command: string;
+  onCopy: (label: string, text: string) => void;
+  copiedLabel: string | null;
 }) {
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
-        gap: 12,
+        gap: 8,
+        marginTop: 6,
+        flexWrap: "wrap",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 10,
+          color: C.textFaint,
+          fontFamily: FONT.mono,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          minWidth: 48,
+        }}
+      >
+        {kind === "local" ? "lokal" : "server"}
+      </span>
+      <code
+        style={{
+          flex: "1 1 200px",
+          minWidth: 0,
+          padding: "5px 9px",
+          background: C.panel,
+          border: `1px solid ${C.border}`,
+          borderRadius: 4,
+          fontFamily: FONT.mono,
+          fontSize: 12,
+          color: C.gold,
+          wordBreak: "break-all",
+        }}
+      >
+        {command}
+      </code>
+      <button
+        onClick={() => onCopy(copyKey, command)}
+        style={{ ...btn, padding: "4px 8px", fontSize: 11 }}
+      >
+        <Copy size={11} /> {copiedLabel === copyKey ? "kopiert" : "Copy"}
+      </button>
+    </div>
+  );
+}
+
+/**
+ * System-tab status row: a colored dot + label + OK/FAIL + optional detail,
+ * followed (only when `!ok`) by an actionable remediation block — the local
+ * command, the docker-compose hint, and a one-line note — each with its own
+ * copy button. Detection + guidance only; the app executes nothing.
+ */
+function ServiceStatusRow({
+  service,
+  label,
+  ok,
+  detail,
+  onCopy,
+  copiedLabel,
+}: {
+  service: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+  onCopy: (label: string, text: string) => void;
+  copiedLabel: string | null;
+}) {
+  const remediation = SERVICE_REMEDIATION[service];
+  return (
+    <div
+      style={{
         padding: "8px 12px",
         background: C.elevated,
         borderRadius: 6,
         marginBottom: 6,
       }}
     >
-      <span
+      <div
         style={{
-          width: 10,
-          height: 10,
-          borderRadius: 999,
-          background: ok ? C.ok : C.err,
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
         }}
-      />
-      <strong style={{ width: 90 }}>{label}</strong>
-      <span style={{ color: ok ? C.ok : C.err, fontSize: 13 }}>
-        {ok ? "OK" : "FAIL"}
-      </span>
-      {detail && (
+      >
         <span
-          style={{ color: C.textDim, fontSize: 12, marginLeft: "auto" }}
-        >
-          {detail}
+          style={{
+            width: 10,
+            height: 10,
+            borderRadius: 999,
+            background: ok ? C.ok : C.err,
+            flex: "0 0 auto",
+          }}
+        />
+        <strong style={{ width: 90 }}>{label}</strong>
+        <span style={{ color: ok ? C.ok : C.err, fontSize: 13 }}>
+          {ok ? "OK" : "FAIL"}
         </span>
+        {detail && (
+          <span
+            style={{
+              color: C.textDim,
+              fontSize: 12,
+              marginLeft: "auto",
+              wordBreak: "break-word",
+              maxWidth: "100%",
+            }}
+          >
+            {detail}
+          </span>
+        )}
+      </div>
+
+      {!ok && remediation && (
+        <div
+          style={{
+            marginTop: 8,
+            paddingTop: 8,
+            borderTop: `1px solid ${C.border}`,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 11,
+              color: C.textDim,
+              fontFamily: FONT.mono,
+            }}
+          >
+            Nächster Schritt:
+          </div>
+          {remediation.local && (
+            <CommandLine
+              copyKey={`fix-${service}-local`}
+              kind="local"
+              command={remediation.local}
+              onCopy={onCopy}
+              copiedLabel={copiedLabel}
+            />
+          )}
+          {remediation.docker && (
+            <CommandLine
+              copyKey={`fix-${service}-docker`}
+              kind="docker"
+              command={remediation.docker}
+              onCopy={onCopy}
+              copiedLabel={copiedLabel}
+            />
+          )}
+          {remediation.note && (
+            <div
+              style={{
+                marginTop: 6,
+                fontSize: 11,
+                color: C.textFaint,
+              }}
+            >
+              {remediation.note}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

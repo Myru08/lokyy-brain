@@ -360,6 +360,20 @@ export function App() {
   // Save-lifecycle tracking — surfaced to NoteHeader for the badge UI.
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // Story: separate Save & Sync buttons.
+  //
+  // `syncing` is true while an explicit `api.sync()` reconcile is in flight —
+  // drives the Sync button's spinner + disabled state in NoteHeader. Distinct
+  // from `sync === "saving"` (the per-note PUT lifecycle).
+  const [syncing, setSyncing] = useState(false);
+  // `dirty` mirrors `dirtyBody !== savedBodyRef` as React state so NoteHeader
+  // can disable the Save button when there's nothing to flush. The refs are
+  // the source of truth for the save pipeline; we set this flag everywhere we
+  // flip the sync badge so the two never drift (idle/synced ⇒ clean,
+  // dirty ⇒ dirty). Kept as state (not derived from refs) because ref reads
+  // don't trigger re-renders — the button must re-enable the instant the user
+  // types and re-disable the instant a save lands.
+  const [dirty, setDirty] = useState(false);
 
   /* ── Live-voice-in-editor target tracking ─────────────────────────
    * VoiceQuickButton's Live-mode "Live in neuen Editor schreiben"
@@ -550,6 +564,7 @@ export function App() {
         savedBodyRef.current = note.body;
         setActive(note);
         setSync("idle");
+        setDirty(false);
         setErrorMsg(null);
         setPendingServerBody(null);
         setOpenTabs((prev) => {
@@ -681,6 +696,10 @@ export function App() {
       // Surface that as "synced" directly — the intermediate "saved"
       // sub-state is reserved for the future case where push becomes async.
       setSync("synced");
+      // Clean iff the user didn't keep typing during the PUT. `dirtyBody` was
+      // advanced to the server-canonical body above only when it still equalled
+      // what we sent; if it advanced (user typed on), the note is still dirty.
+      setDirty(dirtyBody.current !== savedBodyRef.current);
       setBacklinksRefresh((n) => n + 1);
       return saved;
     } catch (e) {
@@ -716,6 +735,7 @@ export function App() {
       savedBodyRef.current = note.body;
       setActive(note);
       setSync("idle");
+      setDirty(false);
       setErrorMsg(null);
     } catch (e) {
       console.error(e);
@@ -727,6 +747,9 @@ export function App() {
   function onChange(body: string) {
     dirtyBody.current = body;
     markTyping();
+    // Body may equal the saved baseline again (user typed then undid). Reflect
+    // the real dirtiness so the Save button enables/disables precisely.
+    setDirty(body !== savedBodyRef.current);
     // Skip "dirty" flip if a save is already in flight — that PUT will
     // resolve to "synced" and the new debounce timer below will pick up
     // any further edits.
@@ -749,6 +772,48 @@ export function App() {
   }
 
   /**
+   * Manual Sync — fired by the NoteHeader Sync button (Story: separate Save &
+   * Sync buttons). Reconciles the working copy with Forgejo via
+   * `api.sync()` → `POST /api/vault/sync`, which runs `git pull --rebase` +
+   * pushes any unpushed commits INSIDE the server-side git promise-lock. No
+   * note content is written here.
+   *
+   * We flush any pending local edit first so a debounced save doesn't race the
+   * reconcile (the server lock would serialize them anyway, but flushing keeps
+   * the user's intent — "save then reconcile" — explicit). On success we mark
+   * the badge "synced"; a conflict/backend error surfaces through the same
+   * banner pattern as a save failure. Guarded against double-submit via
+   * `syncing`.
+   */
+  async function handleSync() {
+    if (syncing) return;
+    await flushNow();
+    setSyncing(true);
+    setErrorMsg(null);
+    try {
+      await api.sync();
+      // Reconcile done — anything the pull brought in for the ACTIVE note is
+      // picked up by the focus-pull / 30s tree poll; here we only need to
+      // confirm the badge. Treat a clean reconcile as "synced ✓".
+      setSync("synced");
+      setLastSavedAt(Date.now());
+      setDirty(dirtyBody.current !== savedBodyRef.current);
+    } catch (e) {
+      if (e instanceof ApiError && e.isConflict) {
+        setSync("conflict");
+        setErrorMsg(
+          "Abgleich-Konflikt — Server hat divergierende Änderungen. Bitte neu laden.",
+        );
+      } else {
+        setSync("error");
+        setErrorMsg(e instanceof Error ? e.message : "Abgleich fehlgeschlagen");
+      }
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  /**
    * Wird vom PropertiesPanel aufgerufen, wenn Frontmatter-Felder editiert
    * wurden. Der Panel liefert den vollen neuen Markdown-Body inkl.
    * Frontmatter. Wir aktualisieren active.body (Editor re-syncen seine Doc
@@ -760,6 +825,7 @@ export function App() {
     if (!cur) return;
     dirtyBody.current = newBody;
     setActive({ ...cur, body: newBody });
+    setDirty(newBody !== savedBodyRef.current);
     if (syncRef.current !== "saving") setSync("dirty");
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => {
@@ -1140,6 +1206,7 @@ export function App() {
       dirtyBody.current = updated.body;
       savedBodyRef.current = updated.body;
       setActive(updated);
+      setDirty(false);
       setBacklinksRefresh((n) => n + 1);
     } catch (err) {
       console.error("forgetNote failed", err);
@@ -1153,6 +1220,7 @@ export function App() {
       dirtyBody.current = updated.body;
       savedBodyRef.current = updated.body;
       setActive(updated);
+      setDirty(false);
       setBacklinksRefresh((n) => n + 1);
     } catch (err) {
       console.error("unforgetNote failed", err);
@@ -1202,6 +1270,7 @@ export function App() {
       savedBodyRef.current = fresh.body;
       setActive(fresh);
       setSync("synced");
+      setDirty(false);
       setLastSavedAt(Date.now());
       setErrorMsg(null);
       setBacklinksRefresh((n) => n + 1);
@@ -1247,11 +1316,13 @@ export function App() {
     dirtyBody.current = restored;
     setActive({ ...cur, body: restored });
     setSync("dirty");
+    setDirty(restored !== savedBodyRef.current);
     try {
       const saved = await api.putNote(targetNoteId, restored);
       savedBodyRef.current = restored;
       // Match the standard save-success branch: surface "synced" + timestamp.
       setSync("synced");
+      setDirty(false);
       setLastSavedAt(Date.now());
       setErrorMsg(null);
       // Reload from server so any backend-side frontmatter touches (e.g.
@@ -1333,6 +1404,7 @@ export function App() {
           dirtyBody.current = fresh.body;
           savedBodyRef.current = fresh.body;
           setActive(fresh);
+          setDirty(false);
         })
         .catch(() => {});
     }
@@ -1394,6 +1466,7 @@ export function App() {
     savedBodyRef.current = fresh.body;
     setActive(fresh);
     setSync("idle");
+    setDirty(false);
     setErrorMsg(null);
     setPendingServerBody(null);
   }
@@ -1951,6 +2024,9 @@ export function App() {
                   lastSavedAt={lastSavedAt}
                   errorMsg={errorMsg}
                   onManualSave={() => void manualSave()}
+                  isDirty={dirty}
+                  onSync={() => void handleSync()}
+                  syncing={syncing}
                   onDismissError={() => {
                     setErrorMsg(null);
                     if (sync === "error") setSync("dirty");

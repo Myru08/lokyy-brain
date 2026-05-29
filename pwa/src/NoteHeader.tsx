@@ -82,6 +82,25 @@ export interface NoteHeaderProps {
   /** Manual save handler — fires from the disk-icon button. */
   onManualSave?: () => void;
   /**
+   * Story: separate Save & Sync buttons.
+   *
+   * Whether the editor has unsaved local changes (the body differs from what
+   * the server last returned). Drives the SAVE button's disabled state — Save
+   * is a no-op when nothing is dirty, so we grey it out. App.tsx is the single
+   * source of truth for dirtiness (it owns `dirtyBody`/`savedBodyRef`); the
+   * header is a dumb view of the boolean it's handed.
+   */
+  isDirty?: boolean;
+  /**
+   * Reconcile handler — fires `api.sync()` (git pull --rebase + push unpushed,
+   * server-side, inside the git lock). App.tsx owns the request, badge update,
+   * and error banner; the button only reflects in-flight state + disabled-ness.
+   * The Sync button is hidden when this prop is omitted (back-compat).
+   */
+  onSync?: () => void;
+  /** True while an `api.sync()` request is in flight — drives the Sync spinner. */
+  syncing?: boolean;
+  /**
    * Called when the user clicks "Erneut versuchen" on an error state.
    * App.tsx clears errorMsg and (optionally) re-queues a save.
    */
@@ -591,6 +610,32 @@ const SAVE_BUTTON_STYLE_MOBILE: CSSProperties = {
 };
 
 /**
+ * Story: separate Save & Sync buttons — Sync (reconcile) control. Same
+ * icon-square footprint as Save so the two sit as one visual group, but a
+ * distinct affordance: Save flushes local edits, Sync reconciles with Forgejo
+ * (pull --rebase + push unpushed). Kept visually separate per AC#4.
+ */
+const SYNC_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 32,
+  height: 32,
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 5,
+  cursor: "pointer",
+  color: C.textDim,
+  padding: 0,
+};
+
+const SYNC_BUTTON_STYLE_MOBILE: CSSProperties = {
+  ...SYNC_BUTTON_STYLE,
+  width: 40,
+  height: 40,
+};
+
+/**
  * TTS read-aloud button — same icon-square shape as Save so the two
  * single-icon affordances look like one visual group. Color shifts when
  * actively reading so the user can find the stop button without reading
@@ -851,6 +896,9 @@ export function NoteHeader({
   lastSavedAt,
   errorMsg,
   onManualSave,
+  isDirty,
+  onSync,
+  syncing,
   onDismissError,
   onPolish,
   onPolishUndo,
@@ -1211,8 +1259,24 @@ export function NoteHeader({
   // render the title — they just don't get the copy affordances.
   // Manual-save button + badge. Rendered as a small group in both the
   // no-ULID and full branches so legacy notes also get save feedback.
+  // Story: separate Save & Sync buttons — disabled-state logic.
+  //
+  // A save/sync is "in flight" whenever the badge says "saving" or an explicit
+  // `api.sync()` request is pending. Both buttons disable while in flight to
+  // avoid double-submit / racing the git lock.
+  const inFlight = syncState === "saving" || syncing === true;
+  // SAVE is a no-op when the note isn't dirty → disable it (AC#5). It also
+  // disables while in flight. (`isDirty` is optional for back-compat; when the
+  // caller doesn't pass it we fall back to the old "only disable while saving"
+  // behavior so legacy mounts keep a usable Save button.)
+  const saveDisabled = inFlight || (isDirty !== undefined && !isDirty);
+  // SYNC disables (a) while anything is in flight, and (b) when the state is
+  // already "synced" AND there are no pending local changes — there's nothing
+  // to reconcile (AC#5). A dirty note still allows Sync (the user may want to
+  // pull remote first); a `synced` + clean note is the genuine no-op.
+  const syncDisabled = inFlight || (syncState === "synced" && isDirty !== true);
   const saveControls =
-    syncState || onManualSave ? (
+    syncState || onManualSave || onSync ? (
       <>
         {syncState && <SaveBadge status={syncState} lastSavedAt={lastSavedAt} />}
         {errorMsg && (
@@ -1243,13 +1307,17 @@ export function NoteHeader({
           <button
             type="button"
             onClick={onManualSave}
-            disabled={syncState === "saving"}
+            disabled={saveDisabled}
             style={{
               ...(isMobile ? SAVE_BUTTON_STYLE_MOBILE : SAVE_BUTTON_STYLE),
-              opacity: syncState === "saving" ? 0.45 : 1,
-              cursor: syncState === "saving" ? "default" : "pointer",
+              opacity: saveDisabled ? 0.45 : 1,
+              cursor: saveDisabled ? "default" : "pointer",
             }}
-            title="Jetzt speichern (Cmd/Ctrl+S)"
+            title={
+              isDirty === false
+                ? "Nichts zu speichern — alle Änderungen sind sicher"
+                : "Jetzt speichern (Cmd/Ctrl+S)"
+            }
             aria-label="Save now"
           >
             {syncState === "saving" ? (
@@ -1259,6 +1327,33 @@ export function NoteHeader({
               />
             ) : (
               <Save size={16} />
+            )}
+          </button>
+        )}
+        {onSync && (
+          <button
+            type="button"
+            onClick={onSync}
+            disabled={syncDisabled}
+            style={{
+              ...(isMobile ? SYNC_BUTTON_STYLE_MOBILE : SYNC_BUTTON_STYLE),
+              opacity: syncDisabled ? 0.45 : 1,
+              cursor: syncDisabled ? "default" : "pointer",
+            }}
+            title={
+              syncDisabled
+                ? "Bereits synchron — nichts abzugleichen"
+                : "Mit Forgejo abgleichen (pull --rebase + push)"
+            }
+            aria-label="Sync with Forgejo"
+          >
+            {syncing ? (
+              <Loader2
+                size={16}
+                style={{ animation: "lokyy-spin 0.9s linear infinite" }}
+              />
+            ) : (
+              <RefreshCw size={16} />
             )}
           </button>
         )}

@@ -458,6 +458,23 @@ export const api = {
   tree: () => fetch(`${BASE}/vault/tree`).then(json<TreeNode[]>),
 
   /**
+   * Reconcile the working copy with Forgejo (Story: separate Save & Sync
+   * buttons). Server runs `git pull --rebase` + pushes any unpushed commits
+   * inside the git lock — NO note content is written. `changed` reports
+   * whether the reconcile moved local↔remote state (pull brought commits or
+   * we pushed unpushed ones); `false` means everything was already in sync.
+   *
+   * On a git failure the server returns `{ ok:false, … }` with 409/503 — `json`
+   * turns that into an `ApiError` (with `.isConflict` for the 409 case) so the
+   * caller can surface it through the same banner as a save conflict.
+   */
+  sync: () =>
+    fetch(`${BASE}/vault/sync`, {
+      method: "POST",
+      credentials: "include",
+    }).then(json<{ ok: boolean; changed: boolean }>),
+
+  /**
    * Create a new note. Optionally carries a partial encoding-context
    * (Phase B Wave B3 / Story 1 — Tulving 1973) for the server to merge
    * with time/weekday + UA-derived device. Caller passes preceding-notes

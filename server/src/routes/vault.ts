@@ -9,8 +9,11 @@ import {
   deleteEntry,
   generateUlid,
   getTree,
+  GitBackendError,
+  MergeConflictError,
   moveEntry,
   saveBinary,
+  sync,
   type CaptureContextInput,
   type DeviceType,
   type EncodedContext,
@@ -60,6 +63,57 @@ export const vaultRoutes = new Hono();
 // GET /api/vault/tree -> TreeNode[]
 vaultRoutes.get("/tree", async (c) => {
   return c.json(await getTree());
+});
+
+/**
+ * POST /api/vault/sync — reconcile the working copy with Forgejo
+ * (Story: separate Save & Sync buttons, AC#2).
+ *
+ * Runs `gitService.sync()` (pull --rebase + push unpushed) inside the existing
+ * git promise-lock. Writes NO note content — purely a remote reconcile. Returns
+ * `{ ok, changed, error? }`:
+ *   - 200 { ok: true,  changed }   — reconcile ran; `changed` says if state moved
+ *   - 409 { ok: false, error: "merge-conflict", … } — real divergence (mirrors
+ *     the save path's `MergeConflictError` → 409 mapping in notes.ts)
+ *   - 503 { ok: false, error: "git-backend-unavailable", retryable } — net/auth
+ *   - 409 { ok: false, error: <message> }            — unknown (legacy fallback)
+ */
+vaultRoutes.post("/sync", async (c) => {
+  try {
+    const { changed } = await sync();
+    return c.json({ ok: true, changed });
+  } catch (err) {
+    // Mirror notes.ts#mapSaveError for the two git-failure shapes a reconcile
+    // can produce. Sync never touches frontmatter, so PreCommit/validation
+    // errors are out of scope here.
+    if (err instanceof MergeConflictError) {
+      return c.json(
+        { ok: false, changed: false, error: "merge-conflict", message: err.message },
+        409,
+      );
+    }
+    if (err instanceof GitBackendError) {
+      return c.json(
+        {
+          ok: false,
+          changed: false,
+          error: "git-backend-unavailable",
+          message: err.message,
+          retryable: err.transient,
+          retryAfter: err.transient ? 5 : undefined,
+        },
+        503,
+      );
+    }
+    return c.json(
+      {
+        ok: false,
+        changed: false,
+        error: err instanceof Error ? err.message : "Sync fehlgeschlagen",
+      },
+      409,
+    );
+  }
 });
 
 // POST /api/vault/note  { path, body?, encoded? }  -> neue Notiz

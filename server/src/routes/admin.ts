@@ -352,14 +352,57 @@ adminRoutes.post("/system-settings/reclone", async (c) => {
 });
 
 // GET /api/admin/status — live health of dependencies
+//
+// Each entry carries a stable `service` key (used by the PWA to look up the
+// per-service remediation hint) alongside `{ ok, error? }`. The Ollama probe
+// additionally yields a derived `embeddings` entry: when Ollama is reachable
+// but the `nomic-embed-text` model is absent, embeddings reports ok=false with
+// an actionable message — so the Settings UI can surface
+// `ollama pull nomic-embed-text` without a second round-trip. Existing fields
+// (`postgres.pgvector`, `ollama.hasNomicEmbed`) are preserved unchanged.
 adminRoutes.get("/status", async (c) => {
   const [forgejo, postgresStatus, ollama] = await Promise.all([
     checkForgejo(config.gitRemote, config.gitBranch),
     checkPostgres(config.databaseUrl),
     checkOllama(process.env.OLLAMA_HOST ?? "http://localhost:11434"),
   ]);
-  return c.json({ forgejo, postgres: postgresStatus, ollama });
+  const embeddings = deriveEmbeddingsStatus(ollama);
+  return c.json({
+    forgejo: { service: "forgejo", ...forgejo },
+    postgres: { service: "postgres", ...postgresStatus },
+    ollama: { service: "ollama", ...ollama },
+    embeddings,
+  });
 });
+
+/**
+ * Derive a dedicated embeddings-model status from the Ollama probe result.
+ *
+ *  - Ollama unreachable → ok=false; the operator must start Ollama first, so
+ *    the message points back at the Ollama remediation.
+ *  - Ollama up, model present → ok=true.
+ *  - Ollama up, model missing → ok=false with the `ollama pull` hint.
+ */
+function deriveEmbeddingsStatus(ollama: {
+  ok: boolean;
+  hasNomicEmbed?: boolean;
+}): { service: "embeddings"; ok: boolean; error?: string } {
+  if (!ollama.ok) {
+    return {
+      service: "embeddings",
+      ok: false,
+      error: "Ollama nicht erreichbar — Embeddings-Modell nicht prüfbar",
+    };
+  }
+  if (ollama.hasNomicEmbed) {
+    return { service: "embeddings", ok: true };
+  }
+  return {
+    service: "embeddings",
+    ok: false,
+    error: "Modell nomic-embed-text nicht installiert",
+  };
+}
 
 // GET /api/admin/mcp-info — connection info for Claude Desktop / other MCP clients (Story 1.12 + Epic 7)
 //

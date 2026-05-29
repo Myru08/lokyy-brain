@@ -28,6 +28,9 @@ export {
   initGitService,
   ensureRepo,
   pull,
+  // Story: separate Save & Sync buttons — reconcile (pull --rebase + push
+  // unpushed) without writing note content. Consumed by POST /api/vault/sync.
+  sync,
   save,
   saveBinary,
   remove,
@@ -41,6 +44,7 @@ export {
   type GitConfig,
   type NoteHistoryEntry,
   type NoteDiff,
+  type SyncResult,
 } from "./git/gitService.js";
 
 // ─── graphService (Story 1.4 + backlinks) ──────────────────────────────

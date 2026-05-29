@@ -383,6 +383,80 @@ export async function pull(): Promise<void> {
 }
 
 /**
+ * Result of a `sync()` reconcile. `changed` is true when the operation moved
+ * the working copy forward (pull brought new commits) OR pushed previously
+ * unpushed local commits to the remote — i.e. the local↔remote state was NOT
+ * already in agreement. `false` means nothing happened (no-op): HEAD didn't
+ * move and there was nothing to push.
+ */
+export interface SyncResult {
+  changed: boolean;
+}
+
+/**
+ * Reconcile the working copy with Forgejo WITHOUT writing any note content
+ * (Story: separate Save & Sync buttons, AC#1).
+ *
+ *   git pull --rebase --autostash   →   git push (only when commits are unpushed)
+ *
+ * Runs inside the same `serialize()` FIFO lock as every write op (10.6 base /
+ * 10.12 hardening), so a manual sync never races an in-flight save/move/pull.
+ * Reuses the existing `git()` runner and `hasRemote()` probe — no new unguarded
+ * git access is introduced.
+ *
+ * `changed` semantics (drives the PWA's disabled-state + badge):
+ *   - HEAD advanced during the pull  → changed
+ *   - we had local commits ahead of the remote and pushed them → changed
+ *   - neither → no-op (changed = false)
+ *
+ * No-remote (setup wizard not run / vault detached) is a benign no-op: there is
+ * nothing to reconcile against, so we return `{ changed: false }` rather than
+ * throwing. A failed pull/push surfaces the same typed errors as `save` via
+ * `classifyGitError` so the route can map them to consistent HTTP status codes.
+ */
+export async function sync(): Promise<SyncResult> {
+  return serialize(async () => {
+    if (!(await hasRemote())) return { changed: false }; // nothing to reconcile
+
+    const c = config();
+    const branch = c.gitBranch;
+
+    // HEAD before the pull — comparing against HEAD after tells us whether the
+    // pull brought in new upstream commits (HEAD moved) vs was a no-op.
+    const headBefore = await git(["rev-parse", "HEAD"]).catch(() => "");
+
+    try {
+      await git(["pull", "--rebase", "--autostash", "origin", branch]);
+    } catch (err) {
+      // Leave a clean tree, then surface a typed error (merge-conflict vs
+      // backend) exactly like the save path's classifier.
+      await git(["rebase", "--abort"]).catch(() => {});
+      throw classifyGitError(err, undefined);
+    }
+
+    const headAfter = await git(["rev-parse", "HEAD"]).catch(() => "");
+    const pulledNew = headBefore !== "" && headAfter !== "" && headBefore !== headAfter;
+
+    // Are there local commits the remote doesn't have yet? `rev-list` counts
+    // commits on HEAD not reachable from the remote tracking ref. A non-empty
+    // count means we have something to push. The remote ref is refreshed by the
+    // pull above, so this reflects post-pull divergence.
+    let pushed = false;
+    const ahead = await git([
+      "rev-list",
+      "--count",
+      `origin/${branch}..HEAD`,
+    ]).catch(() => "0");
+    if (ahead !== "" && ahead !== "0") {
+      await git(["push", "origin", branch]);
+      pushed = true;
+    }
+
+    return { changed: pulledNew || pushed };
+  });
+}
+
+/**
  * The actual serialized write of one text note: the bytes captured here are the
  * bytes committed — no other path can swap them mid-flight (see `pendingSaves`).
  *   write → add → commit → pull --rebase → push
