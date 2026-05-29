@@ -477,6 +477,7 @@ export async function voiceHandler(
       folder: "30_captures/voice",
       titlePattern: "Voice-Notiz {YYYY-MM-DD HH:mm}",
       language: null,
+      aiTitle: false,
     };
     defaultsRowExists = false;
   }

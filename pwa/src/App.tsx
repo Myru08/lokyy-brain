@@ -386,6 +386,11 @@ export function App() {
   const dirtyBody = useRef<string>("");
   const activeRef = useRef<Note | null>(null);
   activeRef.current = active;
+  // Opt-in "generate voice-note title via AI" flag, read live by
+  // handleVoiceInsert. A ref (not state) so the callback always sees the
+  // latest persisted value without re-binding. Server default is false; we
+  // stay false until /api/voice/settings answers.
+  const voiceAiTitleRef = useRef<boolean>(false);
   // Imperative handle on FileTree — used by the NoteHeader breadcrumb to
   // jump to a folder (expand ancestors + scroll into view) without
   // lifting all of FileTree's UI state into App.tsx.
@@ -513,6 +518,18 @@ export function App() {
     api
       .getImportDefaults()
       .then((d) => setDefaultImportFolder(d.defaultImportFolder))
+      .catch(() => {});
+  }, []);
+
+  // Voice settings — we only need the `aiTitle` opt-in flag here, used by
+  // handleVoiceInsert when creating a fresh voice note. Fire-and-forget;
+  // any failure leaves the flag at its safe `false` default.
+  useEffect(() => {
+    api
+      .getVoiceSettings()
+      .then((v) => {
+        voiceAiTitleRef.current = v.aiTitle === true;
+      })
       .catch(() => {});
   }, []);
 
@@ -1679,15 +1696,35 @@ export function App() {
 
     const folderPath = opts?.folderPath?.trim() || "30_captures/voice";
     const userTitle = opts?.title?.trim();
-    const baseName = userTitle || fallbackName;
+
+    // A manual title ALWAYS wins. Only when the user typed none AND the
+    // opt-in `aiTitle` setting is on do we ask the configured LLM for a
+    // concise title from the transcript. Any failure (no provider, network,
+    // empty result) is swallowed and we fall back to the timestamped name —
+    // title generation must NEVER block note creation.
+    let aiTitle: string | undefined;
+    if (!userTitle && voiceAiTitleRef.current) {
+      try {
+        const suggested = await api.suggestVoiceTitle(text);
+        if (suggested) aiTitle = suggested;
+      } catch {
+        // graceful fallback to the timestamped name below
+      }
+    }
+
+    // A generated title is treated like a user title for body/heading
+    // purposes (leads with an H1). The timestamped fallback keeps the
+    // historical body-only capture shape.
+    const explicitTitle = userTitle || aiTitle;
+    const baseName = explicitTitle || fallbackName;
 
     const createdPath = await createNoteUnique(
       baseName,
       folderPath,
-      // When the user named the note, lead the body with the (possibly
-      // collision-suffixed) title as an H1 so the heading matches the file.
-      // Without a user title, keep the historical body-only capture shape.
-      (title) => (userTitle ? `# ${title}\n\n${text}\n` : `${text}\n`),
+      // When there's an explicit title (manual or AI), lead the body with
+      // the (possibly collision-suffixed) title as an H1 so the heading
+      // matches the file. Without one, keep the body-only capture shape.
+      (title) => (explicitTitle ? `# ${title}\n\n${text}\n` : `${text}\n`),
     );
     await refreshTree();
     await open(createdPath);

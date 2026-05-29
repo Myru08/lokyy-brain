@@ -231,6 +231,11 @@ interface VoiceSettings {
   folder: string;
   titlePattern: string;
   language: string | null;
+  /**
+   * Opt-in: generate the new voice note's title via the configured LLM
+   * from the transcript when no manual title was typed. Default `false`.
+   */
+  aiTitle: boolean;
 }
 
 const VOICE_DEFAULTS: VoiceSettings = {
@@ -238,6 +243,7 @@ const VOICE_DEFAULTS: VoiceSettings = {
   folder: "30_captures/voice",
   titlePattern: "Voice-Notiz {YYYY-MM-DD HH:mm}",
   language: null,
+  aiTitle: false,
 };
 
 const VOICE_LANGUAGES: { value: string | null; label: string }[] = [
@@ -573,6 +579,7 @@ export function Settings({
         folder: data.folder ?? VOICE_DEFAULTS.folder,
         titlePattern: data.titlePattern ?? VOICE_DEFAULTS.titlePattern,
         language: data.language ?? null,
+        aiTitle: data.aiTitle ?? VOICE_DEFAULTS.aiTitle,
       };
       setVoice(merged);
       setVoiceLoaded(merged);
@@ -2821,7 +2828,8 @@ function voiceEq(a: VoiceSettings, b: VoiceSettings): boolean {
     a.mode === b.mode &&
     a.folder === b.folder &&
     a.titlePattern === b.titlePattern &&
-    (a.language ?? null) === (b.language ?? null)
+    (a.language ?? null) === (b.language ?? null) &&
+    a.aiTitle === b.aiTitle
   );
 }
 
@@ -3151,6 +3159,46 @@ function VoiceTab({
               }}
             />
           )}
+        </div>
+
+        {/* ── AI title (opt-in) ───────────────────────────────── */}
+        <div style={{ marginBottom: 18 }}>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 10,
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={voice.aiTitle}
+              onChange={(e) =>
+                setVoice({ ...voice, aiTitle: e.target.checked })
+              }
+              style={{ marginTop: 2, cursor: "pointer" }}
+            />
+            <span>
+              <span style={{ fontSize: 13, color: C.text }}>
+                Notiz-Titel per KI aus dem Transkript generieren
+              </span>
+              <span
+                style={{
+                  display: "block",
+                  fontSize: 11,
+                  color: C.textFaint,
+                  marginTop: 2,
+                }}
+              >
+                Wenn aktiv und kein eigener Titel eingegeben wurde, schlägt
+                das konfigurierte KI-Modell beim Anlegen einer Sprachnotiz
+                einen kurzen Titel aus dem Transkript vor. Bei Fehlern fällt
+                der Titel auf das Zeitstempel-Muster zurück. Standardmäßig
+                aus.
+              </span>
+            </span>
+          </label>
         </div>
 
         {/* ── Save ────────────────────────────────────────────── */}

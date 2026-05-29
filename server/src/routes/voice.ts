@@ -1,6 +1,12 @@
 import { Hono } from "hono";
 import { ulid } from "ulid";
-import { enqueue, saveBinary } from "@lokyy/core";
+import {
+  enqueue,
+  saveBinary,
+  suggestNoteTitle,
+  PolishKeyMissingError,
+  PolishLlmError,
+} from "@lokyy/core";
 import type { SharePayload } from "@lokyy/shared";
 import { resolveDefaultImportFolder } from "../settings/importDefaults.js";
 
@@ -185,4 +191,97 @@ voiceRoutes.post("/", async (c) => {
   };
   const job = enqueue(payload, "voice");
   return c.json({ jobId: job.id, audioPath }, 202);
+});
+
+/**
+ * `/api/voice/suggest-title` — opt-in AI title generation for voice notes.
+ *
+ * Mounted separately (at `/api/voice/suggest-title` in index.ts) from the
+ * `/api/pipes/voice` upload route above so the PWA can ask for a title
+ * WITHOUT uploading audio: by the time we get here the transcript already
+ * exists client-side (live SpeechRecognition or a completed Whisper job).
+ *
+ * Body:  { text: string, language?: string }
+ * 200 →  { title: string }                concise 3–7 word title
+ * 400 →  { error: "invalid-body" | "empty-text" | "llm-key-missing", message }
+ * 502 →  { error: "llm-error", message }   provider chain exhausted
+ *
+ * Reuses `suggestNoteTitle` from @lokyy/core, which walks the SAME
+ * provider chain as `polishNote` (openai → anthropic → cohere, whatever
+ * the user configured) — provider-agnostic, no hardcoded OpenAI.
+ *
+ * IMPORTANT: this endpoint NEVER participates in the note write. The PWA
+ * calls it best-effort BEFORE `createNote`; any non-200 here makes the
+ * client fall back to its timestamped title. So a failure must surface as
+ * a clean status code, never crash the note-creation flow.
+ */
+export const voiceTitleRoutes = new Hono();
+
+const SUGGEST_TITLE_MAX_TEXT = 20_000; // generous; transcript, not audio
+
+voiceTitleRoutes.post("/", async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(
+      { error: "invalid-body", message: "Body must be valid JSON" },
+      400,
+    );
+  }
+
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return c.json(
+      { error: "invalid-body", message: "Body must be a JSON object" },
+      400,
+    );
+  }
+
+  const b = body as Record<string, unknown>;
+  const text = typeof b.text === "string" ? b.text.trim() : "";
+  if (!text) {
+    return c.json(
+      { error: "empty-text", message: "Feld 'text' fehlt oder ist leer" },
+      400,
+    );
+  }
+
+  // Cap the transcript we hand to the model — title generation only needs
+  // the gist, and very long inputs blow the budget for no quality gain.
+  const trimmedText = text.slice(0, SUGGEST_TITLE_MAX_TEXT);
+
+  const language = (() => {
+    const raw = b.language;
+    if (typeof raw !== "string") return undefined;
+    const t = raw.trim();
+    if (!/^[a-zA-Z]{2}([-_][a-zA-Z]{2,4})?$/.test(t)) return undefined;
+    return t.slice(0, 2).toLowerCase();
+  })();
+
+  try {
+    const result = await suggestNoteTitle(trimmedText, {
+      ...(language ? { language } : {}),
+    });
+    return c.json({ title: result.title });
+  } catch (err) {
+    if (err instanceof PolishKeyMissingError) {
+      return c.json(
+        { error: "llm-key-missing", message: err.message },
+        400,
+      );
+    }
+    if (err instanceof PolishLlmError) {
+      return c.json(
+        { error: "llm-error", message: err.message },
+        502,
+      );
+    }
+    return c.json(
+      {
+        error: "llm-error",
+        message: err instanceof Error ? err.message : "title generation failed",
+      },
+      502,
+    );
+  }
 });

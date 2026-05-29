@@ -54,7 +54,7 @@ import { setupGate } from "./middleware/setupGate.js";
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
 import { voiceHandler } from "./pipes/handlers/voiceHandler.js";
-import { voiceRoutes } from "./routes/voice.js";
+import { voiceRoutes, voiceTitleRoutes } from "./routes/voice.js";
 import { voiceSettingsRoutes } from "./routes/voice-settings.js";
 import { systemRoutes } from "./routes/system.js";
 
@@ -285,6 +285,9 @@ app.route("/api/pipes", pipesRoutes);
 // auth-gate when other settings need one.
 app.use("/api/voice/*", setupGate);
 app.route("/api/voice/settings", voiceSettingsRoutes);
+// Opt-in AI title generation from a transcript (no audio upload). Same
+// setupGate as voice-settings (covered by the `/api/voice/*` use above).
+app.route("/api/voice/suggest-title", voiceTitleRoutes);
 
 // Global system settings — currently just the display timezone (IANA
 // string, default `UTC`). Container clock stays UTC; this value only

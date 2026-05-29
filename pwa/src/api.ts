@@ -49,6 +49,23 @@ export interface LlmRoutingConfig {
   privacyTierFolders?: string[];
 }
 
+/**
+ * Voice-capture defaults — server shape from `/api/voice/settings`.
+ * 1:1 with `VoiceDefaults` in `@lokyy/core/setup/voiceDefaults.ts`
+ * (core is node-only and forbidden from the PWA bundle, so the shape is
+ * inlined here — keep field names in sync).
+ */
+export type VoiceMode = "live" | "whisper-cloud" | "whisper-selfhosted";
+
+export interface VoiceSettings {
+  mode: VoiceMode;
+  folder: string;
+  titlePattern: string;
+  language: string | null;
+  /** Opt-in AI title generation from transcript. Server default `false`. */
+  aiTitle: boolean;
+}
+
 export interface UsageStats {
   provider: string;
   monthInputTokens: number;
@@ -530,6 +547,56 @@ export const api = {
    */
   getImportDefaults: () =>
     fetch(`${BASE}/settings/import-defaults`).then(json<ImportDefaults>),
+
+  /**
+   * Voice-capture defaults (server: `/api/voice/settings`). Mirrors the
+   * `VoiceDefaults` shape in `@lokyy/core/setup/voiceDefaults.ts`. The
+   * Settings Voice tab edits these; App.tsx reads `aiTitle` to decide
+   * whether to auto-generate a title on voice insert.
+   */
+  getVoiceSettings: (): Promise<VoiceSettings> =>
+    fetch(`${BASE}/voice/settings`, { credentials: "include" }).then(
+      json<VoiceSettings>,
+    ),
+
+  putVoiceSettings: (patch: Partial<VoiceSettings>): Promise<VoiceSettings> =>
+    fetch(`${BASE}/voice/settings`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(patch),
+    }).then(json<VoiceSettings>),
+
+  /**
+   * Opt-in AI title suggestion for a voice note (server:
+   * `POST /api/voice/suggest-title`). Best-effort — callers MUST treat any
+   * thrown error or empty string as "no title" and fall back to their own
+   * default name. Returns the trimmed title, or "" when the server gave
+   * nothing usable.
+   */
+  suggestVoiceTitle: async (
+    text: string,
+    language?: string,
+  ): Promise<string> => {
+    const res = await fetch(`${BASE}/voice/suggest-title`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(language ? { text, language } : { text }),
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+      };
+      throw new ApiError(
+        res.status,
+        data.message ?? data.error ?? "Titel-Vorschlag fehlgeschlagen",
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { title?: string };
+    return typeof data.title === "string" ? data.title.trim() : "";
+  },
 
   /**
    * Asset (Bild) in den Vault hochladen. Server schreibt unter

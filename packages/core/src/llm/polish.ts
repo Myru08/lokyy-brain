@@ -284,6 +284,149 @@ export async function polishNote(
   );
 }
 
+// ── Title suggestion ───────────────────────────────────────────────────
+//
+// Lightweight sibling of `polishNote`: instead of restructuring the whole
+// note, it asks the SAME configured provider chain for ONE concise title
+// derived from a (typically Whisper) transcript. Deliberately reuses
+// `resolveProviderChain` / `withTimeout` / `recordUsage` so the feature
+// stays provider-agnostic — whatever chat-capable provider the user has
+// configured for polish is used here too, with no new hardcoded OpenAI
+// dependency.
+
+/** Shorter deadline than polish — a single short title is fast. */
+const SUGGEST_TITLE_TIMEOUT_MS = 20_000;
+
+const SUGGEST_TITLE_SYSTEM_PROMPT =
+  `Du erzeugst aus einem (oft gesprochenen) Transkript EINEN prägnanten Notiz-Titel. Regeln:\n` +
+  `- Genau 3 bis 7 Wörter.\n` +
+  `- In der Sprache des Transkripts (deutsch bleibt deutsch).\n` +
+  `- KEINE Anführungszeichen, KEIN abschließendes Satzzeichen, KEIN Markdown.\n` +
+  `- Antworte AUSSCHLIESSLICH mit dem Titel selbst — kein Vor- oder Nachtext.`;
+
+/** Max chars of the title we accept back (defensive; matches polish title cap). */
+const SUGGEST_TITLE_MAX_LEN = 80;
+
+export interface SuggestTitleOptions extends PolishOptions {
+  /**
+   * Optional ISO 639-1 language hint. When provided it's appended to the
+   * user message so the model doesn't have to infer the language from a
+   * very short transcript. Falls through to "match the transcript" when
+   * absent.
+   */
+  language?: string;
+}
+
+export interface SuggestTitleResult {
+  title: string;
+  providerUsed: string;
+  modelUsed: string;
+}
+
+/**
+ * Normalise a raw model response into a clean single-line title:
+ *   - takes the first non-empty line,
+ *   - strips wrapping single/double quotes and backticks,
+ *   - strips a single trailing sentence punctuation char,
+ *   - collapses whitespace, caps length.
+ * Returns "" when nothing usable remains (caller falls back).
+ */
+function normalizeTitle(raw: string): string {
+  const firstLine = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (!firstLine) return "";
+  let t = firstLine.replace(/\s+/g, " ").trim();
+  // Strip matching surrounding quotes/backticks (possibly repeated).
+  let prev = "";
+  while (prev !== t) {
+    prev = t;
+    t = t.replace(/^["'`«»“”„]+/, "").replace(/["'`«»“”„]+$/, "").trim();
+  }
+  // Drop a single trailing sentence-ending punctuation mark.
+  t = t.replace(/[.!?。！？]+$/, "").trim();
+  return t.slice(0, SUGGEST_TITLE_MAX_LEN).trim();
+}
+
+/**
+ * Ask the configured LLM for a concise 3–7 word title for `transcript`.
+ *
+ * Provider resolution + fail-over are identical to `polishNote`
+ * (same `resolveProviderChain`, same default chain
+ * openai → anthropic → cohere, same per-call override). Usage is recorded
+ * under role=`lint` like polish.
+ *
+ * Throws `PolishKeyMissingError` when no chat-capable provider is
+ * configured, and `PolishLlmError` when every chain member failed
+ * (network/auth/empty). The ROUTE wraps this so the note-creation flow
+ * never 500-crashes — a thrown error there maps to a graceful fallback.
+ */
+export async function suggestNoteTitle(
+  transcript: string,
+  opts: SuggestTitleOptions = {},
+): Promise<SuggestTitleResult> {
+  const chain = resolveProviderChain(opts);
+  if (chain.length === 0) {
+    throw new PolishKeyMissingError(
+      opts.provider
+        ? `provider "${opts.provider}" is not registered or has no chat capability — configure it in Settings → AI Provider`
+        : "no chat-capable LLM provider configured (tried: openai, anthropic, cohere) — add a key in Settings → AI Provider",
+    );
+  }
+
+  const userContent = opts.language
+    ? `Sprache: ${opts.language}\n\nTranskript:\n${transcript}`
+    : transcript;
+
+  const attempts: Array<{ provider: string; error: string }> = [];
+
+  for (const provider of chain) {
+    const providerName = provider.info.name;
+    const model =
+      opts.model ??
+      provider.info.defaultModel ??
+      DEFAULT_MODELS[providerName] ??
+      "default";
+
+    if (!provider.chat) continue;
+
+    try {
+      const result = await withTimeout(
+        provider.chat([{ role: "user", content: userContent }], {
+          model,
+          systemPrompt: SUGGEST_TITLE_SYSTEM_PROMPT,
+          temperature: 0.4,
+          maxTokens: 32,
+        }),
+        SUGGEST_TITLE_TIMEOUT_MS,
+        `${providerName} suggest-title call timed out after ${SUGGEST_TITLE_TIMEOUT_MS}ms`,
+      );
+      await recordUsage(
+        providerName,
+        model,
+        result.usage.inputTokens,
+        result.usage.outputTokens,
+      );
+      const title = normalizeTitle(result.text);
+      if (title) {
+        return { title, providerUsed: providerName, modelUsed: model };
+      }
+      attempts.push({ provider: providerName, error: "empty-title" });
+    } catch (err) {
+      attempts.push({
+        provider: providerName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  throw new PolishLlmError(
+    `all suggest-title providers failed (${attempts.length} attempt${attempts.length === 1 ? "" : "s"})`,
+    attempts,
+  );
+}
+
 /**
  * One end-to-end attempt against a single provider, including retry on
  * malformed JSON. Throws `LlmError` (provider-mapped) or `PolishLlmError`

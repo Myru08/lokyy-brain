@@ -17,7 +17,8 @@ import { systemConfig } from "../db/schema/systemConfig.js";
  *     "mode": "live" | "whisper-cloud" | "whisper-selfhosted",
  *     "folder": "30_captures/voice",
  *     "titlePattern": "Voice-Notiz {YYYY-MM-DD HH:mm}",
- *     "language": "de" | null
+ *     "language": "de" | null,
+ *     "aiTitle": false
  *   }
  */
 
@@ -55,6 +56,14 @@ export interface VoiceDefaults {
    * the 2-letter prefix when the handler forwards it.
    */
   language: string | null;
+  /**
+   * Opt-in: when `true` AND the user did NOT type a manual title, the PWA
+   * asks the configured LLM to generate the new voice note's title from the
+   * transcript (`POST /api/voice/suggest-title`). Default `false` for
+   * privacy + cost — title generation is an explicit, user-enabled choice.
+   * Has no effect on the legacy timestamped-title path when off.
+   */
+  aiTitle: boolean;
 }
 
 /** Whitelisted top-level vault folders. Mirrors the structure documented in CLAUDE.md. */
@@ -78,6 +87,7 @@ export const DEFAULT_VOICE_DEFAULTS: VoiceDefaults = {
   folder: "30_captures/voice",
   titlePattern: "Voice-Notiz {YYYY-MM-DD HH:mm}",
   language: null,
+  aiTitle: false,
 };
 
 /** Validation error surfaced by `validateVoiceDefaultsPatch`. */
@@ -183,6 +193,16 @@ function validateLanguage(value: unknown): string | null {
   return trimmed;
 }
 
+function validateAiTitle(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new VoiceDefaultsValidationError(
+      "aiTitle",
+      "aiTitle must be a boolean",
+    );
+  }
+  return value;
+}
+
 function validateMode(value: unknown): VoiceMode {
   if (!isVoiceMode(value)) {
     throw new VoiceDefaultsValidationError(
@@ -213,6 +233,7 @@ export function validateVoiceDefaultsPatch(
   if ("folder" in p) out.folder = validateFolder(p.folder);
   if ("titlePattern" in p) out.titlePattern = validateTitlePattern(p.titlePattern);
   if ("language" in p) out.language = validateLanguage(p.language);
+  if ("aiTitle" in p) out.aiTitle = validateAiTitle(p.aiTitle);
   return out;
 }
 
@@ -250,6 +271,9 @@ function mergeWithDefaults(stored: unknown): VoiceDefaults {
     } catch {
       // keep default (null)
     }
+  }
+  if (typeof s.aiTitle === "boolean") {
+    merged.aiTitle = s.aiTitle;
   }
   return merged;
 }
@@ -307,6 +331,7 @@ export async function updateVoiceDefaults(
     titlePattern: patch.titlePattern ?? current.titlePattern,
     language:
       patch.language === undefined ? current.language : patch.language,
+    aiTitle: patch.aiTitle ?? current.aiTitle,
   };
   const serialized = JSON.stringify(merged);
   const db = database();
