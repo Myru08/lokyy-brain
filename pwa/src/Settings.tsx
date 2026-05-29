@@ -1,8 +1,24 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, X, Loader2, Copy, RefreshCw } from "lucide-react";
+import {
+  Check,
+  X,
+  Loader2,
+  Copy,
+  RefreshCw,
+  AlertTriangle,
+  PlayCircle,
+} from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { AiProviderSettings } from "./AiProviderSettings.js";
 import { api } from "./api.js";
+import type {
+  DiagnosticsResult,
+  DiagnosticCheck,
+  LogsResult,
+  LogEntry,
+  LogLevel,
+} from "./api.js";
+import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
 
 /**
  * Settings Page (Story 1.12, refactored into tab-navigation).
@@ -281,7 +297,7 @@ const TZ_FALLBACK_LIST: string[] = [
   "Pacific/Auckland",
 ];
 
-/** Seven top-level tabs. Order matches the visible tab bar. */
+/** Top-level tabs. Order matches the visible tab bar. */
 type TabKey =
   | "system"
   | "vault"
@@ -289,7 +305,9 @@ type TabKey =
   | "mcp"
   | "voice"
   | "skills"
-  | "wartung";
+  | "wartung"
+  | "diagnose"
+  | "logs";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "system", label: "System" },
@@ -299,7 +317,54 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "voice", label: "Voice" },
   { key: "skills", label: "Skills" },
   { key: "wartung", label: "Wartung" },
+  { key: "diagnose", label: "Diagnose" },
+  { key: "logs", label: "Logs" },
 ];
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Diagnose-Tab — per-service grouping + severity → colour mapping.
+ *
+ * `DiagnosticCheck.severity` is optional; when absent we derive the colour
+ * from `ok` (green) / not-ok (red). When present, `warn` paints amber even
+ * if `ok:false`, so a degraded-but-not-broken service (e.g. pg_search
+ * missing → BM25 LIKE-fallback) reads as a warning, not a hard failure.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/** Stable display order + German labels for the known service groups. */
+const DIAGNOSTIC_SERVICE_ORDER: { key: string; label: string }[] = [
+  { key: "forgejo", label: "Forgejo" },
+  { key: "postgres", label: "Postgres" },
+  { key: "ollama", label: "Ollama" },
+  { key: "embeddings", label: "Embeddings" },
+  { key: "search", label: "Suche (Tier 1 / Tier 2 / Combined)" },
+  { key: "sleep-agent", label: "Sleep-Agent" },
+  { key: "mcp", label: "MCP" },
+  { key: "git", label: "Git / Vault" },
+];
+
+type CheckStatus = "ok" | "warn" | "err";
+
+/** Resolve a check to one of three visual states. */
+function checkStatus(c: DiagnosticCheck): CheckStatus {
+  if (c.ok) return "ok";
+  if (c.severity === "warn") return "warn";
+  return "err";
+}
+
+function statusColor(s: CheckStatus): string {
+  if (s === "ok") return C.ok;
+  if (s === "warn") return C.gold;
+  return C.err;
+}
+
+const LOG_LEVELS: { value: "all" | LogLevel; label: string }[] = [
+  { value: "all", label: "Alle" },
+  { value: "info", label: "Info" },
+  { value: "warn", label: "Warn" },
+  { value: "error", label: "Error" },
+];
+
+const DEFAULT_LOG_LIMIT = 150;
 
 export function Settings({
   onClose,
@@ -311,6 +376,11 @@ export function Settings({
   onOpenNote?: (id: string) => void;
 }) {
   const [tab, setTab] = useState<TabKey>("system");
+
+  // Drives the responsive layout. Below 640px we stack rows, full-bleed the
+  // content, enlarge tap targets, and let the tab bar scroll horizontally.
+  // Desktop (≥640px) keeps the original layout untouched.
+  const isMobile = useIsMobile();
 
   const [settings, setSettings] = useState<SystemSettings | null>(null);
   const [status, setStatus] = useState<StatusResult | null>(null);
@@ -429,6 +499,27 @@ export function Settings({
   >("idle");
   const [backfillError, setBackfillError] = useState<string>();
   const [backfillLastRun, setBackfillLastRun] = useState<string | null>(null);
+
+  // ── Diagnose-Tab — per-service self-test suite (Observability story) ──
+  //   - `diagnostics` is the last successful `api.getDiagnostics()` payload.
+  //   - `diagState` reflects the in-flight run; auto-runs once on first open.
+  //   - `diagError` carries a top-level fetch failure (endpoint unreachable).
+  const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(
+    null,
+  );
+  const [diagState, setDiagState] = useState<
+    "idle" | "running" | "ok" | "fail"
+  >("idle");
+  const [diagError, setDiagError] = useState<string>();
+
+  // ── Logs-Tab — filterable ring-buffer view ──
+  const [logs, setLogs] = useState<LogEntry[] | null>(null);
+  const [logsState, setLogsState] = useState<
+    "idle" | "loading" | "ok" | "fail"
+  >("idle");
+  const [logsError, setLogsError] = useState<string>();
+  const [logLevel, setLogLevel] = useState<"all" | LogLevel>("all");
+  const [logService, setLogService] = useState<string>("all");
 
   /**
    * Fetch the canonical runtime view. The backend route is being built in
@@ -557,6 +648,45 @@ export function Settings({
     } catch (err) {
       setBackfillState("fail");
       setBackfillError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Run the per-service diagnostics suite. The server never 500s — a failed
+   * service surfaces as a check with `ok:false` + `detail` — so the only
+   * top-level failure mode here is the endpoint being unreachable.
+   */
+  async function runDiagnostics() {
+    setDiagState("running");
+    setDiagError(undefined);
+    try {
+      const result = await api.getDiagnostics();
+      setDiagnostics(result);
+      setDiagState("ok");
+    } catch (err) {
+      setDiagState("fail");
+      setDiagError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Fetch the newest log entries from the server's in-process ring buffer.
+   * The level filter is pushed to the server; the service filter is applied
+   * client-side (the operator picks from the services actually present).
+   */
+  async function loadLogs() {
+    setLogsState("loading");
+    setLogsError(undefined);
+    try {
+      const result: LogsResult = await api.getLogs({
+        limit: DEFAULT_LOG_LIMIT,
+        ...(logLevel !== "all" ? { level: logLevel } : {}),
+      });
+      setLogs(result.logs);
+      setLogsState("ok");
+    } catch (err) {
+      setLogsState("fail");
+      setLogsError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -793,6 +923,26 @@ export function Settings({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
+  // Auto-run diagnostics the first time the Diagnose tab is opened. The
+  // operator can re-run via the "Tests ausführen" button. We gate on
+  // `diagnostics === null` so re-visiting the tab doesn't clobber the last
+  // result with a fresh spinner.
+  useEffect(() => {
+    if (tab === "diagnose" && diagnostics === null && diagState !== "running") {
+      void runDiagnostics();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Auto-load logs the first time the Logs tab is opened. Refresh + the
+  // level filter re-fetch from the server; the service filter is local.
+  useEffect(() => {
+    if (tab === "logs" && logs === null && logsState !== "loading") {
+      void loadLogs();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   // Live clock ticker for the Timezone panel. Only ticks while the
   // System tab is visible — cleanup cancels the interval on tab switch
   // or unmount so we don't burn cycles on hidden panels.
@@ -981,12 +1131,18 @@ export function Settings({
   return (
     <div
       style={{
-        padding: 32,
+        // Tighter padding on mobile so content gets full width; desktop
+        // keeps the original 32px breathing room.
+        padding: isMobile ? 16 : 32,
         background: C.bg,
         color: C.text,
         fontFamily: FONT.ui,
         height: "100%",
-        overflow: "auto",
+        overflowY: "auto",
+        // Guard against any descendant accidentally forcing the page wider
+        // than the viewport on a phone (the source of horizontal scroll).
+        overflowX: "hidden",
+        boxSizing: "border-box",
       }}
     >
       <div
@@ -994,25 +1150,31 @@ export function Settings({
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
+          gap: 12,
           marginBottom: 18,
+          flexWrap: "wrap",
         }}
       >
         <h1
           style={{
             fontFamily: FONT.serif,
-            fontSize: 28,
+            fontSize: isMobile ? 22 : 28,
             margin: 0,
             color: C.accent,
           }}
         >
           Einstellungen
         </h1>
-        <button onClick={onClose} style={btn}>
+        <button onClick={onClose} style={mobileBtn(btn, isMobile)}>
           ← Zurück zum Vault
         </button>
       </div>
 
-      {/* ───── Tab bar ───── */}
+      {/* ───── Tab bar ─────
+          Desktop: pill row that wraps. Mobile: a single horizontally
+          scrolling pill strip so no tab clips off-screen. The flex children
+          get `flex: 0 0 auto` on mobile so they keep their intrinsic width
+          and the strip scrolls instead of squashing. */}
       <div
         role="tablist"
         aria-label="Settings sections"
@@ -1023,9 +1185,12 @@ export function Settings({
           padding: 4,
           background: C.panel,
           border: `1px solid ${C.border}`,
-          borderRadius: 999,
-          width: "fit-content",
-          flexWrap: "wrap",
+          borderRadius: isMobile ? 14 : 999,
+          width: isMobile ? "100%" : "fit-content",
+          flexWrap: isMobile ? "nowrap" : "wrap",
+          overflowX: isMobile ? "auto" : "visible",
+          WebkitOverflowScrolling: "touch",
+          boxSizing: "border-box",
         }}
       >
         {TABS.map((t) => {
@@ -1037,7 +1202,8 @@ export function Settings({
               aria-selected={active}
               onClick={() => setTab(t.key)}
               style={{
-                padding: "6px 16px",
+                padding: isMobile ? "9px 16px" : "6px 16px",
+                minHeight: isMobile ? TOUCH_TARGET_MIN : undefined,
                 background: active ? C.accent : "transparent",
                 color: active ? "#0B0E12" : C.textDim,
                 border: "none",
@@ -1046,6 +1212,8 @@ export function Settings({
                 fontSize: 13,
                 fontWeight: active ? 600 : 500,
                 cursor: "pointer",
+                whiteSpace: "nowrap",
+                flex: isMobile ? "0 0 auto" : undefined,
                 transition: "background 120ms, color 120ms",
               }}
             >
@@ -1066,6 +1234,7 @@ export function Settings({
               detail={status.forgejo.error}
               onCopy={copy}
               copiedLabel={copied}
+              isMobile={isMobile}
             />
             <ServiceStatusRow
               service="postgres"
@@ -1079,6 +1248,7 @@ export function Settings({
               }
               onCopy={copy}
               copiedLabel={copied}
+              isMobile={isMobile}
             />
             <ServiceStatusRow
               service="ollama"
@@ -1092,6 +1262,7 @@ export function Settings({
               }
               onCopy={copy}
               copiedLabel={copied}
+              isMobile={isMobile}
             />
             {(() => {
               // Prefer the backend-derived `embeddings` entry; fall back to
@@ -1122,6 +1293,7 @@ export function Settings({
                   }
                   onCopy={copy}
                   copiedLabel={copied}
+                  isMobile={isMobile}
                 />
               );
             })()}
@@ -1536,21 +1708,24 @@ export function Settings({
                           <div
                             style={{
                               display: "flex",
+                              flexWrap: "wrap",
                               gap: 12,
                               fontSize: 11,
                               color: C.textDim,
                               marginBottom: 6,
                               fontFamily: FONT.mono,
+                              overflowWrap: "anywhere",
+                              wordBreak: "break-all",
                             }}
                           >
-                            <span>
+                            <span style={{ minWidth: 0 }}>
                               endpoint:{" "}
                               <code style={{ color: C.gold }}>
                                 {v.endpointUrl}
                               </code>
                             </span>
                             {v.healthUrl && (
-                              <span>
+                              <span style={{ minWidth: 0 }}>
                                 health:{" "}
                                 <code style={{ color: C.gold }}>
                                   {v.healthUrl}
@@ -1752,6 +1927,8 @@ export function Settings({
                       fontSize: 11,
                       color: C.textFaint,
                       fontFamily: FONT.mono,
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
                     }}
                   >
                     tools: {s.allowed_tools.join(", ")}
@@ -1803,6 +1980,8 @@ export function Settings({
                       fontFamily: FONT.mono,
                       fontSize: 11,
                       color: C.text,
+                      overflowWrap: "anywhere",
+                      wordBreak: "break-word",
                     }}
                   >
                     {invocation}
@@ -1961,24 +2140,77 @@ export function Settings({
             <KV
               label="Vault-Dir (lokal)"
               value={settings.runtime.vaultDir}
+              isMobile={isMobile}
             />
             <KV
               label="DATABASE_URL"
               value={
                 runtime?.env.databaseHost ?? settings.runtime.databaseUrl
               }
+              isMobile={isMobile}
             />
             <KV
               label="OLLAMA_HOST"
               value={
                 runtime?.env.ollamaHost ?? settings.runtime.ollamaHost
               }
+              isMobile={isMobile}
             />
             {runtime?.env.mcpPublicUrl && (
-              <KV label="MCP_PUBLIC_URL" value={runtime.env.mcpPublicUrl} />
+              <KV
+                label="MCP_PUBLIC_URL"
+                value={runtime.env.mcpPublicUrl}
+                isMobile={isMobile}
+              />
             )}
           </Section>
         </>
+      )}
+
+      {/* ───── Tab: Diagnose ───── */}
+      {tab === "diagnose" && (
+        <DiagnoseTab
+          diagnostics={diagnostics}
+          state={diagState}
+          error={diagError}
+          isMobile={isMobile}
+          onRun={() => void runDiagnostics()}
+        />
+      )}
+
+      {/* ───── Tab: Logs ───── */}
+      {tab === "logs" && (
+        <LogsTab
+          logs={logs}
+          state={logsState}
+          error={logsError}
+          level={logLevel}
+          service={logService}
+          isMobile={isMobile}
+          onLevelChange={(lvl) => {
+            setLogLevel(lvl);
+            // Level filter is server-side → re-fetch on change.
+            void (async () => {
+              setLogsState("loading");
+              setLogsError(undefined);
+              try {
+                const result = await api.getLogs({
+                  limit: DEFAULT_LOG_LIMIT,
+                  ...(lvl !== "all" ? { level: lvl } : {}),
+                });
+                setLogs(result.logs);
+                setLogsState("ok");
+              } catch (err) {
+                setLogsState("fail");
+                setLogsError(
+                  err instanceof Error ? err.message : String(err),
+                );
+              }
+            })();
+          }}
+          onServiceChange={setLogService}
+          onRefresh={() => void loadLogs()}
+        />
       )}
     </div>
   );
@@ -2425,14 +2657,21 @@ function Section({
   title: string;
   children: React.ReactNode;
 }) {
+  // Self-reads the breakpoint so every caller gets tighter mobile padding
+  // for free without threading a prop through ~9 tabs. Desktop unchanged.
+  const isMobile = useIsMobile();
   return (
     <section
       style={{
-        marginBottom: 32,
-        padding: 20,
+        marginBottom: isMobile ? 20 : 32,
+        padding: isMobile ? 14 : 20,
         background: C.panel,
         border: `1px solid ${C.border}`,
         borderRadius: 8,
+        // Keep section content from forcing horizontal page scroll.
+        boxSizing: "border-box",
+        maxWidth: "100%",
+        overflowWrap: "anywhere",
       }}
     >
       <h2
@@ -2524,6 +2763,7 @@ function ServiceStatusRow({
   detail,
   onCopy,
   copiedLabel,
+  isMobile,
 }: {
   service: string;
   label: string;
@@ -2531,6 +2771,7 @@ function ServiceStatusRow({
   detail?: string;
   onCopy: (label: string, text: string) => void;
   copiedLabel: string | null;
+  isMobile?: boolean;
 }) {
   const remediation = SERVICE_REMEDIATION[service];
   return (
@@ -2545,8 +2786,8 @@ function ServiceStatusRow({
       <div
         style={{
           display: "flex",
-          alignItems: "center",
-          gap: 12,
+          alignItems: isMobile ? "flex-start" : "center",
+          gap: isMobile ? 8 : 12,
           flexWrap: "wrap",
         }}
       >
@@ -2554,12 +2795,16 @@ function ServiceStatusRow({
           style={{
             width: 10,
             height: 10,
+            marginTop: isMobile ? 5 : 0,
             borderRadius: 999,
             background: ok ? C.ok : C.err,
             flex: "0 0 auto",
           }}
         />
-        <strong style={{ width: 90 }}>{label}</strong>
+        {/* Fixed label width on desktop for column alignment; on mobile drop
+            the fixed width so the label + status share one line and the
+            detail can wrap onto the next without clipping. */}
+        <strong style={{ width: isMobile ? "auto" : 90 }}>{label}</strong>
         <span style={{ color: ok ? C.ok : C.err, fontSize: 13 }}>
           {ok ? "OK" : "FAIL"}
         </span>
@@ -2568,7 +2813,11 @@ function ServiceStatusRow({
             style={{
               color: C.textDim,
               fontSize: 12,
-              marginLeft: "auto",
+              // Desktop pushes detail to the right; mobile lets it flow to a
+              // full-width new line so long values wrap instead of overflow.
+              marginLeft: isMobile ? 0 : "auto",
+              flexBasis: isMobile ? "100%" : "auto",
+              overflowWrap: "anywhere",
               wordBreak: "break-word",
               maxWidth: "100%",
             }}
@@ -2749,12 +2998,31 @@ function Note({
   );
 }
 
-function KV({ label, value }: { label: string; value: string }) {
+function KV({
+  label,
+  value,
+  isMobile,
+}: {
+  label: string;
+  value: string;
+  isMobile?: boolean;
+}) {
   return (
-    <div style={{ display: "flex", gap: 12, fontSize: 13, marginBottom: 4 }}>
+    <div
+      style={{
+        display: "flex",
+        // Stack label over value on mobile so long DATABASE_URL / MCP URLs
+        // get the full row width and wrap instead of pushing the page wide.
+        flexDirection: isMobile ? "column" : "row",
+        gap: isMobile ? 2 : 12,
+        fontSize: 13,
+        marginBottom: isMobile ? 10 : 4,
+      }}
+    >
       <span
         style={{
-          width: 160,
+          width: isMobile ? "auto" : 160,
+          flex: isMobile ? "0 0 auto" : undefined,
           color: C.textDim,
           fontFamily: FONT.mono,
           fontSize: 11,
@@ -2763,7 +3031,14 @@ function KV({ label, value }: { label: string; value: string }) {
         {label}
       </span>
       <code
-        style={{ color: C.text, fontFamily: FONT.mono, fontSize: 12 }}
+        style={{
+          color: C.text,
+          fontFamily: FONT.mono,
+          fontSize: 12,
+          minWidth: 0,
+          overflowWrap: "anywhere",
+          wordBreak: "break-all",
+        }}
       >
         {value}
       </code>
@@ -3530,6 +3805,571 @@ function TimezonePanel({
   );
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Diagnose-Tab — per-service self-test suite.
+ *
+ * Renders `api.getDiagnostics()` checks grouped by `service` in a stable
+ * order. Each group header shows an aggregate ("N/M ok"); each row carries
+ * the check name, a status glyph (✓ / ✗ / ⚠), the detail text, and latency
+ * when present. The `search` group is rendered first-class because its
+ * Tier1 / Tier2 / Combined probes are how the operator diagnoses the live
+ * empty-search bug — its detail strings carry the hit counts + degraded flag.
+ * ────────────────────────────────────────────────────────────────────── */
+function DiagnoseTab({
+  diagnostics,
+  state,
+  error,
+  isMobile,
+  onRun,
+}: {
+  diagnostics: DiagnosticsResult | null;
+  state: "idle" | "running" | "ok" | "fail";
+  error: string | undefined;
+  isMobile: boolean;
+  onRun: () => void;
+}) {
+  // Group checks by service, then order the groups by the canonical list
+  // (known services first, any unexpected service appended alphabetically).
+  const grouped = useMemo(() => {
+    const map = new Map<string, DiagnosticCheck[]>();
+    for (const c of diagnostics?.checks ?? []) {
+      const arr = map.get(c.service) ?? [];
+      arr.push(c);
+      map.set(c.service, arr);
+    }
+    const known = DIAGNOSTIC_SERVICE_ORDER.filter((s) => map.has(s.key));
+    const extra = [...map.keys()]
+      .filter((k) => !DIAGNOSTIC_SERVICE_ORDER.some((s) => s.key === k))
+      .sort()
+      .map((k) => ({ key: k, label: k }));
+    return [...known, ...extra].map((g) => ({
+      ...g,
+      checks: map.get(g.key) ?? [],
+    }));
+  }, [diagnostics]);
+
+  return (
+    <Section title="Diagnose — Per-Service-Selbsttest">
+      <p
+        style={{
+          color: C.textDim,
+          fontSize: 13,
+          margin: "0 0 14px 0",
+          lineHeight: 1.5,
+        }}
+      >
+        Führt einen Satz Health-Checks pro Dienst aus (Forgejo, Postgres,
+        Ollama, Embeddings, Suche, Sleep-Agent, MCP, Git). Kein Coolify/SSH
+        nötig. Die <strong>Suche</strong>-Gruppe zeigt die Tier-1/Tier-2/
+        Combined-Treffer — so lässt sich eine leere Suche direkt eingrenzen.
+      </p>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          flexWrap: "wrap",
+          marginBottom: 16,
+        }}
+      >
+        <button
+          onClick={onRun}
+          disabled={state === "running"}
+          style={{
+            ...mobileBtn(btn, isMobile),
+            background: C.accent,
+            color: "#0B0E12",
+            border: "none",
+            opacity: state === "running" ? 0.6 : 1,
+            cursor: state === "running" ? "not-allowed" : "pointer",
+          }}
+        >
+          {state === "running" ? (
+            <Loader2 size={14} className="sw-spin" />
+          ) : (
+            <PlayCircle size={14} />
+          )}
+          Tests ausführen
+        </button>
+        {diagnostics?.ranAt && (
+          <span
+            style={{ fontSize: 12, color: C.textFaint, fontFamily: FONT.mono }}
+          >
+            zuletzt {new Date(diagnostics.ranAt).toLocaleString("de-DE")}
+          </span>
+        )}
+        {state === "fail" && (
+          <span style={{ color: C.err, fontSize: 13 }}>
+            <X size={14} /> {error ?? "Diagnostics-Endpoint nicht erreichbar"}
+          </span>
+        )}
+      </div>
+
+      {state === "running" && diagnostics === null && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: C.textDim,
+            fontSize: 13,
+          }}
+        >
+          <Loader2 size={14} className="sw-spin" /> Tests laufen …
+        </div>
+      )}
+
+      {grouped.map((g) => {
+        const total = g.checks.length;
+        const okCount = g.checks.filter((c) => c.ok).length;
+        const groupStatus: CheckStatus = g.checks.some(
+          (c) => checkStatus(c) === "err",
+        )
+          ? "err"
+          : g.checks.some((c) => checkStatus(c) === "warn")
+            ? "warn"
+            : "ok";
+        return (
+          <div
+            key={g.key}
+            style={{
+              marginBottom: 14,
+              border: `1px solid ${C.border}`,
+              borderRadius: 8,
+              overflow: "hidden",
+              maxWidth: "100%",
+            }}
+          >
+            {/* Group header with aggregate */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "10px 12px",
+                background: C.elevated,
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                style={{
+                  width: 9,
+                  height: 9,
+                  borderRadius: 999,
+                  background: statusColor(groupStatus),
+                  flex: "0 0 auto",
+                }}
+              />
+              <strong
+                style={{
+                  fontFamily: FONT.serif,
+                  fontSize: 14,
+                  color: C.text,
+                  minWidth: 0,
+                  overflowWrap: "anywhere",
+                }}
+              >
+                {g.label}
+              </strong>
+              <span
+                style={{
+                  marginLeft: isMobile ? 0 : "auto",
+                  fontSize: 12,
+                  fontFamily: FONT.mono,
+                  color: statusColor(groupStatus),
+                }}
+              >
+                {okCount}/{total} ok
+              </span>
+            </div>
+
+            {/* Check rows */}
+            <div style={{ padding: "4px 0" }}>
+              {g.checks.map((c, i) => (
+                <DiagnosticRow key={`${g.key}-${i}`} check={c} isMobile={isMobile} />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+
+      {state !== "running" && diagnostics !== null && grouped.length === 0 && (
+        <p style={{ color: C.textDim, fontSize: 13, margin: 0 }}>
+          Keine Checks zurückgegeben.
+        </p>
+      )}
+    </Section>
+  );
+}
+
+/** Single diagnostic check row: glyph + name + detail + latency. */
+function DiagnosticRow({
+  check,
+  isMobile,
+}: {
+  check: DiagnosticCheck;
+  isMobile: boolean;
+}) {
+  const s = checkStatus(check);
+  const color = statusColor(s);
+  const glyph =
+    s === "ok" ? (
+      <Check size={14} />
+    ) : s === "warn" ? (
+      <AlertTriangle size={14} />
+    ) : (
+      <X size={14} />
+    );
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 10,
+        padding: "8px 12px",
+        flexWrap: "wrap",
+      }}
+    >
+      <span style={{ color, flex: "0 0 auto", marginTop: 1 }}>{glyph}</span>
+      <span
+        style={{
+          fontSize: 13,
+          color: C.text,
+          minWidth: 0,
+          // On desktop keep the name in its own column; on mobile allow the
+          // detail to wrap to a full-width new line.
+          flex: isMobile ? "1 1 100%" : "0 0 auto",
+          overflowWrap: "anywhere",
+        }}
+      >
+        {check.name}
+      </span>
+      {check.detail && (
+        <span
+          style={{
+            fontSize: 12,
+            color: C.textDim,
+            minWidth: 0,
+            flex: isMobile ? "1 1 100%" : "1 1 auto",
+            overflowWrap: "anywhere",
+            wordBreak: "break-word",
+          }}
+        >
+          {check.detail}
+        </span>
+      )}
+      {typeof check.latencyMs === "number" && (
+        <span
+          style={{
+            fontSize: 11,
+            color: C.textFaint,
+            fontFamily: FONT.mono,
+            marginLeft: isMobile ? 0 : "auto",
+            flex: "0 0 auto",
+          }}
+        >
+          {check.latencyMs} ms
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Logs-Tab — filterable view of the server's in-process ring buffer.
+ *
+ * Newest-first rows: timestamp, level badge, optional service tag, and a
+ * monospace wrapping message. Level filter re-fetches server-side; the
+ * service filter is applied client-side from the services actually present.
+ * ────────────────────────────────────────────────────────────────────── */
+function LogsTab({
+  logs,
+  state,
+  error,
+  level,
+  service,
+  isMobile,
+  onLevelChange,
+  onServiceChange,
+  onRefresh,
+}: {
+  logs: LogEntry[] | null;
+  state: "idle" | "loading" | "ok" | "fail";
+  error: string | undefined;
+  level: "all" | LogLevel;
+  service: string;
+  isMobile: boolean;
+  onLevelChange: (lvl: "all" | LogLevel) => void;
+  onServiceChange: (svc: string) => void;
+  onRefresh: () => void;
+}) {
+  // Distinct services present in the current buffer — drives the service
+  // dropdown. Recomputed whenever the logs change.
+  const services = useMemo(() => {
+    const set = new Set<string>();
+    for (const l of logs ?? []) if (l.service) set.add(l.service);
+    return [...set].sort();
+  }, [logs]);
+
+  // Service filter is client-side; level was already applied server-side.
+  const visible = useMemo(() => {
+    if (!logs) return [];
+    return service === "all"
+      ? logs
+      : logs.filter((l) => l.service === service);
+  }, [logs, service]);
+
+  const selectStyle: React.CSSProperties = {
+    padding: "8px 10px",
+    minHeight: isMobile ? TOUCH_TARGET_MIN : undefined,
+    background: C.elevated,
+    border: `1px solid ${C.border}`,
+    borderRadius: 6,
+    color: C.text,
+    fontFamily: FONT.mono,
+    fontSize: 13,
+    outline: "none",
+    flex: isMobile ? "1 1 100%" : "0 0 auto",
+  };
+
+  return (
+    <Section title="Logs — Ring-Buffer (neueste zuerst)">
+      <p
+        style={{
+          color: C.textDim,
+          fontSize: 13,
+          margin: "0 0 14px 0",
+          lineHeight: 1.5,
+        }}
+      >
+        Die letzten ~{DEFAULT_LOG_LIMIT} wichtigen Server-Ereignisse — direkt
+        aus dem In-Process-Ring-Buffer, kein Coolify/SSH nötig.
+      </p>
+
+      {/* Filter bar */}
+      <div
+        style={{
+          display: "flex",
+          gap: 10,
+          flexWrap: "wrap",
+          alignItems: "center",
+          marginBottom: 14,
+        }}
+      >
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+            flex: isMobile ? "1 1 100%" : "0 0 auto",
+          }}
+        >
+          <span
+            style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}
+          >
+            LEVEL
+          </span>
+          <select
+            value={level}
+            onChange={(e) => onLevelChange(e.target.value as "all" | LogLevel)}
+            style={selectStyle}
+          >
+            {LOG_LEVELS.map((l) => (
+              <option key={l.value} value={l.value}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 3,
+            flex: isMobile ? "1 1 100%" : "0 0 auto",
+          }}
+        >
+          <span
+            style={{ fontSize: 11, color: C.textDim, fontFamily: FONT.mono }}
+          >
+            SERVICE
+          </span>
+          <select
+            value={service}
+            onChange={(e) => onServiceChange(e.target.value)}
+            style={selectStyle}
+          >
+            <option value="all">Alle</option>
+            {services.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <button
+          onClick={onRefresh}
+          disabled={state === "loading"}
+          style={{
+            ...mobileBtn(btn, isMobile),
+            alignSelf: isMobile ? "stretch" : "flex-end",
+            flex: isMobile ? "1 1 100%" : "0 0 auto",
+            justifyContent: "center",
+            opacity: state === "loading" ? 0.6 : 1,
+            cursor: state === "loading" ? "not-allowed" : "pointer",
+          }}
+        >
+          {state === "loading" ? (
+            <Loader2 size={14} className="sw-spin" />
+          ) : (
+            <RefreshCw size={13} />
+          )}
+          Aktualisieren
+        </button>
+      </div>
+
+      {state === "fail" && (
+        <p style={{ color: C.err, fontSize: 13, margin: "0 0 12px 0" }}>
+          <X size={14} /> {error ?? "Logs-Endpoint nicht erreichbar"}
+        </p>
+      )}
+
+      {state === "loading" && logs === null && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            color: C.textDim,
+            fontSize: 13,
+          }}
+        >
+          <Loader2 size={14} className="sw-spin" /> Logs laden …
+        </div>
+      )}
+
+      {logs !== null && visible.length === 0 && state !== "loading" && (
+        <p style={{ color: C.textDim, fontSize: 13, margin: 0 }}>
+          Keine Log-Einträge für diesen Filter.
+        </p>
+      )}
+
+      {visible.length > 0 && (
+        <div
+          style={{
+            border: `1px solid ${C.border}`,
+            borderRadius: 8,
+            overflow: "hidden",
+            maxWidth: "100%",
+          }}
+        >
+          {visible.map((entry, i) => (
+            <LogRow
+              key={`${entry.ts}-${i}`}
+              entry={entry}
+              isMobile={isMobile}
+              striped={i % 2 === 1}
+            />
+          ))}
+        </div>
+      )}
+    </Section>
+  );
+}
+
+/** Colour for a log-level badge. */
+function logLevelColor(level: LogLevel): string {
+  if (level === "error") return C.err;
+  if (level === "warn") return C.gold;
+  return C.textDim;
+}
+
+/** Single log row: timestamp + level badge + service tag + message. */
+function LogRow({
+  entry,
+  isMobile,
+  striped,
+}: {
+  entry: LogEntry;
+  isMobile: boolean;
+  striped: boolean;
+}) {
+  const color = logLevelColor(entry.level);
+  return (
+    <div
+      style={{
+        display: "flex",
+        gap: 10,
+        alignItems: "flex-start",
+        flexWrap: "wrap",
+        padding: "8px 12px",
+        background: striped ? C.elevated : C.panel,
+      }}
+    >
+      <span
+        style={{
+          fontSize: 11,
+          color: C.textFaint,
+          fontFamily: FONT.mono,
+          flex: "0 0 auto",
+          whiteSpace: "nowrap",
+        }}
+      >
+        {new Date(entry.ts).toLocaleString("de-DE")}
+      </span>
+      <span
+        style={{
+          fontSize: 10,
+          fontFamily: FONT.mono,
+          textTransform: "uppercase",
+          letterSpacing: 0.5,
+          color,
+          border: `1px solid ${color}`,
+          borderRadius: 4,
+          padding: "1px 6px",
+          flex: "0 0 auto",
+        }}
+      >
+        {entry.level}
+      </span>
+      {entry.service && (
+        <span
+          style={{
+            fontSize: 10,
+            fontFamily: FONT.mono,
+            color: C.textDim,
+            background: C.hover,
+            borderRadius: 4,
+            padding: "1px 6px",
+            flex: "0 0 auto",
+          }}
+        >
+          {entry.service}
+        </span>
+      )}
+      <span
+        style={{
+          fontSize: 12,
+          fontFamily: FONT.mono,
+          color: C.text,
+          minWidth: 0,
+          // Message takes the full next line on mobile and wraps; on desktop
+          // it fills the remaining row width.
+          flex: isMobile ? "1 1 100%" : "1 1 auto",
+          whiteSpace: "pre-wrap",
+          overflowWrap: "anywhere",
+          wordBreak: "break-word",
+        }}
+      >
+        {entry.message}
+      </span>
+    </div>
+  );
+}
+
 const btn: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -3543,3 +4383,20 @@ const btn: React.CSSProperties = {
   fontSize: 13,
   cursor: "pointer",
 };
+
+/**
+ * Enlarge a button to a ≥40px tap target on mobile. Pure styling helper —
+ * spreads the base button style and bumps `minHeight` + vertical padding
+ * when `isMobile`. Desktop returns the style untouched.
+ */
+function mobileBtn(
+  base: React.CSSProperties,
+  isMobile: boolean,
+): React.CSSProperties {
+  if (!isMobile) return base;
+  return {
+    ...base,
+    minHeight: TOUCH_TARGET_MIN,
+    padding: "10px 14px",
+  };
+}
