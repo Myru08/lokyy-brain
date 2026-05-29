@@ -104,3 +104,38 @@ describe("mergeTranscript — real Android re-delivery (the bug)", () => {
     expect(committed).toBe(CLEAN);
   });
 });
+
+describe("mergeTranscript — cumulative finals WITHIN a single turn (Android)", () => {
+  // Android Chrome can emit the growing phrase as CUMULATIVE FINAL results at
+  // INCREASING indices inside ONE recognition turn — the per-turn segment map
+  // becomes {0:"Okay", 1:"Okay ich", 2:"Okay ich bin", …}. `buildCommitted()`
+  // in VoiceReviewSheet folds that sorted segment list through `mergeTranscript`
+  // via `reduce` (NOT `.join(" ")`); this reproduces exactly that reduce and
+  // asserts the superset finals collapse to the one clean sentence.
+  const CLEAN =
+    "Okay ich bin unglaublich gespannt ob das wirklich gut funktioniert " +
+    "aber ich bin mir schon fast sicher dass das extrem viel Gedöns wird";
+
+  it("reduces cumulative per-turn finals to the clean single sentence (no duplicated words)", () => {
+    const words = CLEAN.split(/\s+/);
+    // Per-turn final segments at increasing indices: each restates the whole
+    // growing phrase from the start — the exact Android within-turn pattern.
+    const segments: string[] = [];
+    for (let n = 1; n <= words.length; n++) {
+      segments.push(words.slice(0, n).join(" "));
+    }
+
+    // Same fold buildCommitted() applies to the sorted per-turn segments.
+    const turn = segments.reduce((acc, seg) => mergeTranscript(acc, seg), "");
+
+    expect(turn).toBe(CLEAN);
+  });
+
+  it("plain distinct (non-overlapping) per-turn finals still just append (k=0)", () => {
+    // The normal desktop case: successive finals are DISTINCT segments. The
+    // same reduce must behave like a single-space join — behaviour unchanged.
+    const segments = ["the quick brown", "fox jumps over", "the lazy dog"];
+    const turn = segments.reduce((acc, seg) => mergeTranscript(acc, seg), "");
+    expect(turn).toBe("the quick brown fox jumps over the lazy dog");
+  });
+});

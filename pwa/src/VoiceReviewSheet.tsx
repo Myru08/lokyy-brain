@@ -155,18 +155,28 @@ export function VoiceReviewSheet({
   /**
    * Join committed prefix + current-turn final map (index order).
    *
-   * Folds the turn into the prefix via {@link mergeTranscript} so the Android
-   * re-delivery (where a restarted turn restates the growing phrase from the
-   * start) collapses on the word-level overlap instead of cumulatively
-   * re-appending. The normal desktop case has zero overlap (k=0), so this is
-   * an identical single-space append.
+   * Two levels of {@link mergeTranscript} folding:
+   *
+   * 1. WITHIN the turn: Android Chrome can deliver the growing phrase as
+   *    CUMULATIVE final results at increasing indices inside ONE turn
+   *    (`{0:"okay", 1:"okay ich", 2:"okay ich bin", …}`). A plain `.join(" ")`
+   *    of those reproduces the stutter ("okay okay ich okay ich bin …") before
+   *    the prefix-merge ever runs. So we `reduce` the sorted per-turn segments
+   *    through `mergeTranscript`, collapsing each superset/overlap into the
+   *    longest coherent form. Distinct non-overlapping finals (the normal
+   *    desktop case) hit k=0 and just append with a single space — unchanged.
+   *
+   * 2. BETWEEN turns: the resulting turn-text folds into the committed prefix
+   *    via the same merge, so the Android re-delivery (where a restarted turn
+   *    restates the growing phrase from the start) collapses on the word-level
+   *    overlap instead of cumulatively re-appending.
    */
   function buildCommitted(): string {
     const turn = [...finalSegmentsRef.current.entries()]
       .sort((a, b) => a[0] - b[0])
       .map(([, t]) => t.trim())
       .filter(Boolean)
-      .join(" ");
+      .reduce((acc, seg) => mergeTranscript(acc, seg), "");
     const prefix = committedPrefixRef.current.trim();
     return mergeTranscript(prefix, turn);
   }

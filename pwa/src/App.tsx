@@ -1507,23 +1507,87 @@ export function App() {
     }
   }
 
+  /**
+   * Create a note, auto-incrementing the title/path on a name collision.
+   *
+   * The server returns HTTP 409 (`ApiError.isConflict`) with the message
+   * `Notiz "…" existiert bereits.` when the derived path is already taken.
+   * We catch that, append ` 2`, ` 3`, … to BOTH the visible title and the
+   * derived filename so they stay consistent, and retry — capped at `cap`
+   * attempts to avoid an unbounded loop. The body heading (`# {title}`)
+   * tracks the suffixed title too.
+   *
+   * Used by the quick "Neue Notiz" button and the voice "no note open" path,
+   * which both start from a fixed default name and must NEVER block on a
+   * second create. Any non-conflict error (or exhausting the cap) is rethrown
+   * to the caller, which surfaces it exactly as before.
+   *
+   * @param baseTitle  Desired title (e.g. "Neue Notiz") — drives filename + heading.
+   * @param parentPath Folder to create under ("" = vault root).
+   * @param makeBody   Builds the note body from the (possibly suffixed) title.
+   * @param cap        Max attempts including the first (default 50).
+   * @returns The path that was successfully created.
+   */
+  async function createNoteUnique(
+    baseTitle: string,
+    parentPath: string,
+    makeBody: (title: string) => string,
+    cap = 50,
+  ): Promise<string> {
+    let lastErr: unknown;
+    for (let n = 1; n <= cap; n++) {
+      const title = n === 1 ? baseTitle : `${baseTitle} ${n}`;
+      const clean = safeName(title);
+      if (!clean) throw new Error("Ungültiger Notiz-Name.");
+      const path = parentPath ? `${parentPath}/${clean}` : clean;
+      try {
+        await api.createNote(path, makeBody(title));
+        return path;
+      } catch (e) {
+        // Only a name collision is retryable. Detect it via the 409
+        // `isConflict` flag, with a message-substring fallback in case the
+        // status ever changes but the German error text stays.
+        const isCollision =
+          (e instanceof ApiError && e.isConflict) ||
+          (e instanceof Error && e.message.includes("existiert bereits"));
+        if (!isCollision) throw e;
+        lastErr = e;
+      }
+    }
+    // Exhausted the suffix range — surface the last collision error.
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error("Konnte keinen freien Notiz-Namen finden.");
+  }
+
   async function handleCreate(
     parentPath: string,
     name: string,
     kind: "note" | "folder",
   ) {
+    if (kind === "note") {
+      // Quick/default note creation auto-increments on collision so tapping
+      // "Neu" repeatedly yields "Neue Notiz", "Neue Notiz 2", … without error.
+      try {
+        const path = await createNoteUnique(
+          name,
+          parentPath,
+          (title) => `# ${title}\n\n`,
+        );
+        await refreshTree();
+        void open(path);
+      } catch (e) {
+        alert(e instanceof Error ? e.message : "Anlegen fehlgeschlagen");
+      }
+      return;
+    }
+
     const clean = safeName(name);
     if (!clean) return;
     const path = parentPath ? `${parentPath}/${clean}` : clean;
     try {
-      if (kind === "note") {
-        await api.createNote(path, `# ${name}\n\n`);
-        await refreshTree();
-        void open(path);
-      } else {
-        await api.createFolder(path);
-        await refreshTree();
-      }
+      await api.createFolder(path);
+      await refreshTree();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Anlegen fehlgeschlagen");
     }
@@ -1578,14 +1642,22 @@ export function App() {
     }
 
     // No note open — create a fresh capture-style note and open it.
+    // Two voice captures inside the same minute derive the same filename;
+    // route through `createNoteUnique` so the second one becomes
+    // "…-voice-1830 2" instead of erroring out. The body is the transcript,
+    // independent of the (possibly suffixed) title.
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, "0");
     const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     const time = `${pad(now.getHours())}${pad(now.getMinutes())}`;
-    const path = `30_captures/voice/${date}-voice-${time}`;
-    const created = await api.createNote(path, `${text}\n`);
+    const baseName = `${date}-voice-${time}`;
+    const createdPath = await createNoteUnique(
+      baseName,
+      "30_captures/voice",
+      () => `${text}\n`,
+    );
     await refreshTree();
-    await open(created.id);
+    await open(createdPath);
   }
 
   async function handleRename(node: TreeNode, newName: string) {
