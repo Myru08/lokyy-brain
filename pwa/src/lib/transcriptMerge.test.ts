@@ -139,3 +139,52 @@ describe("mergeTranscript — cumulative finals WITHIN a single turn (Android)",
     expect(turn).toBe("the quick brown fox jumps over the lazy dog");
   });
 });
+
+describe("mergeTranscript — full-utterance RESTATEMENT (Android re-recognition)", () => {
+  // Android re-emits the ENTIRE utterance again as a new turn: a near-duplicate
+  // that restarts FROM THE BEGINNING with minor word diffs ("scheint das" vs
+  // "scheint es") and an extra trailing word ("arbeiten"). The seam overlap is
+  // ZERO (prefix ends "vernünftig", addition starts "okay"), so the old code
+  // plain-appended → the whole sentence appeared twice. Restatement detection
+  // must collapse it to the single, longer/more-complete copy.
+  const v1 =
+    "okay dann bin ich jetzt mal gespannt ob das deutlich besser funktioniert " +
+    "aber so wie es aussieht scheint das recht gut zu funktionieren und ich " +
+    "glaube damit könnten wir auf jeden Fall vernünftig";
+  const v2 =
+    "okay dann bin ich jetzt mal gespannt ob das deutlich besser funktioniert " +
+    "aber so wie es aussieht scheint es recht gut zu funktionieren und ich " +
+    "glaube damit könnten wir auf jeden Fall vernünftig arbeiten";
+
+  it("collapses the real-recording re-utterance to a single coherent copy (the longer v2)", () => {
+    const merged = mergeTranscript(v1, v2);
+
+    // Single, complete copy — equals the longer/more-complete side.
+    expect(merged).toBe(v2);
+
+    // "okay dann bin ich" appears EXACTLY ONCE (no concatenated duplicate).
+    const occurrences = merged
+      .toLowerCase()
+      .split("okay dann bin ich").length - 1;
+    expect(occurrences).toBe(1);
+  });
+
+  it("returns the longer side regardless of argument order (v2 then v1)", () => {
+    expect(mergeTranscript(v2, v1)).toBe(v2);
+  });
+
+  it("NEGATIVE: two distinct sentences sharing only the first word are NOT collapsed", () => {
+    // Only one shared leading word ("the") — far below the 4-word floor — so
+    // these are genuinely distinct turns and must be appended, not merged.
+    expect(
+      mergeTranscript("the cat sat on the mat", "the dog ran in the park"),
+    ).toBe("the cat sat on the mat the dog ran in the park");
+  });
+
+  it("NEGATIVE: a short shared lead (below the 4-word floor) still appends", () => {
+    // Three shared leading words ("ich gehe gleich") < 4 → not a restatement.
+    expect(mergeTranscript("ich gehe gleich nach Hause", "ich gehe gleich")).toBe(
+      "ich gehe gleich nach Hause ich gehe gleich",
+    );
+  });
+});

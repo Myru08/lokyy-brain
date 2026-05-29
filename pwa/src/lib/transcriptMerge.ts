@@ -33,16 +33,56 @@
  * - Full-containment: if `addition` starts with the ENTIRE `prefix`, the
  *   result is `addition` (the new turn already contains everything).
  * - Zero-overlap (desktop / distinct turns): k = 0, plain single-space append
- *   — behaves exactly like the old code path.
+ *   — behaves exactly like the old code path UNLESS the addition is a full
+ *   RESTATEMENT of the prefix (see below).
  * - Empty inputs: empty `addition` → `prefix`; empty `prefix` → `addition`.
  * - Output whitespace is collapsed to single spaces and trimmed.
+ *
+ * ── RESTATEMENT detection (Android full re-utterance) ─────────────────────
+ * Android Chrome sometimes re-emits the ENTIRE utterance as a brand-new turn —
+ * a near-duplicate that starts again FROM THE BEGINNING with minor word diffs
+ * (e.g. "scheint das" → "scheint es") and possibly a few extra trailing words.
+ * The seam overlap is then ZERO (prefix ends one way, addition starts with the
+ * opening word again), so the naive path would plain-append and the WHOLE
+ * sentence would appear twice.
+ *
+ * Only when the seam overlap is 0 do we additionally test whether `addition`
+ * and `prefix` share a long common LEADING run (case-insensitive word compare).
+ * If they share at least {@link RESTATEMENT_MIN_LEADING_WORDS} leading words
+ * AND that run covers at least {@link RESTATEMENT_MIN_LEADING_RATIO} of the
+ * SHORTER side's word count, we treat `addition` as a re-utterance of `prefix`
+ * and return the LONGER / more-complete of the two (we do NOT concatenate).
+ *
+ * This is deliberately conservative: a single shared first word ("okay …")
+ * can never trip it, because the absolute floor of 4 leading words is required.
+ * Checking restatement only on the k === 0 branch also guarantees the existing
+ * seam-overlap continuation and full-containment behaviour is untouched.
  */
+
+/** Minimum common leading words before two turns can be judged a restatement. */
+const RESTATEMENT_MIN_LEADING_WORDS = 4;
+/** Common leading run must cover at least this fraction of the shorter side. */
+const RESTATEMENT_MIN_LEADING_RATIO = 0.4;
 
 /** Split on any run of whitespace, dropping empty leading/trailing tokens. */
 function toWords(s: string): string[] {
   const trimmed = s.trim();
   if (trimmed === "") return [];
   return trimmed.split(/\s+/);
+}
+
+/**
+ * Count the common LEADING run of two word arrays, compared case-insensitively.
+ * Returns the number of words matching from index 0 onward, up to first diff.
+ */
+function commonLeadingWords(a: string[], b: string[]): number {
+  const max = Math.min(a.length, b.length);
+  let n = 0;
+  for (let i = 0; i < max; i++) {
+    if (a[i]!.toLowerCase() !== b[i]!.toLowerCase()) break;
+    n++;
+  }
+  return n;
 }
 
 /**
@@ -85,6 +125,23 @@ export function mergeTranscript(prefix: string, addition: string): string {
     if (match) {
       overlap = k;
       break;
+    }
+  }
+
+  // RESTATEMENT branch: only when there is NO seam overlap. Android sometimes
+  // re-emits the whole utterance from the start (near-duplicate, minor word
+  // diffs). If addition shares a substantial common LEADING run with prefix,
+  // it is a re-utterance — return the longer/more-complete side, never both.
+  if (overlap === 0) {
+    const leading = commonLeadingWords(prefixWords, additionWords);
+    const shorter = Math.min(prefixWords.length, additionWords.length);
+    const isRestatement =
+      leading >= RESTATEMENT_MIN_LEADING_WORDS &&
+      leading >= shorter * RESTATEMENT_MIN_LEADING_RATIO;
+    if (isRestatement) {
+      const longer =
+        additionWords.length >= prefixWords.length ? additionWords : prefixWords;
+      return longer.join(" ");
     }
   }
 
