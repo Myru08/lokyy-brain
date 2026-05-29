@@ -20,6 +20,8 @@ import {
   type FrontmatterMap,
 } from "../frontmatter/index.js";
 import { FrontmatterValidationError } from "../errors/FrontmatterValidationError.js";
+import { TypeFolderMismatchError } from "../errors/TypeFolderMismatchError.js";
+import { checkPathMatchesType } from "./folderMap.js";
 import {
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
@@ -282,6 +284,15 @@ export interface CreateNoteOpts {
   /** Extra frontmatter fields merged in (e.g. `source: "youtube"` for captures). */
   extra?: FrontmatterMap;
   /**
+   * Story 10.2 (AC#5) — when `true`, the supplied `id` (note path) is
+   * checked against the canonical folder for `type`; a contradictory path
+   * (folder ≠ canonical folder and not an allowed sub-folder) throws
+   * `TypeFolderMismatchError` BEFORE any git operation. Default `false` so
+   * existing callers (the REST route, sleep passes) keep their freeform
+   * placement — only the MCP `create_note` tool opts in.
+   */
+  validatePlacement?: boolean;
+  /**
    * Phase B Wave B3 / Story 1 — Encoding-Context (Tulving 1973). Captured
    * at create-time and persisted as `encoded:` in the frontmatter. The
    * server route assembles it from the request (User-Agent device,
@@ -319,6 +330,22 @@ export async function createNote(
   }
 
   const type: DocType = opts.type ?? "note";
+
+  // Story 10.2 (AC#5) — opt-in placement guard. The folder of the supplied
+  // path must be the type's canonical folder or a sub-folder of it
+  // (e.g. `30_captures/youtube/…`). Throws BEFORE any git op so the caller
+  // can surface a `type-folder-mismatch` correction.
+  if (opts.validatePlacement) {
+    const placement = checkPathMatchesType(type, id);
+    if (!placement.ok) {
+      throw new TypeFolderMismatchError({
+        type: placement.type,
+        expectedFolder: placement.expectedFolder,
+        gotPath: placement.gotPath,
+      });
+    }
+  }
+
   const title = opts.title ?? (id.split("/").pop() ?? id);
   const now = new Date().toISOString();
   const frontmatter: FrontmatterMap = {
@@ -369,6 +396,338 @@ export async function createNote(
   // Phase C Wave C2 / Story 1 — bi-temporal-edge sync (fire-and-forget).
   queueTemporalEdgeSync(created.id, created.links, new Date(created.updatedAt));
   return created;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.10 — Bulk-Ops: createNotes / updateNotes (atomar)
+ *
+ *  Goal: an agent setting up a project writes N notes in ONE call instead
+ *  of N round-trips. Contract: "all or nothing on validation" — every item
+ *  is pre-flight validated (frontmatter synthesis + Story-10.2 type→folder
+ *  rules) BEFORE any git write; if a single item fails validation, NOTHING
+ *  is written and a structured result names the offending item + reason.
+ *
+ *  ── Atomicity caveat (documented gap) ───────────────────────────────
+ *  True single-commit atomicity (stage all files → one commit) is NOT
+ *  achievable here: `gitService` only exposes a per-file `save()` (each call
+ *  is its own add→commit→pull→push), and its serialization `lock` is module-
+ *  private — there is no public batch-commit entry point. Editing
+ *  `gitService.ts` is out of scope this wave (owned by Agent G / Story 10.12).
+ *
+ *  Best-available approach implemented here:
+ *    1. PRE-FLIGHT: validate ALL items first (existence, synthesized
+ *       frontmatter, placement). On any failure → write nothing, return the
+ *       structured failure. This fully satisfies AC#2 for the validation
+ *       case (the overwhelmingly common failure mode).
+ *    2. WRITE: replay each item through the existing createNote/saveNote.
+ *       Each is committed individually.
+ *  Residual gap: a *git-level* failure on item k>0 (e.g. a mid-batch merge
+ *  conflict — not a validation error) leaves items 0..k-1 already committed.
+ *  That partial state is reported via `committed` so the caller can react;
+ *  it is NOT silently swallowed. Closing this gap requires a batch-commit
+ *  API on gitService (Story 10.12).
+ * ------------------------------------------------------------------ */
+
+/** One note to create in a bulk `createNotes` call. Mirrors createNote args. */
+export interface BulkCreateItem {
+  /** Note id == path without ".md" (e.g. "20_notes/idea"). */
+  id: string;
+  /** Optional markdown body. Defaults to `# {title}` like createNote. */
+  body?: string;
+  /** Per-item createNote options (type, title, extra, validatePlacement…). */
+  opts?: CreateNoteOpts;
+}
+
+/** One note to update in a bulk `updateNotes` call. Mirrors saveNote args. */
+export interface BulkUpdateItem {
+  /** Note id == path without ".md" of an existing note. */
+  id: string;
+  /** New body (with or without frontmatter — same rules as saveNote). */
+  body: string;
+}
+
+/** Structured failure for a single offending item in a bulk op. */
+export interface BulkItemError {
+  /** The id of the item that failed pre-flight validation. */
+  id: string;
+  /** Machine-readable reason class. */
+  reason:
+    | "already-exists"
+    | "not-found"
+    | "frontmatter-invalid"
+    | "type-folder-mismatch"
+    | "duplicate-id"
+    | "unknown";
+  /** Human-readable message (the underlying error message). */
+  message: string;
+}
+
+/** Result of a bulk op. `ok:false` ⇒ nothing was written (validation gate). */
+export type BulkResult<T> =
+  | { ok: true; notes: T[] }
+  | {
+      ok: false;
+      /** The single item that tripped the pre-flight validation gate. */
+      error: BulkItemError;
+      /**
+       * Ids already committed before a *git-level* (non-validation) failure
+       * mid-write. Empty for the pure validation-failure path (the common
+       * case), which writes nothing at all. See the atomicity caveat above.
+       */
+      committed: string[];
+    };
+
+/**
+ * Pre-flight a single create item WITHOUT touching git: replays exactly the
+ * checks `createNote` performs before its first `save()` call — existence,
+ * type→folder placement (when opted in), and synthesized-frontmatter
+ * validation. Returns `null` on success, or a structured error otherwise.
+ *
+ * Keeping this in lock-step with `createNote` is the whole point: if it
+ * passes here, the real `createNote` will not reject for a validation reason.
+ */
+async function preflightCreate(
+  item: BulkCreateItem,
+): Promise<BulkItemError | null> {
+  const { id } = item;
+  const opts = item.opts ?? {};
+  const c = coreConfig();
+  const abs = join(c.vaultDir, ...id.split("/")) + ".md";
+
+  // (a) must not already exist — mirrors createNote's stat guard.
+  try {
+    await stat(abs);
+    return {
+      id,
+      reason: "already-exists",
+      message: `Notiz "${id}" existiert bereits.`,
+    };
+  } catch {
+    // not present — good, continue.
+  }
+
+  const type: DocType = opts.type ?? "note";
+
+  // (b) opt-in placement guard (Story 10.2) — same as createNote.
+  if (opts.validatePlacement) {
+    const placement = checkPathMatchesType(type, id);
+    if (!placement.ok) {
+      return {
+        id,
+        reason: "type-folder-mismatch",
+        message:
+          `type "${placement.type}" expects folder "${placement.expectedFolder}" ` +
+          `but path is "${placement.gotPath}".`,
+      };
+    }
+  }
+
+  // (c) synthesize the exact frontmatter createNote would build and validate
+  //     it — catches a malformed caller-supplied id, bad extra fields, etc.
+  const title = opts.title ?? (id.split("/").pop() ?? id);
+  const now = new Date().toISOString();
+  const frontmatter: FrontmatterMap = {
+    id: opts.id ?? generateUlid(),
+    type,
+    title,
+    created: now,
+    updated: now,
+    ...(opts.extra ?? {}),
+  };
+  if (opts.encoded) frontmatter.encoded = opts.encoded;
+
+  const validation = validateFrontmatter(frontmatter, type);
+  if (!validation.valid) {
+    return {
+      id,
+      reason: "frontmatter-invalid",
+      message: `Frontmatter for new note "${id}" failed validation: ${validation.errors
+        .map((e) => e.message)
+        .join("; ")}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Pre-flight a single update item WITHOUT touching git: replays saveNote's
+ * pre-commit checks — the target must exist, and the merged frontmatter must
+ * validate. Bulk-update is an UPDATE, not an upsert, so a missing target is a
+ * validation failure (the bulk caller wants "all or nothing on a known set").
+ */
+async function preflightUpdate(
+  item: BulkUpdateItem,
+): Promise<BulkItemError | null> {
+  const { id, body } = item;
+  const c = coreConfig();
+  const abs = join(c.vaultDir, ...id.split("/")) + ".md";
+
+  // (a) target must exist — bulk update never creates.
+  let existing: FrontmatterMap = {};
+  try {
+    const onDisk = await readFile(abs, "utf8");
+    existing = parseFrontmatter(onDisk).data;
+  } catch {
+    return {
+      id,
+      reason: "not-found",
+      message: `Notiz "${id}" existiert nicht.`,
+    };
+  }
+
+  // (b) mirror saveNote's merge + validation exactly.
+  const incoming = parseFrontmatter(body);
+  const incomingHasFrontmatter = Object.keys(incoming.data).length > 0;
+  const incomingData = incomingHasFrontmatter ? incoming.data : existing;
+
+  const now = new Date().toISOString();
+  const merged: FrontmatterMap = {
+    ...incomingData,
+    id:
+      (existing.id as string | undefined) ??
+      (incomingData.id as string | undefined) ??
+      generateUlid(),
+    type:
+      (incomingData.type as DocType | undefined) ??
+      (existing.type as DocType | undefined) ??
+      "note",
+    title:
+      (incomingData.title as string | undefined) ??
+      (existing.title as string | undefined) ??
+      (id.split("/").pop() ?? id),
+    created:
+      (existing.created as string | undefined) ??
+      (incomingData.created as string | undefined) ??
+      now,
+    updated: now,
+  };
+
+  const type = merged.type as DocType;
+  const validation = validateFrontmatter(merged, type);
+  if (!validation.valid) {
+    return {
+      id,
+      reason: "frontmatter-invalid",
+      message: `Frontmatter for save of "${id}" failed validation: ${validation.errors
+        .map((e) => e.message)
+        .join("; ")}`,
+    };
+  }
+  return null;
+}
+
+/** Catch in-batch duplicate ids before writing (two items same path). */
+function firstDuplicateId(ids: string[]): string | null {
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (seen.has(id)) return id;
+    seen.add(id);
+  }
+  return null;
+}
+
+/**
+ * Bulk-create notes atomically with respect to VALIDATION: every item is
+ * pre-flighted (frontmatter + Story-10.2 placement) before any git write. If
+ * a single item fails, nothing is written and the offending item + reason is
+ * returned. See the atomicity caveat at the top of this section for the
+ * residual git-level gap.
+ */
+export async function createNotes(
+  items: BulkCreateItem[],
+): Promise<BulkResult<Note>> {
+  // (0) in-batch duplicate-id guard — two items targeting the same path would
+  //     otherwise see the second fail as "already-exists" only AFTER the first
+  //     is committed. Reject up front so the batch stays write-nothing.
+  const dup = firstDuplicateId(items.map((i) => i.id));
+  if (dup !== null) {
+    return {
+      ok: false,
+      error: {
+        id: dup,
+        reason: "duplicate-id",
+        message: `Duplicate id "${dup}" appears more than once in the batch.`,
+      },
+      committed: [],
+    };
+  }
+
+  // (1) PRE-FLIGHT all items — write nothing if any fails validation.
+  for (const item of items) {
+    const err = await preflightCreate(item);
+    if (err) return { ok: false, error: err, committed: [] };
+  }
+
+  // (2) WRITE — replay through the existing createNote (per-item commit).
+  const created: Note[] = [];
+  for (const item of items) {
+    try {
+      created.push(await createNote(item.id, item.body, item.opts));
+    } catch (err) {
+      // A non-validation (git-level) failure mid-batch. Pre-flight already
+      // cleared validation, so this is e.g. a transient git error. Report the
+      // partial state honestly rather than masking it.
+      return {
+        ok: false,
+        error: {
+          id: item.id,
+          reason: "unknown",
+          message: err instanceof Error ? err.message : String(err),
+        },
+        committed: created.map((n) => n.id),
+      };
+    }
+  }
+  return { ok: true, notes: created };
+}
+
+/**
+ * Bulk-update notes atomically with respect to VALIDATION: every item is
+ * pre-flighted (existence + merged-frontmatter validity) before any git
+ * write. A missing target is treated as a validation failure (bulk update is
+ * not an upsert). On any failure nothing is written. See the atomicity caveat
+ * above for the residual git-level gap.
+ */
+export async function updateNotes(
+  items: BulkUpdateItem[],
+): Promise<BulkResult<Note>> {
+  const dup = firstDuplicateId(items.map((i) => i.id));
+  if (dup !== null) {
+    return {
+      ok: false,
+      error: {
+        id: dup,
+        reason: "duplicate-id",
+        message: `Duplicate id "${dup}" appears more than once in the batch.`,
+      },
+      committed: [],
+    };
+  }
+
+  // (1) PRE-FLIGHT all items — write nothing if any fails validation.
+  for (const item of items) {
+    const err = await preflightUpdate(item);
+    if (err) return { ok: false, error: err, committed: [] };
+  }
+
+  // (2) WRITE — replay through the existing saveNote (per-item commit).
+  const saved: Note[] = [];
+  for (const item of items) {
+    try {
+      saved.push(await saveNote(item.id, item.body));
+    } catch (err) {
+      return {
+        ok: false,
+        error: {
+          id: item.id,
+          reason: "unknown",
+          message: err instanceof Error ? err.message : String(err),
+        },
+        committed: saved.map((n) => n.id),
+      };
+    }
+  }
+  return { ok: true, notes: saved };
 }
 
 /**
@@ -443,4 +802,64 @@ export async function deleteEntry(
   // ID-Badge / AI-Prompt feature — drop the ULID cache so a deleted
   // note stops resolving via findByUlid.
   invalidateUlidCache();
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.3 — delete_note: soft-delete (trash) + hard-delete
+ *
+ *  The MCP `delete_note(path, hard?)` tool (Agent C) wires these two
+ *  helpers: `hard=false` (default) → `trashEntry` (a recoverable Move into
+ *  `99_archive/_trash/`); `hard=true` → the existing `deleteEntry`. Both
+ *  run through `gitService` (no direct `fs.unlink` — AC#6).
+ * ------------------------------------------------------------------ */
+
+/** Canonical trash folder for soft-deleted notes (Story 10.3, AC#1). */
+export const TRASH_FOLDER = "99_archive/_trash";
+
+/** ISO date stamp `YYYY-MM-DD` (UTC) for the dated trash path. */
+function trashDateStamp(now: Date): string {
+  return now.toISOString().slice(0, 10);
+}
+
+/** Result of a soft-delete: where the note now lives + its original path. */
+export interface TrashResult {
+  /** The note id (path without `.md`) the note had before the move. */
+  from: string;
+  /** The note id it now lives at under `99_archive/_trash/`. */
+  to: string;
+}
+
+/**
+ * Soft-delete a note by MOVING it to `99_archive/_trash/{YYYY-MM-DD}-{slug}`
+ * (Story 10.3, AC#1). The original leaf name is the slug; a date prefix keeps
+ * the trash chronologically sorted and avoids collisions when the same note
+ * name is trashed on different days. Goes through the existing `moveEntry`,
+ * so the move is committed via `gitService` and the BM25 index is updated to
+ * the new path (AC#3 — the note stays indexed under its trash path, which is
+ * acceptable; a follow-up re-index is unnecessary).
+ *
+ * Throws when the source note does not exist (`not-found` is the caller's
+ * concern — Agent C checks existence first; this guard is defensive so a
+ * race never produces an empty commit). Folders are not soft-deleted — the
+ * MCP tool routes folder hard-deletes straight to `deleteEntry`.
+ *
+ * `now` is injectable for deterministic tests.
+ */
+export async function trashEntry(
+  path: string,
+  now: Date = new Date(),
+): Promise<TrashResult> {
+  const c = coreConfig();
+  const abs = join(c.vaultDir, ...path.split("/")) + ".md";
+  try {
+    await stat(abs);
+  } catch {
+    throw new Error(`Notiz "${path}" existiert nicht.`);
+  }
+
+  const slug = path.split("/").pop() ?? path;
+  const to = `${TRASH_FOLDER}/${trashDateStamp(now)}-${slug}`;
+  // moveEntry handles the git move + ULID-cache + BM25 reindex under the new id.
+  await moveEntry(path, to, "note");
+  return { from: path, to };
 }

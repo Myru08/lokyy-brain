@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { database } from "../db/index.js";
+import { database, indexDatabase } from "../db/index.js";
 
 /**
  * Tier1BM25 — ParadeDB `pg_search` BM25 retrieval over the `note_search`
@@ -28,6 +28,50 @@ export interface BM25Hit {
 
 /** Cache the pg_search-availability probe — checked once per process. */
 let pgSearchAvailable: boolean | null = null;
+
+/**
+ * Sanitize a raw user query for the ParadeDB `@@@` operator (Story 10.1, AC#1).
+ *
+ * WHY this is required: even though `${query}` is a bound parameter (safe from
+ * SQL-text injection), ParadeDB interprets the *value* as its own BM25 query
+ * DSL. Characters like `(`, `)`, `'`, `:`, `[`, `]`, `{`, `}`, `+`, `-`, `^`,
+ * `~`, `*`, `?`, `\`, `/`, `"` and boolean operators (`AND`/`OR`/`NOT`) are
+ * meaningful in that grammar; an unbalanced or stray one makes ParadeDB throw
+ * `PostgresError 42601 scanner_yyerror`, which (pre-fix) cascaded into a pool
+ * exhaustion outage. We strip the DSL-significant punctuation down to plain
+ * whitespace-separated terms so a query like `"foo) bar"` or `"o'brien"`
+ * becomes a harmless term list ParadeDB can always parse.
+ *
+ * Returns the cleaned term string, or an empty string when nothing usable
+ * remains (caller then short-circuits to an empty result).
+ */
+export function sanitizeBm25Query(query: string): string {
+  return query
+    // Replace every ParadeDB/Tantivy DSL-significant character with a space.
+    // Kept intentionally broad: we only need term tokens here, not operators.
+    .replace(/[()[\]{}:^~*?\\/"'+\-!&|<>=#@]/g, " ")
+    .split(/\s+/)
+    .map((t) => t.trim())
+    // Drop bare boolean keywords so they aren't parsed as BM25 operators.
+    .filter((t) => t.length > 0 && !/^(AND|OR|NOT|TO|IN)$/i.test(t))
+    .join(" ")
+    .trim();
+}
+
+/**
+ * Detect a ParadeDB/Postgres query-parse failure (Story 10.1, AC#1).
+ *
+ * 42601 is Postgres `syntax_error`; ParadeDB raises it (with `scanner_yyerror`)
+ * when the BM25 query value is unparseable. We match on the SQLSTATE code when
+ * present and fall back to the message text so the LIKE fallback still triggers
+ * on driver variants that don't surface `.code`.
+ */
+function isQueryParseError(err: unknown): boolean {
+  const code = (err as { code?: string } | null)?.code;
+  if (code === "42601") return true;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /scanner_yyerror|syntax error|42601/i.test(message);
+}
 
 async function isPgSearchAvailable(): Promise<boolean> {
   if (pgSearchAvailable !== null) return pgSearchAvailable;
@@ -82,7 +126,10 @@ export class Tier1BM25 {
     tags: string[],
     forgotten = false,
   ): Promise<void> {
-    await database().execute(sql`
+    // Story 10.1, AC#2/AC#4: index writes run on the isolated index pool so a
+    // slow/failing ParadeDB index-maintenance write can never starve the main
+    // read/search pool. The statement remains idempotent via ON CONFLICT.
+    await indexDatabase().execute(sql`
       INSERT INTO note_search (note_id, vault_id, title, body, tags, forgotten, updated_at)
       VALUES (${noteId}, ${vaultId}, ${title}, ${body}, ${tags as unknown as string}::text[], ${forgotten}, NOW())
       ON CONFLICT (note_id) DO UPDATE
@@ -95,9 +142,9 @@ export class Tier1BM25 {
     `);
   }
 
-  /** Remove a note from `note_search`. */
+  /** Remove a note from `note_search`. Runs on the isolated index pool. */
   async remove(noteId: string): Promise<void> {
-    await database().execute(sql`DELETE FROM note_search WHERE note_id = ${noteId}`);
+    await indexDatabase().execute(sql`DELETE FROM note_search WHERE note_id = ${noteId}`);
   }
 
   /**
@@ -108,7 +155,8 @@ export class Tier1BM25 {
    * before the first BM25 index refresh completed).
    */
   async setForgotten(noteId: string, forgotten: boolean): Promise<boolean> {
-    const rows = (await database().execute(sql`
+    // Write path → isolated index pool (Story 10.1, AC#4).
+    const rows = (await indexDatabase().execute(sql`
       UPDATE note_search
          SET forgotten = ${forgotten},
              updated_at = NOW()
@@ -134,38 +182,74 @@ export class Tier1BM25 {
     if (!query.trim()) return [];
 
     const hasExt = await isPgSearchAvailable();
-    const db = database();
 
     if (hasExt) {
-      // ParadeDB pg_search path. `note_id @@@ $query` runs the query against
-      // every BM25-indexed field on the row (title + body + tags) and
-      // `paradedb.score(note_id)` returns the BM25 rank score.
-      //
-      // Phase C Wave C3 / Story 2 — Cognee `forget()` primitive: exclude
-      // rows with `forgotten = true` so the user-marked notes never reach
-      // active retrieval. The note stays on disk; only the index hides it.
-      const vaultClause = vaultId ? sql`AND vault_id = ${vaultId}` : sql``;
-      const rows = (await db.execute(sql`
-        SELECT note_id, title, body, paradedb.score(note_id) AS score
-        FROM note_search
-        WHERE note_id @@@ ${query}
-          AND forgotten = FALSE
-          ${vaultClause}
-        ORDER BY score DESC
-        LIMIT ${topK}
-      `)) as unknown as { note_id: string; title: string; body: string; score: number }[];
-      return rows.map((r) => ({
-        noteId: r.note_id,
-        title: r.title,
-        score: Number(r.score),
-        snippet: trimSnippet(r.body, query),
-      }));
+      // Story 10.1, AC#1: sanitize the raw user string before it ever reaches
+      // the ParadeDB `@@@` BM25 DSL. If sanitization leaves nothing usable,
+      // fall through to LIKE (which tokenizes its own way) rather than running
+      // an empty BM25 query.
+      const safeQuery = sanitizeBm25Query(query);
+      if (safeQuery.length > 0) {
+        // ParadeDB pg_search path. `note_id @@@ $query` runs the query against
+        // every BM25-indexed field on the row (title + body + tags) and
+        // `paradedb.score(note_id)` returns the BM25 rank score.
+        //
+        // Phase C Wave C3 / Story 2 — Cognee `forget()` primitive: exclude
+        // rows with `forgotten = true` so the user-marked notes never reach
+        // active retrieval. The note stays on disk; only the index hides it.
+        const vaultClause = vaultId ? sql`AND vault_id = ${vaultId}` : sql``;
+        try {
+          const rows = (await database().execute(sql`
+            SELECT note_id, title, body, paradedb.score(note_id) AS score
+            FROM note_search
+            WHERE note_id @@@ ${safeQuery}
+              AND forgotten = FALSE
+              ${vaultClause}
+            ORDER BY score DESC
+            LIMIT ${topK}
+          `)) as unknown as {
+            note_id: string;
+            title: string;
+            body: string;
+            score: number;
+          }[];
+          return rows.map((r) => ({
+            noteId: r.note_id,
+            title: r.title,
+            score: Number(r.score),
+            snippet: trimSnippet(r.body, query),
+          }));
+        } catch (err) {
+          // Story 10.1, AC#1: defense-in-depth. Sanitization should already
+          // prevent parse errors, but any residual ParadeDB DSL failure must
+          // degrade to the LIKE path instead of throwing (and never re-fire
+          // into a pool-exhausting loop). Non-parse errors (connection, etc.)
+          // are real and must propagate.
+          if (!isQueryParseError(err)) throw err;
+          console.warn(
+            "[Tier1BM25] @@@ query parse failed; falling back to LIKE",
+            { query, safeQuery, err: err instanceof Error ? err.message : err },
+          );
+          // fall through to LIKE fallback below
+        }
+      }
     }
 
-    // Fallback — pg_search not installed. Naive scoring: title-hit +5,
-    // body-hit +1 per token. Good enough for staging environments still
-    // running on plain pgvector/pgvector:pg16. Same forgotten-filter as
-    // the pg_search path so search semantics stay consistent.
+    return this.likeFallbackSearch(query, topK, vaultId);
+  }
+
+  /**
+   * LIKE-based fallback search. Used when `pg_search` is unavailable AND as the
+   * deterministic degradation path when a ParadeDB `@@@` query fails to parse
+   * (Story 10.1, AC#1). Naive scoring: title-hit +5, body-hit +1 per token.
+   * Same forgotten-filter as the pg_search path so search semantics stay
+   * consistent.
+   */
+  private async likeFallbackSearch(
+    query: string,
+    topK: number,
+    vaultId?: string,
+  ): Promise<BM25Hit[]> {
     const tokens = [
       ...new Set(
         query
@@ -176,9 +260,12 @@ export class Tier1BM25 {
       ),
     ].slice(0, 10);
     if (tokens.length === 0) return [];
+    // Bind-parameter — body content cannot break the SQL text. `%` / `_` inside
+    // the token act as LIKE wildcards, which is harmless (over-matches at worst)
+    // and never throws, so no escaping is needed for crash-safety.
     const ilikePattern = `%${tokens[0]}%`;
     const vaultClause = vaultId ? sql`AND vault_id = ${vaultId}` : sql``;
-    const rows = (await db.execute(sql`
+    const rows = (await database().execute(sql`
       SELECT note_id, title, body
       FROM note_search
       WHERE (LOWER(title) LIKE ${ilikePattern} OR LOWER(body) LIKE ${ilikePattern})

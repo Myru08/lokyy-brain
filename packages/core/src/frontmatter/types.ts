@@ -28,6 +28,17 @@ export const DOC_TYPES = [
   // list. Parser/renderer (9-2) and MCP run_skill (9-3) consume it; this
   // type only adds the closed-list membership + schema validation.
   "skill",
+  // Epic 10 / Story 10.15 — custom/extended type enum. Three additional
+  // closed-list types so the user can classify reference material:
+  //   tool      → a software tool / utility (lives in 35_tools)
+  //   resource  → an external resource captured for later (lives in 30_captures)
+  //   reference → durable reference / lookup material (lives in 20_notes)
+  // Each adds only closed-list membership + a schema mirroring note.json
+  // (plus an optional `url` field). They auto-propagate into the conventions
+  // and folder maps via DOC_TYPES.
+  "tool",
+  "resource",
+  "reference",
 ] as const;
 
 export type DocType = (typeof DOC_TYPES)[number];

@@ -217,6 +217,54 @@ describe("validateFrontmatter — skill", () => {
   });
 });
 
+describe("validateFrontmatter — extended type enum (Story 10.15)", () => {
+  // tool / resource / reference mirror note.json (plus optional `url`).
+  for (const type of ["tool", "resource", "reference"] as const) {
+    describe(`type: ${type}`, () => {
+      const valid = {
+        ...VALID_NOTE,
+        type,
+        title: `A ${type}`,
+      };
+
+      it("accepts a minimal valid record", () => {
+        const result = validateFrontmatter(valid, type);
+        expect(result.valid).toBe(true);
+        expect(result.errors).toEqual([]);
+      });
+
+      it("accepts an optional url field and round-trips it", () => {
+        const withUrl = { ...valid, url: "https://example.com/x" };
+        expect(validateFrontmatter(withUrl, type).valid).toBe(true);
+
+        const serialized = serializeFrontmatter(withUrl, `# A ${type}\n`);
+        const reparsed = parseFrontmatter(serialized);
+        expect(reparsed.data).toEqual(withUrl);
+        expect(validateFrontmatter(reparsed.data, type).valid).toBe(true);
+      });
+
+      it("rejects a mismatched type const", () => {
+        const result = validateFrontmatter({ ...valid, type: "note" }, type);
+        expect(result.valid).toBe(false);
+        expect(result.errors.some((e) => e.instancePath === "/type")).toBe(true);
+      });
+
+      it("rejects missing required id", () => {
+        const { id: _id, ...without } = valid;
+        const result = validateFrontmatter(without as never, type);
+        expect(result.valid).toBe(false);
+        expect(result.errors.some((e) => e.keyword === "required")).toBe(true);
+      });
+
+      it("rejects an invalid ULID", () => {
+        const result = validateFrontmatter({ ...valid, id: "TOOSHORT" }, type);
+        expect(result.valid).toBe(false);
+        expect(result.errors.some((e) => e.keyword === "pattern")).toBe(true);
+      });
+    });
+  }
+});
+
 describe("validateFrontmatter — unknown type", () => {
   it("returns a synthetic enum error for unknown type", () => {
     const result = validateFrontmatter(VALID_NOTE, "alien" as never);

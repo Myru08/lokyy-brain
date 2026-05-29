@@ -59,6 +59,13 @@ export const ORIGIN_SCORES: Record<DocType, number> = {
   content: 0.6,
   // Skill-notes are reusable structural definitions, peers to workflows.
   skill: 0.5,
+  // Epic 10 / Story 10.15 — extended type enum.
+  //   tool      0.6 — durable utility records, between workflow and note.
+  //   resource  0.5 — captured external material, above raw capture noise.
+  //   reference 0.6 — durable lookup material, like content/intervention.
+  tool: 0.6,
+  resource: 0.5,
+  reference: 0.6,
   capture: 0.3,
 };
 
@@ -85,6 +92,13 @@ export const HALF_LIFE_DAYS: Record<DocType, number> = {
   // Skill-notes stay relevant as long as workflows — they are durable
   // reusable definitions, not time-bound content.
   skill: 365,
+  // Epic 10 / Story 10.15 — extended type enum.
+  //   tool      365 — durable utility records, like workflows.
+  //   resource  180 — captured material, like content; longer than raw capture.
+  //   reference 365 — durable lookup material, long-lived like workflows.
+  tool: 365,
+  resource: 180,
+  reference: 365,
 };
 
 /** Power-law decay exponent (Anderson & Schooler). */

@@ -325,3 +325,94 @@ export async function backlinks(targetNoteId: string): Promise<Backlink[]> {
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+/**
+ * Ein kaputter Wikilink: ein `[[ziel]]` in `sourceId`, dessen Ziel sich
+ * NICHT auf eine existierende Notiz auflösen lässt.
+ *
+ * `linkText` ist das rohe Link-Ziel wie geschrieben (Titel, Basename oder
+ * id — ohne `[[ ]]`, ohne Alias-Teil). `sourceTitle` ist der H1/Dateiname
+ * der linkenden Notiz, damit der Aufrufer (MCP / UI) nicht nochmal
+ * auflösen muss.
+ */
+export interface BrokenLink {
+  sourceId: string;
+  sourceTitle: string;
+  linkText: string;
+}
+
+/**
+ * Vault-weiter Scan: liefert jeden Wikilink, dessen Ziel ins Leere zeigt.
+ *
+ * Die Auflösung ist 1:1 dieselbe wie in {@link buildGraph}: ein `[[ziel]]`
+ * gilt als auflösbar, wenn es per **Titel → Alias → Basename → voller id**
+ * (case-insensitiv für die ersten drei, exakt für die id) eine existierende
+ * Notiz trifft. Ein Link ist genau dann „kaputt“, wenn KEINER dieser vier
+ * Wege greift — d.h. Links, die per Titel/Alias/Basename/id auflösen, werden
+ * niemals gemeldet.
+ *
+ * `forgotten`-Notizen (Cognee `forget()`) sind weder Quelle (ihre Links
+ * werden nicht geprüft) noch gültiges Ziel (sie stehen in keiner der
+ * Lookup-Maps) — exakt wie der Graph sie behandelt. Markdown-`.md`-Links
+ * sind nicht Teil dieses Checks; geprüft werden ausschließlich Wikilinks
+ * (`[[ ]]`), wie in den Acceptance Criteria gefordert.
+ */
+export async function findBrokenLinks(): Promise<BrokenLink[]> {
+  await pull();
+  const c = coreConfig();
+  const files = await walk(c.vaultDir);
+
+  // ── Pass 1: build the same resolution maps buildGraph uses ──────────────
+  // Title > alias > basename > full-id. forgotten notes never enter a map,
+  // so a link pointing at one is (correctly) reported as broken.
+  const byTitle = new Map<string, string>(); // lc title -> id
+  const byAlias = new Map<string, string>(); // lc alias -> id (first-write-wins)
+  const byBasename = new Map<string, string>(); // lc basename -> id (first-write-wins)
+  const byId = new Set<string>();
+  // Sources we still need to scan: id, title, and its wikilink targets.
+  const sources: { id: string; title: string; links: string[] }[] = [];
+
+  for (const abs of files) {
+    const relPath = relative(c.vaultDir, abs).split(sep).join("/");
+    const id = relPath.replace(/\.md$/, "");
+    const body = await readFile(abs, "utf8");
+
+    let forgotten = false;
+    try {
+      forgotten = isForgotten(parseFrontmatter(body).data);
+    } catch {
+      forgotten = false;
+    }
+    if (forgotten) continue;
+
+    const title = parseTitle(body, relPath);
+    byTitle.set(title.toLowerCase(), id);
+    for (const alias of parseAliases(body)) {
+      const key = alias.toLowerCase();
+      if (!byAlias.has(key)) byAlias.set(key, id);
+    }
+    const basename = (id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id).toLowerCase();
+    if (!byBasename.has(basename)) byBasename.set(basename, id);
+    byId.add(id);
+    sources.push({ id, title, links: parseLinks(body) });
+  }
+
+  // ── Pass 2: every wikilink target that resolves to nothing is broken ────
+  const out: BrokenLink[] = [];
+  for (const { id, title, links } of sources) {
+    for (const link of links) {
+      const lc = link.toLowerCase();
+      const resolved =
+        byTitle.get(lc) ??
+        byAlias.get(lc) ??
+        byBasename.get(lc) ??
+        (byId.has(link) ? link : null);
+      if (resolved) continue; // resolvable by title/alias/basename/id → not broken
+      out.push({ sourceId: id, sourceTitle: title, linkText: link });
+    }
+  }
+
+  return out.sort(
+    (a, b) => a.sourceId.localeCompare(b.sourceId) || a.linkText.localeCompare(b.linkText),
+  );
+}

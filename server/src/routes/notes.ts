@@ -2,19 +2,80 @@ import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import {
   findByUlid,
+  FrontmatterValidationError,
+  GitBackendError,
   getNote,
   isUlid,
   listNotes,
   logRetrieval,
+  MergeConflictError,
   parseFrontmatter,
   polishNote,
   PolishKeyMissingError,
   PolishLlmError,
+  PreCommitHookError,
   saveNote,
   serializeFrontmatter,
   type FrontmatterMap,
   type PolishProviderName,
 } from "@lokyy/core";
+
+/**
+ * Maps a save-pipeline error to a Hono JSON response (Story 10.6 AC#4).
+ *
+ * - Pre-commit hook / frontmatter validation → 422 with validation detail.
+ * - Real merge/rebase conflict             → 409 (client resolves).
+ * - Git backend (net/auth) failure         → 503; transient sets `retryable`.
+ * - Anything else                          → 409 (legacy fallback).
+ *
+ * Returns `null` when `err` isn't a recognized save error, so callers can
+ * apply their own handler-specific fallback shape.
+ */
+type SaveErrorResponse = {
+  status: 422 | 409 | 503;
+  body: Record<string, unknown>;
+};
+
+function mapSaveError(err: unknown): SaveErrorResponse | null {
+  if (err instanceof PreCommitHookError) {
+    return {
+      status: 422,
+      body: {
+        error: "frontmatter-invalid",
+        message: err.message,
+        detail: err.stderr || undefined,
+      },
+    };
+  }
+  if (err instanceof FrontmatterValidationError) {
+    return {
+      status: 422,
+      body: {
+        error: "frontmatter-invalid",
+        message: err.message,
+        errors: err.errors,
+      },
+    };
+  }
+  if (err instanceof MergeConflictError) {
+    return {
+      status: 409,
+      body: { error: "merge-conflict", message: err.message },
+    };
+  }
+  if (err instanceof GitBackendError) {
+    return {
+      status: 503,
+      body: {
+        error: "git-backend-unavailable",
+        message: err.message,
+        retryable: err.transient,
+        retryAfter: err.transient ? 5 : undefined,
+      },
+    };
+  }
+  return null;
+}
 
 /** /api/notes — Liste, Einzelnotiz, Speichern. */
 export const notesRoutes = new Hono();
@@ -78,7 +139,10 @@ notesRoutes.put("/:id{.+}", async (c) => {
   try {
     return c.json(await saveNote(id, body));
   } catch (err) {
-    // u.a. Merge-Konflikt -> 409, damit die PWA es als Konflikt behandeln kann
+    // Typisierte Git-/Frontmatter-Fehler -> passender Status (422/409/503).
+    const mapped = mapSaveError(err);
+    if (mapped) return c.json(mapped.body, mapped.status);
+    // Unbekannter Fehler -> 409 (Legacy-Fallback, PWA behandelt es als Konflikt).
     return c.json(
       { error: err instanceof Error ? err.message : "Speichern fehlgeschlagen" },
       409,
@@ -263,6 +327,12 @@ notesRoutes.post("/:id{.+}/ai-polish", async (c) => {
       rawPreserved: preserveRaw,
     });
   } catch (err) {
+    // Mirror the PUT handler's typed-error mapping (422/409/503), keeping the
+    // polish endpoint's `ok:false` envelope shape.
+    const mapped = mapSaveError(err);
+    if (mapped) {
+      return c.json({ ok: false, ...mapped.body }, mapped.status);
+    }
     return c.json(
       {
         ok: false,

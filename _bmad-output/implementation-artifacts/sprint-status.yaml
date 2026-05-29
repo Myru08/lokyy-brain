@@ -169,3 +169,34 @@ development_status:
   9-5-seed-skills-vault-scaffold: done
   9-6-settings-skills-tab-reads-real-skills: done
   epic-9-retrospective: optional
+
+  # ── Epic 10: MCP & API Hardening ───────────────────────────────────────────
+  # Quelle: 90_ideas/lokyy-mcp-gaps (ULID 01KSR6WV29T7SG6SK19PZX75MB), Session
+  # 2026-05-28/29 inkl. MCP-Total-Ausfall. Plan: epic-10-mcp-api-hardening.md
+  # Wellen: 1 Hot-Fix (10.1,10.2) → 2 Kurzfristig (10.3–10.8) → 3 Mittelfristig
+  # (10.9–10.14) → 4 Später (10.15–10.17).
+  epic-10: in-progress
+  # Welle 1+2 code-complete; build+tests grün. "review" = wartet auf QA/Live-Sign-off.
+  # 10.1 zusätzlich: Live-ParadeDB-Reproduktion (AC#6) noch offen — braucht laufenden Stack.
+  10-1-indexer-resilience-paradedb-circuit-breaker-pool: review
+  10-2-create-note-type-fidelity-and-folder-placement: review
+  10-3-mcp-delete-note-soft-delete: review
+  10-4-mcp-get-vault-conventions: review
+  10-5-skill-schema-doc-template-get-skill-schema: review
+  10-6-git-sync-idempotency-error-classification-branch-trim: review
+  10-7-structured-errors-consistent-mcp-dispatch: review
+  10-8-mcp-get-health: review
+  10-9-mcp-move-rename-note: review
+  10-10-mcp-bulk-create-update-notes: review
+  10-11-mcp-list-notes-frontmatter-filter: review
+  10-12-backend-write-queue-debounce: review   # independent review: "ship it", no critical findings
+  10-13-multi-vault-detection-setup-guard: review
+  10-14-mcp-create-folder: review
+  10-15-custom-or-extended-type-enum: review
+  10-16-mcp-backlinks-broken-links-tags: review
+  10-17-mcp-history-diff-validate: review
+  # Alle 17 Stories code-complete + build/tests grün. "review" = wartet auf Live-QA-Sign-off.
+  # Offene Live-Validierungen (brauchen laufenden Stack): 10.1 ParadeDB-Reproduktion (DB-gated),
+  # 10.13 setup-guard wiring in server/src/routes/{auth,setup}.ts (server-owned, dokumentiert),
+  # 10.10 echte Single-Commit-Atomarität braucht gitService-Batch-API (dokumentierter Rest-Gap).
+  epic-10-retrospective: optional

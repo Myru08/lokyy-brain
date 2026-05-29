@@ -32,6 +32,82 @@ import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 
+// ─── Vault-provisioning guard (Story 10.13, AC#3) ──────────────────────────
+//
+// NOTE ON WHERE VAULT ROWS ARE ACTUALLY CREATED:
+//   This file (`mcp/src/setup.ts`) is a CLIENT-CONFIG patcher only — it never
+//   touches the DB. The `vaults` table is written in two SERVER-owned routes
+//   (out of this agent's file ownership):
+//     • server/src/routes/auth.ts:106    — autoProvisionPersonalVault() on
+//                                           user creation (slug `personal-…`)
+//     • server/src/routes/setup.ts:242   — POST /api/setup/vault (guarded by
+//                                           isSetupComplete())
+//   The `vaults.slug` column is already UNIQUE at the DB level, so a duplicate
+//   *slug* is rejected outright. The residual hazard is two rows with
+//   different slugs that point at the SAME git remote (the real "identifier"
+//   of a vault). The helper below is the reusable, DB-free idempotency check
+//   the provisioning paths SHOULD consult before inserting. It lives here so
+//   the guard logic is testable and colocated with the setup story; wiring it
+//   into the server insert sites is a follow-up owned by the server agent.
+
+/** A pre-existing vault row, as the guard sees it. */
+export interface ExistingVault {
+  id: string;
+  slug: string;
+  gitRemote: string;
+}
+
+/** Decision returned by {@link guardVaultProvision}. */
+export type VaultProvisionDecision =
+  | { action: "create" }
+  | { action: "reuse"; vaultId: string; reason: "slug" | "git-remote" };
+
+/**
+ * Normalize a git remote so cosmetic differences (trailing slash, `.git`
+ * suffix, case) don't defeat the idempotency check.
+ */
+export function normalizeGitRemote(remote: string): string {
+  return remote
+    .trim()
+    .toLowerCase()
+    .replace(/\/+$/, "") // drop trailing slash(es) first…
+    .replace(/\.git$/, "") // …so a `repo.git/` suffix collapses to `repo`
+    .replace(/\/+$/, ""); // and tidy any slash left exposed by the `.git` strip
+}
+
+/**
+ * Idempotent vault-provisioning guard (AC#3).
+ *
+ * Given the vaults that already exist and the identifier of the vault about to
+ * be created, decide whether to CREATE a new row or REUSE an existing one.
+ * A match on `slug` (the DB's unique key) or on a non-empty, normalized
+ * `gitRemote` (the logical vault identifier) means "reuse" — preventing a
+ * second row for what is really the same vault.
+ *
+ * Pure + DB-free so the provisioning routes can call it right before their
+ * `insert(vaults)` and so it is unit-testable.
+ */
+export function guardVaultProvision(
+  existing: ExistingVault[],
+  desired: { slug: string; gitRemote: string },
+): VaultProvisionDecision {
+  const slug = desired.slug.trim();
+  const bySlug = existing.find((v) => v.slug === slug);
+  if (bySlug) {
+    return { action: "reuse", vaultId: bySlug.id, reason: "slug" };
+  }
+
+  const wantRemote = normalizeGitRemote(desired.gitRemote);
+  if (wantRemote) {
+    const byRemote = existing.find((v) => normalizeGitRemote(v.gitRemote) === wantRemote);
+    if (byRemote) {
+      return { action: "reuse", vaultId: byRemote.id, reason: "git-remote" };
+    }
+  }
+
+  return { action: "create" };
+}
+
 // ─── Lokyy-Brain canonical AI usage prompt ─────────────────────────────────
 // This is the SAME text the MCP server sends as `initialize.instructions`.
 // Used here for clients that don't auto-inject the MCP instructions field.
@@ -345,4 +421,19 @@ function collectEnv(args: Record<string, string | boolean>): Record<string, stri
   };
 }
 
-await main();
+// Run the interactive wizard ONLY when this module is the process entry point.
+// Importing it (e.g. from setup.test.ts to exercise the exported guard
+// helpers) must NOT kick off the wizard / block on a readline prompt.
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === new URL(`file://${resolve(entry)}`).href;
+  } catch {
+    return false;
+  }
+}
+
+if (isEntryPoint()) {
+  await main();
+}

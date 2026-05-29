@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/tool",
+  "type": "object",
+  "required": ["id", "type", "title", "created", "updated"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "type": { "const": "tool" },
+    "title": { "type": "string", "minLength": 1 },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "url": { "type": "string" },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
+  },
+  "additionalProperties": true
+}

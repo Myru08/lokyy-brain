@@ -7,6 +7,7 @@ import {
   type FrontmatterMap,
 } from "../frontmatter/index.js";
 import { FrontmatterValidationError } from "../errors/FrontmatterValidationError.js";
+import skillSchema from "../frontmatter/schemas/skill.json" with { type: "json" };
 
 /**
  * Skill parser + token-renderer for `@lokyy/core` (Epic 9 / Story 9-2).
@@ -263,4 +264,102 @@ export async function listSkillNotes(vaultRoot: string): Promise<SkillDef[]> {
     }
   }
   return skills;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.5 — get_skill_schema()
+ *
+ *  An agent that wants to author a skill needs the REAL skill-frontmatter
+ *  schema PLUS a working example PLUS per-field docs, so it can create a
+ *  valid skill in a SINGLE create_note({ type: "skill", ... }) call instead
+ *  of guessing the shape by trial & error. The MCP `get_skill_schema()` tool
+ *  (Agent C) returns this object verbatim.
+ *
+ *  No new template system is invented (AC#5): the example below is parsed by
+ *  the SAME `parseSkill`/`validateSkillInput` the runtime uses, and the
+ *  `{{var}}` substitution it shows is exactly what `renderPrompt` performs.
+ * ------------------------------------------------------------------ */
+
+/** One field's short doc (whether required + a one-line description). */
+export interface SkillFieldDoc {
+  field: string;
+  required: boolean;
+  description: string;
+}
+
+/** Return shape of `getSkillSchema()`. */
+export interface SkillSchemaInfo {
+  /** The actual `frontmatter/schemas/skill.json` JSON-Schema object. */
+  schema: Record<string, unknown>;
+  /** A complete, schema-valid example skill note (frontmatter + body). */
+  example: string;
+  /** Per-field docs for the skill frontmatter (required + optional fields). */
+  fieldDocs: SkillFieldDoc[];
+}
+
+/**
+ * A complete example skill note. It is schema-valid AND parses via
+ * `parseSkill`; the test `getSkillSchema()` proves both. The body uses the
+ * `{{var}}` tokens that `renderPrompt` substitutes (`{{today}}` is a built-in;
+ * `{{topic}}`/`{{days}}` come from `input_schema`), so the example doubles as
+ * a live demonstration of the substitution engine (AC#2).
+ */
+const EXAMPLE_SKILL = `---
+id: 01JXYZABCDEFGHJKMNPQRSTVWX
+type: skill
+title: Weekly Review
+skill_name: weekly-review
+description: Summarize the last N days of notes on a topic.
+execution: client
+allowed_tools:
+  - search_vault
+  - read_note
+input_schema:
+  properties:
+    days:
+      type: integer
+      default: 7
+    topic:
+      type: string
+created: "2026-05-24T10:00:00.000Z"
+updated: "2026-05-24T10:00:00.000Z"
+---
+Review the last {{days}} days of notes about {{topic}} (today is {{today}}).
+Cite related notes via [[wikilinks]].
+`;
+
+/** Required-field docs (the schema's `required` array). */
+const REQUIRED_FIELD_DOCS: SkillFieldDoc[] = [
+  { field: "id", required: true, description: "ULID (26 chars). Use create_note to have it generated." },
+  { field: "type", required: true, description: 'Must be the literal "skill".' },
+  { field: "title", required: true, description: "Human-readable title (non-empty)." },
+  { field: "skill_name", required: true, description: "Stable machine name, lowercase + digits + hyphens (^[a-z0-9-]+$). The handle run_skill uses." },
+  { field: "description", required: true, description: "One-line description of what the skill does (non-empty)." },
+  { field: "created", required: true, description: "ISO-8601 creation timestamp." },
+  { field: "updated", required: true, description: "ISO-8601 last-modified timestamp." },
+];
+
+/** Optional-field docs. */
+const OPTIONAL_FIELD_DOCS: SkillFieldDoc[] = [
+  { field: "execution", required: false, description: "'client' | 'server' (default 'client'). Phase 1 only runs 'client'; 'server' is schema-valid but rejected at runtime by run_skill." },
+  { field: "input_schema", required: false, description: "JSON-Schema-ish object describing prompt params. Its keys become {{tokens}} substituted by run_skill (renderPrompt); supports `default` and `required`." },
+  { field: "allowed_tools", required: false, description: "Advisory list of vault tools the skill expects (not enforced in Phase 1)." },
+  { field: "output", required: false, description: "Optional output hint { folder, type, path_pattern } for notes the skill produces." },
+  { field: "tags", required: false, description: "Optional free-form tag list." },
+];
+
+/**
+ * Return the official skill frontmatter schema, a working example, and
+ * per-field docs (Story 10.5, AC#1). Pure — no I/O. The `schema` is the live
+ * `skill.json` (no re-invented schema); the `example` is parseable via
+ * `parseSkill`/`validateSkillInput` (proven by the unit test, AC#3); the
+ * `fieldDocs` note that `input_schema` keys become `{{var}}` tokens that
+ * `renderPrompt` substitutes (AC#2).
+ */
+export function getSkillSchema(): SkillSchemaInfo {
+  return {
+    schema: skillSchema as Record<string, unknown>,
+    example: EXAMPLE_SKILL,
+    fieldDocs: [...REQUIRED_FIELD_DOCS, ...OPTIONAL_FIELD_DOCS],
+  };
 }

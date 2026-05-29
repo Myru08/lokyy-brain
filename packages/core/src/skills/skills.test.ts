@@ -8,7 +8,9 @@ import {
   renderPrompt,
   listSkillNotes,
   validateSkillInput,
+  getSkillSchema,
 } from "./index.js";
+import { validateFrontmatter, parseFrontmatter } from "../frontmatter/index.js";
 import { FrontmatterValidationError } from "../errors/FrontmatterValidationError.js";
 
 /**
@@ -197,5 +199,45 @@ body
     } finally {
       await rm(empty, { recursive: true, force: true });
     }
+  });
+});
+
+describe("getSkillSchema (Story 10.5)", () => {
+  it("returns the real skill.json schema, an example, and field docs", () => {
+    const info = getSkillSchema();
+    // schema is the live JSON-Schema (const type:"skill", ULID pattern, etc.)
+    expect((info.schema as { $id?: string }).$id).toBe("lokyy://frontmatter/skill");
+    const props = (info.schema as { properties: Record<string, unknown> }).properties;
+    expect(props.skill_name).toBeDefined();
+    expect(props.execution).toBeDefined();
+    // fieldDocs cover the required + key optional fields.
+    const fields = info.fieldDocs.map((f) => f.field);
+    for (const f of ["id", "type", "title", "skill_name", "description", "created", "updated"]) {
+      expect(fields).toContain(f);
+    }
+    expect(fields).toContain("execution");
+    expect(fields).toContain("input_schema");
+    // The {{var}} substitution note (renderPrompt) is reflected in fieldDocs.
+    const inputSchemaDoc = info.fieldDocs.find((f) => f.field === "input_schema");
+    expect(inputSchemaDoc?.description).toMatch(/\{\{/);
+  });
+
+  it("the example validates against the schema and parses as a real skill (AC#3)", () => {
+    const info = getSkillSchema();
+    // The example body is BELOW the frontmatter — validate its frontmatter.
+    const { data } = parseFrontmatter(info.example);
+    expect(validateFrontmatter(data, "skill").valid).toBe(true);
+    // And it round-trips through parseSkill without throwing.
+    const skill = parseSkill(info.example);
+    expect(skill.skill_name).toBe("weekly-review");
+    expect(skill.execution).toBe("client");
+  });
+
+  it("the example actually renders {{var}} tokens via renderPrompt", () => {
+    const info = getSkillSchema();
+    const skill = parseSkill(info.example);
+    const out = renderPrompt(skill, { topic: "AI", days: 14 });
+    expect(out).toContain("Review the last 14 days of notes about AI");
+    expect(out).toMatch(/today is \d{4}-\d{2}-\d{2}/);
   });
 });

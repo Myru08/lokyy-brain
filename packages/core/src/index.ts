@@ -34,7 +34,13 @@ export {
   move,
   lastModified,
   setupVaultFromForgejo,
+  // Story 10.17 — read-only note version-history + diff. Consumed by the MCP
+  // get_history / get_note_diff tools (Epic 10 Wave 4).
+  noteHistory,
+  noteDiff,
   type GitConfig,
+  type NoteHistoryEntry,
+  type NoteDiff,
 } from "./git/gitService.js";
 
 // ─── graphService (Story 1.4 + backlinks) ──────────────────────────────
@@ -42,12 +48,16 @@ export {
   buildGraph,
   backlinks,
   listTags,
+  // Story 10.16 — vault-wide broken-wikilink scan. Consumed by the MCP
+  // find_broken_links tool (Epic 10 Wave 4).
+  findBrokenLinks,
   parseAliases,
   parseLinks,
   parseTags,
   parseTitle,
   type Backlink,
   type TagSummary,
+  type BrokenLink,
 } from "./graph/graphService.js";
 
 // ─── Edge-Weights / Synaptic-Pruning (Phase C Wave C1 / Story 4) ────────
@@ -109,6 +119,9 @@ export {
 } from "./graph/community.js";
 
 // ─── notesService (Story 1.4) ───────────────────────────────────────────
+// NOTE: `moveEntry` + `createFolder` are part of the Story 10.10 wave-3 MCP
+// surface (used by the move/create-folder tools) — already exported here, so
+// the MCP-wiring agent imports them straight from `@lokyy/core`.
 export {
   listNotes,
   getNote,
@@ -118,7 +131,50 @@ export {
   createFolder,
   moveEntry,
   deleteEntry,
+  // Story 10.10 — bulk-ops: atomic (on validation) create/update of many
+  // notes in one call. Consumed by the MCP create_notes / update_notes tools.
+  createNotes,
+  updateNotes,
+  // Story 10.3 — soft-delete (trash) helper for the MCP delete_note tool.
+  trashEntry,
+  TRASH_FOLDER,
+  type CreateNoteOpts,
+  type TrashResult,
+  // Story 10.10 — bulk-op item + result shapes for the MCP layer.
+  type BulkCreateItem,
+  type BulkUpdateItem,
+  type BulkItemError,
+  type BulkResult,
 } from "./notes/notesService.js";
+
+// ─── Canonical type→folder map (Story 10.2) ─────────────────────────────
+// Single source of truth coupling a doc type to its vault folder. Used by
+// createNote (placement guard) and the MCP create_note tool for path
+// derivation; re-used by Story 10.4 (get_vault_conventions).
+export {
+  TYPE_FOLDER,
+  folderForType,
+  isDatedType,
+  derivePathForType,
+  checkPathMatchesType,
+  canonicalFolders,
+  type PathTypeCheck,
+} from "./notes/folderMap.js";
+
+export { TypeFolderMismatchError } from "./errors/TypeFolderMismatchError.js";
+
+// ─── Vault conventions (Story 10.4) ─────────────────────────────────────
+// Machine-readable folders/types/path-patterns + frontmatter summary, derived
+// from folderMap + DOC_TYPES (no drift). Served by the MCP get_vault_conventions
+// tool so first-time agents don't guess the structure.
+export {
+  getVaultConventions,
+  type VaultConventions,
+  type FolderConvention,
+  type TypeConvention,
+  type FrontmatterConvention,
+  type FrontmatterFieldConvention,
+} from "./conventions/index.js";
 
 // ─── findByUlid (ID-Badge / AI-Prompt feature) ──────────────────────────
 // Resolve a note by its stable frontmatter ULID. Used by:
@@ -171,6 +227,24 @@ export {
 
 export { FrontmatterValidationError } from "./errors/FrontmatterValidationError.js";
 
+// ─── Git-sync typed errors (Story 10.6) ─────────────────────────────────
+// Classify git stderr instead of collapsing every pull rejection into a
+// blanket "Merge-Konflikt". Route maps each to a distinct HTTP status.
+export {
+  GitSyncError,
+  PreCommitHookError,
+  MergeConflictError,
+  GitBackendError,
+  classifyGitError,
+} from "./errors/GitError.js";
+
+// `validateGitBranch` + its error are part of the config surface (AC#1):
+// callers (server config, admin hot-swap) trim/validate the branch token.
+export {
+  validateGitBranch,
+  GitBranchValidationError,
+} from "./util/coreConfig.js";
+
 // ─── Skill parser + token-renderer (Epic 9 / Story 9-2) ─────────────────
 // Parses `type: skill` notes into typed SkillDefs and renders their prompt
 // with `{{token}}` substitution. The MCP layer (9-3) consumes this surface;
@@ -180,9 +254,14 @@ export {
   renderPrompt,
   listSkillNotes,
   validateSkillInput,
+  // Story 10.5 — official skill schema + example + per-field docs, served by
+  // the MCP get_skill_schema tool so a skill can be authored in one call.
+  getSkillSchema,
   type SkillDef,
   type SkillExecution,
   type SkillOutput,
+  type SkillSchemaInfo,
+  type SkillFieldDoc,
 } from "./skills/index.js";
 
 // ─── Database (Story 1.8) ───────────────────────────────────────────────
@@ -284,7 +363,24 @@ export {
   queueSearchIndexRemove,
   // Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
   queueForgottenToggle,
+  // Story 10.1 quarantine API — consumed by get_health (Story 10.8). The
+  // health module reads these via the deep path; this barrel re-export is
+  // what the MCP layer + future callers import from `@lokyy/core`.
+  getQuarantinedNotes,
+  clearQuarantine,
+  getBreakerStateSize,
+  type QuarantinedNote,
 } from "./memory/index.js";
+
+// ─── Backend health snapshot (Story 10.8) ───────────────────────────────
+// Cheap, synchronous health view (sync state, pool max, vault id, quarantined
+// notes, breaker entries). Served by the MCP get_health tool for self-diagnosis.
+export {
+  getHealth,
+  type HealthSnapshot,
+  type HealthContext,
+  type SyncState,
+} from "./health/index.js";
 
 // ─── Model-Agnostic LLM Layer (Phase 0) ─────────────────────────────────
 export * from "./llm/index.js";

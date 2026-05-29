@@ -18,9 +18,50 @@ import {
   listSkillNotes,
   validateSkillInput,
   renderPrompt,
+  DOC_TYPES,
+  derivePathForType,
+  folderForType,
+  TypeFolderMismatchError,
+  // Story 10.3 — delete_note (soft via trashEntry, hard via deleteEntry).
+  trashEntry,
+  deleteEntry,
+  // Story 10.4 — get_vault_conventions.
+  getVaultConventions,
+  // Story 10.5 — get_skill_schema.
+  getSkillSchema,
+  // Story 10.8 — get_health.
+  getHealth,
+  // Story 10.9 — move_note / rename_note.
+  moveEntry,
+  backlinks,
+  // Story 10.10 — create_notes / update_notes (bulk).
+  createNotes,
+  updateNotes,
+  // Story 10.11 — list_notes (frontmatter filter via dataview).
+  queryNotes,
+  // Story 10.14 — create_folder.
+  createFolder,
+  // Story 10.16 — graph tools: get_backlinks, find_broken_links, get_tags.
+  // (backlinks is already imported above for the move_note warning.)
+  findBrokenLinks,
+  listTags,
+  // Story 10.17 — history/diff/validate tools.
+  noteHistory,
+  noteDiff,
+  validateFrontmatter,
+  parseFrontmatter,
   type CoreConfig,
+  type DocType,
+  type BulkCreateItem,
+  type BulkUpdateItem,
+  type DataviewQuery,
+  type DataviewRow,
+  type FrontmatterMap,
+  type ValidationErrorDetail,
 } from "@lokyy/core";
 import { canRead, canWrite, activeScope, loadScopes, ScopeViolation } from "./scopes.js";
+// Story 10.13 — multi-vault detection API (consumed by get_health.vault_warning).
+import { resolveVaultResolution } from "./resolveVaultId.js";
 
 /**
  * Lokyy-Brain Usage Conventions — auto-injected as system-prompt addendum
@@ -82,6 +123,15 @@ let activeVaultId = "";
 let activeVaultDir = "";
 
 /**
+ * Module-level vault-resolution warning captured by `initServerDeps`. Computed
+ * ONCE at boot (one detection call, kept off the per-request path so get_health
+ * stays cheap — AC#5/10.8-AC#6). `createServer()` reads this synchronously so
+ * the get_health handler can surface it as `vault_warning`. Stays `null` when
+ * there is no ambiguity, or when the best-effort detection call throws.
+ */
+let activeVaultWarning: string | null = null;
+
+/**
  * One-time global initialization. Wires core (gitService + DB + memory),
  * ensures the repo, loads scopes, and captures the vault-id for the handlers.
  * Run this ONCE per process before constructing any Server instance.
@@ -102,6 +152,27 @@ export async function initServerDeps(
   await loadScopes(coreConfig.vaultDir, agentId);
   activeVaultId = vaultId;
   activeVaultDir = coreConfig.vaultDir;
+
+  // Story 10.13/10.8 — multi-vault detection for get_health.vault_warning.
+  // Computed ONCE at boot (one detection call, kept off the per-request path so
+  // get_health stays cheap — AC#5/10.8-AC#6). Guarded: if the detection call
+  // throws (DB down at boot, etc.) we degrade to "no warning" so get_health and
+  // the rest of the server still come up rather than failing the whole boot.
+  try {
+    const resolution = await resolveVaultResolution(databaseUrl);
+    if (resolution.ambiguous) {
+      const list = resolution.candidates.map((c) => `${c.id} (${c.slug})`).join(", ");
+      activeVaultWarning =
+        `Multiple vault rows detected and no LOKYY_VAULT_ID pinned — using "${vaultId}". ` +
+        `Candidates: ${list}. Set LOKYY_VAULT_ID to pin one and silence this warning.`;
+    }
+  } catch (err) {
+    // Detection is best-effort; never block server boot on it.
+    console.error(
+      "[lokyy-mcp] vault-resolution detection failed (get_health.vault_warning disabled):",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /**
@@ -111,6 +182,12 @@ export async function initServerDeps(
  */
 export function createServer(): Server {
   const vaultId = activeVaultId;
+
+  // Story 10.13/10.8 — multi-vault detection for get_health.vault_warning.
+  // Resolved ONCE at boot inside `initServerDeps` (async path) and cached in the
+  // module-level `activeVaultWarning`; read synchronously here so each per-session
+  // `Server` surfaces the same warning without re-running detection.
+  const vaultWarning = activeVaultWarning;
 
   const server = new Server(
     { name: "lokyy-brain", version: "0.0.1" },
@@ -174,31 +251,35 @@ export function createServer(): Server {
       {
         name: "create_note",
         description:
-          "Create a new Lokyy-Brain note with SPEC-valid frontmatter (ULID, type, title, created, updated auto-filled). CALL THIS proactively whenever the user says 'save this', 'remember this', 'capture this' — don't ask, just do it. Also call after substantial conversations where insights worth preserving emerged. Choose `type` deliberately (note/capture/decision/project/task/...) — wrong type = wrong folder. Path pattern: '{folder}/{YYYY-MM-DD}-{slug}'.",
+          "Create a new Lokyy-Brain note with SPEC-valid frontmatter (ULID, type, title, created, updated auto-filled). CALL THIS proactively whenever the user says 'save this', 'remember this', 'capture this' — don't ask, just do it. Also call after substantial conversations where insights worth preserving emerged. Choose `type` deliberately — the canonical folder is derived from it. EASIEST: pass `type` + `slug` and the server derives the path (dated '{folder}/{YYYY-MM-DD}-{slug}' for captures/tasks, plain '{folder}/{slug}' otherwise). If you pass an explicit `path` it must sit under the type's canonical folder (sub-folders like '30_captures/youtube/' are fine) or you get a type-folder-mismatch error. Either `path` or `slug` is required.",
         inputSchema: {
           type: "object",
           properties: {
-            path: { type: "string", description: "Note id, e.g. '30_captures/youtube/foo'" },
+            path: {
+              type: "string",
+              description:
+                "Full note id under the type's canonical folder, e.g. '30_captures/youtube/foo'. Optional — omit it and pass `slug` to let the server derive the path from `type`.",
+            },
+            slug: {
+              type: "string",
+              description:
+                "Short kebab-case name. With `type`, the server derives the canonical path (preferred over a hand-built `path`).",
+            },
             body: { type: "string", description: "Markdown body (optional)" },
             title: { type: "string" },
             type: {
               type: "string",
-              enum: [
-                "note",
-                "capture",
-                "project",
-                "task",
-                "decision",
-                "meeting",
-                "customer",
-                "workflow",
-                "intervention",
-                "content",
-              ],
+              // Single source of truth — enum mirrors DOC_TYPES from @lokyy/core
+              // (incl. `skill`, `peer`) so the tool surface never drifts.
+              enum: [...DOC_TYPES],
               default: "note",
             },
+            frontmatter: {
+              type: "object",
+              description:
+                "Extra frontmatter fields merged into the note (e.g. for type=skill supply `skill_name` + `description`; for type=peer supply `peer_type`). Lets a fully-valid typed note be created in ONE call.",
+            },
           },
-          required: ["path"],
         },
       },
       {
@@ -239,14 +320,263 @@ export function createServer(): Server {
           required: ["skill_name"],
         },
       },
+      {
+        name: "delete_note",
+        description:
+          "Delete a Lokyy-Brain note. Default (`hard` omitted/false) is a SAFE soft-delete: the note is MOVED to '99_archive/_trash/{YYYY-MM-DD}-{slug}' (recoverable) — use this to clean up mis-filed notes you created without asking the user to touch the filesystem. Pass `hard: true` only for a permanent removal (drops the note + its search-index row). `path` is the note id without .md. Returns { deleted: {...}, mode: 'soft'|'hard' }; an unknown note returns { error: 'not-found', path }.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Note id (path without .md), e.g. '20_notes/draft'.",
+            },
+            hard: {
+              type: "boolean",
+              description:
+                "false/omitted = soft-delete (move to trash, recoverable); true = permanent delete.",
+              default: false,
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "get_vault_conventions",
+        description:
+          "Get the Lokyy-Brain vault conventions — machine-readable folders (with purpose + path-pattern), the closed doc-type list (each type's meaning + canonical folder), the frontmatter contract (required fields), and the wikilink/tag/ULID rules. CALL THIS FIRST when you start working with the vault so you place notes in the right folder with the right type instead of guessing (mis-placement is the #1 mistake). Takes no arguments.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_skill_schema",
+        description:
+          "Get the official skill frontmatter schema, a complete working example skill (frontmatter + body), and per-field docs. CALL THIS before authoring a vault skill so you get it right in ONE call: pass the example shape to create_note({ type: 'skill', ... }) — no create-then-fix loop. Note: a skill's `input_schema` keys become {{var}} tokens that run_skill substitutes (via renderPrompt) when the skill is invoked. Takes no arguments.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_health",
+        description:
+          "Get the Lokyy-Brain backend health snapshot — git/Forgejo sync_state, last successful index time, pending writes, DB pool used/max, the active vault_id, quarantined notes (the circuit-breaker parked them after repeated index failures), and breaker_entries. CALL THIS to self-diagnose when writes/searches behave oddly, before assuming a tool is broken. Cheap and synchronous (no heavy DB queries); fields the backend cannot cheaply observe are reported as null/'unknown' rather than guessed. `vault_warning` is set (non-null) only when the server booted against an ambiguous multi-vault DB without LOKYY_VAULT_ID pinned. Takes no arguments.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "move_note",
+        description:
+          "Move a Lokyy-Brain note to a new path (re-file it into another folder). The note's stable ULID is preserved (only the path changes), so wikilinks-by-id and resolve_by_id keep working. Use this to re-organize instead of create-new-and-delete-old. `from`/`to` are note ids WITHOUT the .md extension. Returns { moved: { from, to } }; a missing source returns { error: 'not-found', path }. NOTE: existing path-based [[wikilinks]] pointing at the OLD path are NOT rewritten — if any backlinks are detected they come back in a `warning` field for you to fix manually.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            from: { type: "string", description: "Current note id (path without .md), e.g. '20_notes/draft'." },
+            to: { type: "string", description: "Destination note id (path without .md), e.g. '50_decisions/draft'." },
+          },
+          required: ["from", "to"],
+        },
+      },
+      {
+        name: "rename_note",
+        description:
+          "Rename a Lokyy-Brain note in place (same parent folder, new slug) — a move that keeps the directory. The ULID is preserved. `path` is the current note id (without .md); `new_slug` is the new last path segment (no slashes, no .md). Returns { moved: { from, to } }; missing source → { error: 'not-found', path }. Like move_note, path-based backlinks are not rewritten and surface in `warning`.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Current note id (path without .md), e.g. '20_notes/old-name'." },
+            new_slug: {
+              type: "string",
+              description: "New final segment (kebab-case, no '/' and no '.md'), e.g. 'new-name'.",
+            },
+          },
+          required: ["path", "new_slug"],
+        },
+      },
+      {
+        name: "create_notes",
+        description:
+          "Create MANY Lokyy-Brain notes in one atomic call — use this instead of N separate create_note calls when scaffolding a project (avoids N× latency and partial states). All items are validated up front; if ANY item is invalid, NOTHING is written and you get back the offending item + reason. Each item: { id (path without .md), body?, type?, title? }. Per-item write-scope is enforced. Returns the bulk result: { ok:true, notes:[...] } on success, or { ok:false, error:{ id, reason, message }, committed:[...] } where `committed` honestly lists any ids written before a mid-batch git failure.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            notes: {
+              type: "array",
+              description: "Notes to create.",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", description: "Note id (path without .md), e.g. '10_projects/foo/overview'." },
+                  body: { type: "string", description: "Markdown body (optional)." },
+                  title: { type: "string" },
+                  type: { type: "string", enum: [...DOC_TYPES], default: "note" },
+                },
+                required: ["id"],
+              },
+            },
+          },
+          required: ["notes"],
+        },
+      },
+      {
+        name: "update_notes",
+        description:
+          "Update (full-body replace) MANY existing Lokyy-Brain notes in one atomic call. All targets are validated up front; if any target is missing/invalid, NOTHING is written and you get the offending item + reason. Each item: { id (path without .md), body }. Each note's on-disk id + created are preserved and updated is bumped (same rules as update_note). Per-item write-scope is enforced. Returns the same bulk-result shape as create_notes.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            updates: {
+              type: "array",
+              description: "Notes to update.",
+              items: {
+                type: "object",
+                properties: {
+                  id: { type: "string", description: "Existing note id (path without .md)." },
+                  body: { type: "string", description: "New markdown body (full replace)." },
+                },
+                required: ["id", "body"],
+              },
+            },
+          },
+          required: ["updates"],
+        },
+      },
+      {
+        name: "list_notes",
+        description:
+          "List Lokyy-Brain notes matching a frontmatter filter — use this to get 'all notes with type:X and status:Y' in ONE call instead of reading each note. Filter keys (all optional, ANDed): `type`, `folder` (path prefix), `tag` (frontmatter or inline #tag), `status` (frontmatter equality), `updated_after` (ISO date/datetime; keeps notes whose `updated` is strictly greater). Pagination via `limit` (default 50) + `offset` (default 0). Out-of-scope notes are dropped (same read-scope as list_tree/search_vault). Returns { notes:[{ noteId, title, type, ...projected frontmatter }], total, hasMore, limit, offset }.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            filter: {
+              type: "object",
+              properties: {
+                type: { type: "string", description: "Doc type equality, e.g. 'decision'." },
+                folder: { type: "string", description: "Folder path prefix, e.g. '50_decisions'." },
+                tag: { type: "string", description: "A tag the note must carry (frontmatter `tags` or inline #tag)." },
+                status: { type: "string", description: "Frontmatter `status` equality, e.g. 'open'." },
+                updated_after: {
+                  type: "string",
+                  description: "ISO date/datetime; keep notes whose `updated` is strictly after this.",
+                },
+              },
+            },
+            limit: { type: "number", description: "Page size (default 50).", default: 50 },
+            offset: { type: "number", description: "Rows to skip (default 0).", default: 0 },
+          },
+        },
+      },
+      {
+        name: "create_folder",
+        description:
+          "Create a folder in the Lokyy-Brain vault explicitly (drops a .gitkeep so git tracks the empty dir) — instead of waiting for the first note to materialize it. Pass `with_readme: true` to also drop a README note (type:note) inside so the folder has a landing page. `path` is the folder path (no trailing slash). Write-scope is enforced. Returns { created: path } (and { readme } when a README was created); scope errors are structured.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Folder path, e.g. '10_projects/new-project'." },
+            with_readme: {
+              type: "boolean",
+              description: "Also create a README note (type:note) in the folder. Default false.",
+              default: false,
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "get_backlinks",
+        description:
+          "List the Lokyy-Brain notes that link TO a given note — 'who links here', each with a short surrounding-text context snippet. Use this to understand a note's incoming graph before editing or refactoring it. Wikilink resolution rule (same as the graph): a `[[target]]` counts as a backlink when `target` resolves to this note by TITLE → ALIAS → BASENAME → full id (case-insensitive for the first three, exact for the id). `path` is the note id WITHOUT the .md extension. Only source notes within YOUR read-scope are returned (out-of-scope linkers are dropped). Returns { backlinks: [{ noteId, title, context }] }.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Target note id (path without .md), e.g. '20_notes/topic'.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "find_broken_links",
+        description:
+          "Vault health check: scan EVERY note for wikilinks (`[[ ]]`) whose target resolves to NOTHING. A link is broken when it matches no note by TITLE → ALIAS → BASENAME → id (the same resolution the graph uses); links that resolve any of those four ways are never reported. Only Markdown wikilinks are checked (`.md` links are out of scope). CALL THIS to audit vault integrity before/after a big re-org. Source notes outside YOUR read-scope are dropped from the report. Takes no arguments. Returns { broken_links: [{ sourceId, sourceTitle, linkText }] }.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_tags",
+        description:
+          "List EVERY tag in the Lokyy-Brain vault with its usage count — both frontmatter `tags: [...]` and inline `#tag`, aggregated and sorted by count (desc). Use this to discover the vault's tag vocabulary before tagging a new note (reuse an existing tag instead of inventing a near-duplicate) or to find the notes behind a tag. Takes no arguments. Returns { tags: [{ tag, count, noteIds }] }.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "get_history",
+        description:
+          "READ-ONLY version history of a single Lokyy-Brain note (git commits that touched it), newest first. Use this to see when/why a note changed before editing, or to find the SHA to feed into get_note_diff. `path` is the note id WITHOUT .md. `limit` caps the number of commits (default 50). An empty array means the note is untracked / never committed — not an error. Read-scope is enforced on `path`. Returns { history: [{ sha, date, message }] }.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Note id (path without .md), e.g. '20_notes/topic'.",
+            },
+            limit: {
+              type: "number",
+              description: "Max commits to return (default 50, newest first).",
+              default: 50,
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "get_note_diff",
+        description:
+          "READ-ONLY unified diff for a single Lokyy-Brain note. With `sha`: shows that commit's patch for the note (pair this with get_history to inspect a past change). Without `sha`: shows the UNCOMMITTED working-tree diff for the note (sha: null). Never mutates the working tree. `path` is the note id WITHOUT .md. A bad/unknown sha surfaces as a descriptive error. Read-scope is enforced on `path`. Returns { sha, diff } (diff may be an empty string when there is nothing to show).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Note id (path without .md), e.g. '20_notes/topic'.",
+            },
+            sha: {
+              type: "string",
+              description: "Commit SHA to diff against. Omit for the uncommitted working-tree diff.",
+            },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "validate_note",
+        description:
+          "Validate a Lokyy-Brain note's frontmatter against its doc-type JSON schema WITHOUT writing anything — use this to pre-flight a note before create_note/update_note so you fix frontmatter issues in advance instead of hitting a pre-commit-hook rejection. Provide EITHER `path` (an existing note id without .md — the server reads it) OR `body` (a raw markdown string with a `---` frontmatter block — the server parses it). The `type` is taken from the note's own frontmatter; if it is missing/unknown you get a structured validation error listing the allowed types. Read-scope is enforced when `path` is given. Returns { valid: boolean, errors: [{ instancePath, keyword, message, params }] }.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: {
+              type: "string",
+              description: "Existing note id (path without .md) to read + validate.",
+            },
+            body: {
+              type: "string",
+              description: "Raw markdown (with a `---` frontmatter block) to validate directly.",
+            },
+          },
+        },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
     const name = req.params.name;
-    const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+    // Story 10.7 — wrap the WHOLE dispatch. An exception thrown around the
+    // switch itself (e.g. DB-pool exhaustion while acquiring a connection)
+    // would otherwise escape to the SDK and surface as the useless generic
+    // "Error occurred during tool execution". Catch it here and return a
+    // classified `tool-execution-failed` instead, never leaking the raw
+    // Postgres/stacktrace text to the client (it is logged server-side).
     try {
-      switch (name) {
+      const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+      try {
+        switch (name) {
         case "read_note": {
           const path = String(args.path);
           if (!canRead(`${path}.md`)) throw new ScopeViolation("read", path);
@@ -281,13 +611,48 @@ export function createServer(): Server {
           return text({ tree: filterTreeByScope(tree) });
         }
         case "create_note": {
-          const path = String(args.path);
+          // AC#1/2/4 — resolve type (strict, no silent coerce) + path
+          // (derive from type+slug when omitted). Pure function so the
+          // decision logic is unit-testable without a live DB/git server.
+          const resolved = resolveCreateNoteInput(args);
+          if (!resolved.ok) return text(resolved.error);
+          const { type, path } = resolved;
+
           if (!canWrite(`${path}.md`)) throw new ScopeViolation("write", path);
-          const note = await createNote(path, args.body as string | undefined, {
-            title: args.title as string | undefined,
-            type: (args.type as Parameters<typeof createNote>[2] extends { type?: infer T } ? T : never) ?? "note",
-          });
-          return text({ created: note, commitPrefix: activeScope().commitPrefix });
+
+          // AC#6 — pass extra frontmatter through so a typed note with extra
+          // required fields (skill_name/description, peer_type, …) is valid
+          // and listable in ONE call (no create→update workaround).
+          const extra =
+            args.frontmatter && typeof args.frontmatter === "object"
+              ? (args.frontmatter as Record<string, unknown>)
+              : undefined;
+
+          try {
+            const note = await createNote(
+              path,
+              args.body as string | undefined,
+              {
+                title: args.title as string | undefined,
+                type,
+                ...(extra ? { extra } : {}),
+                // AC#5 — couple folder to type; contradictory paths throw
+                // TypeFolderMismatchError, surfaced as a structured error.
+                validatePlacement: true,
+              },
+            );
+            return text({ created: note, commitPrefix: activeScope().commitPrefix });
+          } catch (err) {
+            if (err instanceof TypeFolderMismatchError) {
+              return text({
+                error: "type-folder-mismatch",
+                type: err.type,
+                expectedFolder: err.expectedFolder,
+                gotPath: err.gotPath,
+              });
+            }
+            throw err;
+          }
         }
         case "update_note": {
           const path = String(args.path);
@@ -356,14 +721,176 @@ export function createServer(): Server {
             ...(skill.output !== undefined ? { output: skill.output } : {}),
           });
         }
-        default:
-          return text({ error: "unknown-tool", name });
+        case "delete_note": {
+          // Story 10.3. Default soft-delete (move to trash); hard=true removes.
+          const path = String(args.path ?? "");
+          const hard = args.hard === true;
+          if (!canWrite(`${path}.md`)) throw new ScopeViolation("write", path);
+          // Structured not-found up front (AC#3): both helpers would throw on a
+          // missing source, so we check existence here to return the typed shape
+          // instead of letting it fall through to the error wrapper.
+          const existing = await getNote(path);
+          if (!existing) return text({ error: "not-found", path });
+          if (hard) {
+            await deleteEntry(path, "note");
+            return text({ deleted: { path }, mode: "hard" });
+          }
+          const trashed = await trashEntry(path);
+          return text({ deleted: trashed, mode: "soft" });
+        }
+        case "get_vault_conventions": {
+          // Story 10.4 — pure, no scope gate (it describes the vault shape, not
+          // any note's content).
+          return text(getVaultConventions());
+        }
+        case "get_skill_schema": {
+          // Story 10.5 — pure schema + example + field docs.
+          return text(getSkillSchema());
+        }
+        case "get_health": {
+          // Story 10.8 — vault_id from server context; everything core cannot
+          // cheaply read stays null/"unknown" (no guessing, AC#2/AC#6).
+          // Story 10.13 — vault_warning is the boot-time multi-vault detection
+          // result (null when unambiguous or detection was unavailable).
+          return text(getHealth({ vaultId, vaultWarning }));
+        }
+        case "move_note": {
+          // Story 10.9 — re-file a note; ULID stays stable (moveEntry only
+          // invalidates the path-cache). Same path-based scope gate as the
+          // other write tools, on BOTH endpoints.
+          const from = String(args.from ?? "");
+          const to = String(args.to ?? "");
+          return moveNote(from, to);
+        }
+        case "rename_note": {
+          // Story 10.9 — rename == move within the same parent folder. Derive
+          // the destination id by swapping the last path segment for new_slug.
+          const path = String(args.path ?? "");
+          const newSlug = String(args.new_slug ?? "");
+          const to = renameTarget(path, newSlug);
+          return moveNote(path, to);
+        }
+        case "create_notes": {
+          // Story 10.10 — atomic bulk create via core `createNotes` (validate-all
+          // then write-all). Per-item write-scope BEFORE handing to core, so an
+          // out-of-scope item is rejected without writing anything.
+          const items = normalizeBulkCreate(args.notes);
+          const scopeErr = firstWriteScopeViolation(items.map((i) => i.id));
+          if (scopeErr) throw scopeErr;
+          const result = await createNotes(items);
+          return text(result);
+        }
+        case "update_notes": {
+          // Story 10.10 — atomic bulk update via core `updateNotes`. Same
+          // per-item write-scope pre-check as create_notes.
+          const items = normalizeBulkUpdate(args.updates);
+          const scopeErr = firstWriteScopeViolation(items.map((i) => i.id));
+          if (scopeErr) throw scopeErr;
+          const result = await updateNotes(items);
+          return text(result);
+        }
+        case "list_notes": {
+          // Story 10.11 — frontmatter filter via dataview `queryNotes`, then the
+          // same read-scope filter list_tree/search_vault apply, then paginate.
+          const filter = (args.filter ?? {}) as Record<string, unknown>;
+          const limit = clampInt(args.limit, 50, 1, 200);
+          const offset = clampInt(args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+          return text(await listNotes(filter, limit, offset));
+        }
+        case "create_folder": {
+          // Story 10.14 — explicit folder (.gitkeep) + optional README note.
+          const path = String(args.path ?? "");
+          const withReadme = args.with_readme === true;
+          // Scope-gate the folder the SAME way filterTreeByScope decides an
+          // empty folder is writable: an agent may have a `.md`-only write
+          // scope (e.g. `**/*.md`), under which the bare `.gitkeep` path won't
+          // match — so accept if EITHER the `.gitkeep` OR the folder's
+          // representative `.md` is writable. Without this, a legitimately
+          // write-scoped agent is wrongly denied create_folder.
+          if (!canWriteFolder(path)) throw new ScopeViolation("write", path);
+          await createFolder(path);
+          if (!withReadme) return text({ created: path });
+          // README sits inside the folder; gate it on its own .md path.
+          const readmeId = `${path}/README`;
+          if (!canWrite(`${readmeId}.md`)) throw new ScopeViolation("write", readmeId);
+          const readme = await createNote(readmeId, undefined, {
+            type: "note",
+            title: "README",
+          });
+          return text({ created: path, readme });
+        }
+        case "get_backlinks": {
+          // Story 10.16 — incoming wikilinks ("who links here") with context.
+          // Read-scope on the TARGET note, plus the same read-scope drop the
+          // search/tree tools apply to each SOURCE note (an out-of-scope note
+          // must not be revealed as a linker).
+          const path = String(args.path ?? "");
+          if (!canRead(`${path}.md`)) throw new ScopeViolation("read", path);
+          const refs = await backlinks(path);
+          const filtered = refs.filter((b) => canRead(`${b.noteId}.md`));
+          return text({ backlinks: filtered });
+        }
+        case "find_broken_links": {
+          // Story 10.16 — vault-wide broken-wikilink scan (health check). Drop
+          // any finding whose SOURCE note is outside this agent's read-scope.
+          const broken = await findBrokenLinks();
+          const filtered = broken.filter((b) => canRead(`${b.sourceId}.md`));
+          return text({ broken_links: filtered });
+        }
+        case "get_tags": {
+          // Story 10.16 — all tags + counts (frontmatter + inline). The tag
+          // aggregate is vault-wide metadata, not per-note content; no scope
+          // gate (mirrors get_vault_conventions' "describes the vault" stance).
+          const tags = await listTags();
+          return text({ tags });
+        }
+        case "get_history": {
+          // Story 10.17 — read-only git history for a single note. Read-scope
+          // on the path; limit is clamped by core's noteHistory.
+          const path = String(args.path ?? "");
+          if (!canRead(`${path}.md`)) throw new ScopeViolation("read", path);
+          const limit = args.limit === undefined ? undefined : Number(args.limit);
+          const history = await noteHistory(`${path}.md`, limit);
+          return text({ history });
+        }
+        case "get_note_diff": {
+          // Story 10.17 — read-only diff (committed sha, or working-tree when
+          // sha omitted). Read-scope on the path.
+          const path = String(args.path ?? "");
+          if (!canRead(`${path}.md`)) throw new ScopeViolation("read", path);
+          const sha = typeof args.sha === "string" && args.sha.length > 0 ? args.sha : undefined;
+          const diff = await noteDiff(`${path}.md`, sha);
+          return text(diff);
+        }
+        case "validate_note": {
+          // Story 10.17 — frontmatter validation without writing. Source the
+          // markdown from `path` (read + scope-gated) OR a raw `body` string.
+          return validateNote(args);
+        }
+          default:
+            return text({ error: "unknown-tool", name });
+        }
+      } catch (err) {
+        // Story 10.7 — per-tool structured errors keep their format, additively
+        // tagged with `error_class` so callers can decide retry vs. give-up.
+        if (err instanceof ScopeViolation) {
+          // Scope/validation issues are the caller's to fix → user-error.
+          return text({
+            error: "scope_violation",
+            action: err.action,
+            path: err.path,
+            error_class: "user-error",
+          });
+        }
+        // Anything else reaching here is an unclassified handler throw; route it
+        // through the classifier so the raw backend message never leaks and a
+        // class is always present (replaces the old raw-message fallback).
+        return text(classifyToolError(err, name));
       }
-    } catch (err) {
-      if (err instanceof ScopeViolation) {
-        return text({ error: "scope_violation", action: err.action, path: err.path });
-      }
-      return text({ error: err instanceof Error ? err.message : String(err) });
+    } catch (outer) {
+      // Infra exception thrown AROUND the switch (pool acquire, etc.) — the SDK
+      // would otherwise emit its generic error. Classify + return structured.
+      return text(classifyToolError(outer, name));
     }
   });
 
@@ -392,6 +919,302 @@ export async function start(server: Server): Promise<void> {
   console.error("[lokyy-mcp] connected via stdio");
 }
 
+/* ------------------------------------------------------------------ *
+ *  Story 10.7 — structured-error classification for MCP dispatch.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Retry taxonomy returned on EVERY error so a calling agent can decide
+ * "transient → retry" vs. "permanent/user-error → don't":
+ *   - transient   : retryable backend hiccup (pool exhaustion, timeout, lock).
+ *   - permanent   : non-retryable backend failure (schema/programmer error).
+ *   - user-error  : caller's fault (bad input, scope, not-found).
+ *   - backend     : backend failure of unknown transience (default).
+ */
+export type ErrorClass = "transient" | "permanent" | "user-error" | "backend";
+
+/** The structured shape for an otherwise-unclassified tool failure. */
+export interface ToolExecutionError {
+  error: "tool-execution-failed";
+  error_class: ErrorClass;
+  message: string;
+  tool: string;
+  retry_after_ms?: number;
+}
+
+/**
+ * Map an arbitrary thrown value to a structured `tool-execution-failed`
+ * payload (Story 10.7). The raw message is LOGGED server-side (stderr) but
+ * NEVER returned verbatim — clients get only a short, classified message so a
+ * Postgres error / stacktrace can't leak (AC#3). Heuristics key off the error
+ * name/message; anything unrecognised defaults to `backend`.
+ */
+export function classifyToolError(err: unknown, tool: string): ToolExecutionError {
+  const raw = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  // Log the full detail server-side (stderr — the stdio transport uses stdout
+  // for the protocol, so stderr is safe for diagnostics).
+  console.error(`[lokyy-mcp] tool "${tool}" failed:`, raw);
+
+  const hay = raw.toLowerCase();
+  // Pool exhaustion / connection limits → transient backend, advise a retry.
+  if (
+    hay.includes("pool") ||
+    hay.includes("too many connections") ||
+    hay.includes("connection terminated") ||
+    hay.includes("timeout") ||
+    hay.includes("etimedout") ||
+    hay.includes("econnrefused") ||
+    hay.includes("econnreset")
+  ) {
+    return {
+      error: "tool-execution-failed",
+      error_class: "transient",
+      message: "Backend temporarily unavailable (connection/pool). Retry shortly.",
+      tool,
+      retry_after_ms: 1000,
+    };
+  }
+  // Lock contention (git lock held) → transient, slightly longer backoff.
+  if (hay.includes("lock") || hay.includes("locked")) {
+    return {
+      error: "tool-execution-failed",
+      error_class: "transient",
+      message: "Backend busy (lock contention). Retry shortly.",
+      tool,
+      retry_after_ms: 500,
+    };
+  }
+  // Everything else: classified as backend, generic short message (no leak).
+  return {
+    error: "tool-execution-failed",
+    error_class: "backend",
+    message: "Tool execution failed. See server logs for details.",
+    tool,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.9 — move_note / rename_note helpers.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Shared body for `move_note` and `rename_note`. Both are a `moveEntry(_, _,
+ * "note")` with write-scope on BOTH endpoints and a structured `not-found`
+ * when the source is missing. Returns the `text()`-wrapped tool payload.
+ *
+ * Backlink handling (AC#3) is best-effort + non-blocking: after the move
+ * succeeds we look up notes that still wikilink the OLD path and, if any,
+ * attach them as a `warning` (no rewrite — that is a later story). The lookup
+ * is wrapped so it can never turn a successful move into a failure.
+ */
+async function moveNote(from: string, to: string) {
+  if (!canWrite(`${from}.md`)) throw new ScopeViolation("write", from);
+  if (!canWrite(`${to}.md`)) throw new ScopeViolation("write", to);
+  // Structured not-found up front (moveEntry would otherwise throw a git error).
+  const existing = await getNote(from);
+  if (!existing) return text({ error: "not-found", path: from });
+
+  await moveEntry(from, to, "note");
+
+  // AC#3 — surface (do NOT rewrite) any path-based backlinks to the old id.
+  let warning: string | undefined;
+  try {
+    const refs = await backlinks(from);
+    if (refs.length > 0) {
+      const ids = refs.map((b) => b.noteId);
+      warning =
+        `${refs.length} note(s) still link to the old path "${from}" — ` +
+        `path-based wikilinks were NOT rewritten. Update them manually: ${ids.join(", ")}.`;
+    }
+  } catch {
+    // Backlink scan is advisory; never fail the move on it.
+  }
+
+  return text({ moved: { from, to }, ...(warning ? { warning } : {}) });
+}
+
+/**
+ * Derive the rename destination id: keep the parent folder, swap the final
+ * segment for `new_slug`. A slug with a slash or trailing/leading separators
+ * is normalized to its basename so a rename can never silently re-file.
+ */
+function renameTarget(path: string, newSlug: string): string {
+  const slug = newSlug.replace(/\.md$/, "").split("/").filter(Boolean).pop() ?? newSlug;
+  const idx = path.lastIndexOf("/");
+  return idx === -1 ? slug : `${path.slice(0, idx)}/${slug}`;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.17 — validate_note helper.
+ * ------------------------------------------------------------------ */
+
+/** A single validation error, mirrored from core's `ValidationErrorDetail`. */
+type ValidateNoteError = ValidationErrorDetail;
+
+/**
+ * Body for the `validate_note` tool (Story 10.17). Sources the markdown from
+ * either an existing note `path` (read + read-scope gated) or a raw `body`
+ * string, parses its frontmatter, and validates it against the type's schema
+ * via core's pure `validateFrontmatter` (no write, no git mutation).
+ *
+ *   - `path` wins when both are supplied (an explicit on-disk note is the more
+ *     specific intent).
+ *   - The doc `type` is taken from the note's OWN frontmatter; a missing/
+ *     unknown type is surfaced by `validateFrontmatter` itself (it returns a
+ *     structured `enum`/type error rather than throwing).
+ *   - Neither `path` nor `body` → a `valid:false` with a synthetic input error,
+ *     so the caller always gets the documented `{ valid, errors }` shape.
+ *
+ * Returns the `text()`-wrapped tool payload.
+ */
+async function validateNote(args: Record<string, unknown>) {
+  const path = typeof args.path === "string" && args.path.length > 0 ? args.path : undefined;
+  const rawBody = typeof args.body === "string" ? args.body : undefined;
+
+  let markdown: string;
+  if (path !== undefined) {
+    // Same read-scope gate as the other path-based read tools.
+    if (!canRead(`${path}.md`)) throw new ScopeViolation("read", path);
+    const note = await getNote(path);
+    if (!note) return text({ valid: false, errors: [], error: "not-found", path });
+    markdown = note.body;
+  } else if (rawBody !== undefined) {
+    markdown = rawBody;
+  } else {
+    const errors: ValidateNoteError[] = [
+      {
+        instancePath: "",
+        keyword: "required",
+        message: "Provide either `path` or `body`.",
+        params: {},
+      },
+    ];
+    return text({ valid: false, errors });
+  }
+
+  const data: FrontmatterMap = parseFrontmatter(markdown).data;
+  // `type` drives schema selection; validateFrontmatter returns a structured
+  // enum error for a missing/unknown type (no throw), so pass it through as-is.
+  const type = data.type as DocType;
+  const result = validateFrontmatter(data, type);
+  return text({ valid: result.valid, errors: result.errors });
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.10 — bulk create/update helpers.
+ * ------------------------------------------------------------------ */
+
+/** Coerce the `notes` arg into `BulkCreateItem[]` (id + body + per-item opts). */
+function normalizeBulkCreate(raw: unknown): BulkCreateItem[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr.map((n) => {
+    const o = (n ?? {}) as Record<string, unknown>;
+    const id = String(o.id ?? o.path ?? "");
+    const type = isDocType(o.type) ? o.type : undefined;
+    const title = typeof o.title === "string" ? o.title : undefined;
+    return {
+      id,
+      ...(typeof o.body === "string" ? { body: o.body } : {}),
+      // validatePlacement mirrors single create_note (Story 10.2) so bulk
+      // items obey the same type→folder coupling; core validates it pre-flight.
+      opts: { ...(type ? { type } : {}), ...(title ? { title } : {}), validatePlacement: true },
+    };
+  });
+}
+
+/** Coerce the `updates` arg into `BulkUpdateItem[]` (id + new body). */
+function normalizeBulkUpdate(raw: unknown): BulkUpdateItem[] {
+  const arr = Array.isArray(raw) ? raw : [];
+  return arr.map((n) => {
+    const o = (n ?? {}) as Record<string, unknown>;
+    return { id: String(o.id ?? o.path ?? ""), body: String(o.body ?? "") };
+  });
+}
+
+/**
+ * Per-item write-scope pre-check for the bulk tools. Returns the FIRST
+ * `ScopeViolation` (so the whole batch is rejected before any write — keeping
+ * the bulk op all-or-nothing on scope, consistent with its atomicity), or null
+ * when every id is writable.
+ */
+function firstWriteScopeViolation(ids: string[]): ScopeViolation | null {
+  for (const id of ids) {
+    if (!canWrite(`${id}.md`)) return new ScopeViolation("write", id);
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 10.11 — list_notes helper.
+ * ------------------------------------------------------------------ */
+
+/** Clamp an unknown numeric arg into [min,max], falling back to `dflt`. */
+function clampInt(raw: unknown, dflt: number, min: number, max: number): number {
+  const n = Math.floor(Number(raw));
+  if (!Number.isFinite(n)) return dflt;
+  return Math.max(min, Math.min(max, n));
+}
+
+/**
+ * Run a frontmatter-filtered note listing (Story 10.11). Maps the MCP filter
+ * onto `queryNotes` (folder→`from`, type/status→`where` equality, tag→special
+ * `where.tag`), then applies post-filters `queryNotes` does not natively
+ * support (`updated_after` is a comparison, not equality), the read-scope drop
+ * (same gate as list_tree/search_vault), and limit/offset pagination.
+ *
+ * `queryNotes` has no offset and only does equality, so we over-fetch with a
+ * generous limit and slice locally — the vault is small enough that this is
+ * cheaper than adding a comparison operator to the shared dataview engine
+ * (which AC#5 forbids touching).
+ */
+async function listNotes(
+  filter: Record<string, unknown>,
+  limit: number,
+  offset: number,
+) {
+  const where: Record<string, unknown> = {};
+  if (typeof filter.type === "string") where.type = filter.type;
+  if (typeof filter.status === "string") where.status = filter.status;
+  if (typeof filter.tag === "string") where.tag = filter.tag;
+
+  const q: DataviewQuery = {
+    ...(typeof filter.folder === "string" ? { from: filter.folder } : {}),
+    where,
+    // Project the fields callers expect plus `updated` (needed for the
+    // updated_after comparison). queryNotes always guarantees id + title.
+    select: ["title", "type", "status", "updated"],
+    sort: "updated",
+    order: "desc",
+    limit: 200, // MAX_LIMIT — over-fetch, then scope-drop + paginate locally.
+  };
+
+  const rows = await queryNotes(q);
+
+  const updatedAfter =
+    typeof filter.updated_after === "string" ? Date.parse(filter.updated_after) : NaN;
+
+  const matched = rows.filter((row) => {
+    const id = String(row.id ?? "");
+    if (!id) return false;
+    if (!canRead(`${id}.md`)) return false; // read-scope drop (AC#2).
+    if (Number.isFinite(updatedAfter)) {
+      const u = typeof row.updated === "string" ? Date.parse(row.updated) : NaN;
+      if (!Number.isFinite(u) || u <= updatedAfter) return false;
+    }
+    return true;
+  });
+
+  const total = matched.length;
+  const page = matched.slice(offset, offset + limit).map(projectRow);
+  return { notes: page, total, hasMore: offset + limit < total, limit, offset };
+}
+
+/** Re-key a dataview row to the documented `{ noteId, ...projected }` shape. */
+function projectRow(row: DataviewRow): Record<string, unknown> {
+  const { id, ...rest } = row;
+  return { noteId: id, ...rest };
+}
+
 /**
  * Canonical on-disk path of a skill note (without VAULT_DIR prefix), used for
  * the read-scope gate. Skills live under `70_pai/skills/` per the SPEC; the
@@ -400,6 +1223,69 @@ export async function start(server: Server): Promise<void> {
  */
 function skillNotePath(skillName: string): string {
   return `70_pai/skills/${skillName}.md`;
+}
+
+/**
+ * Runtime type-guard for the closed DOC_TYPES list (Story 10.2, AC#1/2).
+ * The MCP SDK does not validate `arguments` against the inputSchema enum, so
+ * the create_note handler relies on this explicit check to reject unknown
+ * types instead of silently coercing them to "note".
+ */
+function isDocType(value: unknown): value is DocType {
+  return typeof value === "string" && (DOC_TYPES as readonly string[]).includes(value);
+}
+
+/** Structured error payloads `create_note` returns before touching disk. */
+export type CreateNoteInputError =
+  | { error: "invalid-type"; got: unknown; allowed: string[] }
+  | { error: "missing-path"; message: string; expectedFolder: string };
+
+/** Resolved type + target path for a valid `create_note` request. */
+export type CreateNoteInput =
+  | { ok: true; type: DocType; path: string }
+  | { ok: false; error: CreateNoteInputError };
+
+/**
+ * Resolve the `type` + `path` for a `create_note` call (Story 10.2,
+ * AC#1/2/4). Pure + side-effect-free so it is unit-testable without a live
+ * DB/git server.
+ *
+ *   - `type`: a present-but-unknown value is REJECTED (`invalid-type`),
+ *     never coerced to "note". Absent → "note".
+ *   - `path`: a non-empty `path` wins; else derive `{folder}/{…}` from
+ *     `type` + `slug`; else `missing-path`. (Placement of an explicit path
+ *     is validated downstream by `createNote({ validatePlacement:true })`.)
+ */
+export function resolveCreateNoteInput(
+  args: Record<string, unknown>,
+): CreateNoteInput {
+  const rawType = args.type;
+  let type: DocType;
+  if (rawType === undefined || rawType === null) {
+    type = "note";
+  } else if (isDocType(rawType)) {
+    type = rawType;
+  } else {
+    return {
+      ok: false,
+      error: { error: "invalid-type", got: rawType, allowed: [...DOC_TYPES] },
+    };
+  }
+
+  if (typeof args.path === "string" && args.path.length > 0) {
+    return { ok: true, type, path: args.path };
+  }
+  if (typeof args.slug === "string" && args.slug.length > 0) {
+    return { ok: true, type, path: derivePathForType(type, args.slug) };
+  }
+  return {
+    ok: false,
+    error: {
+      error: "missing-path",
+      message: "Provide either `path` or `slug`.",
+      expectedFolder: folderForType(type),
+    },
+  };
 }
 
 function text(payload: unknown) {
@@ -420,6 +1306,17 @@ interface TreeNode {
   children: TreeNode[];
 }
 
+/**
+ * Whether the agent may write into a folder. A folder is created via a
+ * `.gitkeep`, but an agent with a `.md`-only write scope (e.g. `**\/*.md`)
+ * won't match the bare `.gitkeep` path — so we also accept the folder's
+ * representative `_.md`. Single source of truth shared by `filterTreeByScope`
+ * (empty-folder surfacing) and `create_folder` (Story 10.14).
+ */
+function canWriteFolder(path: string): boolean {
+  return canWrite(`${path}/.gitkeep`) || canWrite(`${path}/_.md`);
+}
+
 function filterTreeByScope(nodes: TreeNode[]): TreeNode[] {
   const out: TreeNode[] = [];
   for (const n of nodes) {
@@ -434,7 +1331,7 @@ function filterTreeByScope(nodes: TreeNode[]): TreeNode[] {
       // before any notes land there.
       if (kids.length > 0) {
         out.push({ ...n, children: kids });
-      } else if (canWrite(`${n.path}/.gitkeep`) || canWrite(`${n.path}/_.md`)) {
+      } else if (canWriteFolder(n.path)) {
         out.push({
           ...n,
           name: `${n.name} (empty)`,

@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { validateGitBranch } from "@lokyy/core";
 
 /**
  * Zentrale Konfiguration. Liest aus process.env (Node lädt .env ab v20.6
@@ -23,7 +24,10 @@ export const config = {
   /** absoluter Pfad zum Vault-Working-Clone */
   vaultDir: resolve(process.env.VAULT_DIR ?? "../vault"),
   gitRemote: process.env.GIT_REMOTE ?? "",
-  gitBranch: process.env.GIT_BRANCH ?? "main",
+  // AC#1 (Story 10.6): trim + validate to a single clean ref token at config
+  // load. A bad GIT_BRANCH (`"main "`, two tokens) now fails loudly here
+  // instead of producing `fatal: Cannot rebase onto multiple branches` in pull.
+  gitBranch: validateGitBranch(process.env.GIT_BRANCH ?? "main"),
   gitAuthorName: process.env.GIT_AUTHOR_NAME ?? "lokyy-brain",
   gitAuthorEmail: process.env.GIT_AUTHOR_EMAIL ?? "lokyy-brain@localhost",
   supadataApiKey: process.env.SUPADATA_API_KEY ?? "",

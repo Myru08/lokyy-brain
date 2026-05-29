@@ -24,6 +24,10 @@ import interventionSchema from "./schemas/intervention.json" with { type: "json"
 import contentSchema from "./schemas/content.json" with { type: "json" };
 import peerSchema from "./schemas/peer.json" with { type: "json" };
 import skillSchema from "./schemas/skill.json" with { type: "json" };
+// Epic 10 / Story 10.15 — extended type enum (tool / resource / reference).
+import toolSchema from "./schemas/tool.json" with { type: "json" };
+import resourceSchema from "./schemas/resource.json" with { type: "json" };
+import referenceSchema from "./schemas/reference.json" with { type: "json" };
 
 /**
  * Vault frontmatter utility for lokyy-brain.
@@ -51,6 +55,9 @@ const validators = new Map<DocType, ValidateFunction>([
   ["content", ajv.compile(contentSchema as object)],
   ["peer", ajv.compile(peerSchema as object)],
   ["skill", ajv.compile(skillSchema as object)],
+  ["tool", ajv.compile(toolSchema as object)],
+  ["resource", ajv.compile(resourceSchema as object)],
+  ["reference", ajv.compile(referenceSchema as object)],
 ]);
 
 const baseValidator = ajv.compile(baseSchema as object);
