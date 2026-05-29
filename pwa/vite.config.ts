@@ -19,11 +19,12 @@ export default defineConfig({
       registerType: "autoUpdate",
       manifest: {
         // Phase D Wave D1 / Story 3 — Manifest alignment with the brand
-        // palette (theme.ts) + the actually-shipped logo. Previous values
-        // pointed at icon-192.png / icon-512.png which never existed in
-        // pwa/public/, leaving the installable PWA without an icon. Using
-        // logo-large.png (a 512×512 PNG that already ships) for both
-        // declared sizes — browsers downsample as needed.
+        // palette (theme.ts) + dedicated brand PWA icons. The icons below
+        // are the brain HEAD emblem on the brand background (#13171D),
+        // generated at native sizes into pwa/public/: icon-192.png,
+        // icon-512.png (purpose "any") and icon-maskable-512.png (maskable
+        // safe-zone variant). No downsampling — each declared size ships
+        // its own asset.
         name: "Lokyy Brain",
         short_name: "Lokyy",
         description: "Knowledge-Tool mit Forgejo als Wahrheit.",
@@ -34,9 +35,9 @@ export default defineConfig({
         scope: "/",
         orientation: "portrait-primary",
         icons: [
-          { src: "/logo-large.png", sizes: "192x192", type: "image/png", purpose: "any" },
-          { src: "/logo-large.png", sizes: "512x512", type: "image/png", purpose: "any" },
-          { src: "/logo-large.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+          { src: "/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
         share_target: {
           action: "/api/pipes/share",
