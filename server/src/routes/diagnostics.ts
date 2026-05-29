@@ -10,6 +10,7 @@ import {
   getLlmProviders,
   getLlmRouting,
   getMemoryProvider,
+  listNotes,
   maskApiKey,
   sleepAgent,
 } from "@lokyy/core";
@@ -307,6 +308,51 @@ async function checkSearchCombined(): Promise<DiagnosticCheck> {
   });
 }
 
+// ── note_search corpus fill-level ─────────────────────────────────────────────
+// The Tier-1 BM25 fast path only serves notes present in `note_search`. That
+// table is filled solely by the save/create/move hooks, so notes that pre-date
+// the BM25 fix (or a fresh clone) are missing → search for them silently
+// degrades to the slow in-memory rebuild. This check compares the row count to
+// the total note count and warns the operator to run the reindex when the index
+// is empty or far below the note count.
+//
+// Defensive: a short-lived single-connection probe (same shape as
+// checkPostgres). If `note_search` doesn't exist yet (pre-migration) the count
+// query throws → guard() turns it into an error check, not a 500.
+async function checkSearchIndexFill(): Promise<DiagnosticCheck> {
+  return guard("search", "note_search befüllt", async () => {
+    // Total notes on disk — the corpus we WANT indexed.
+    const totalNotes = (await listNotes()).length;
+
+    let sql: ReturnType<typeof postgres> | null = null;
+    try {
+      sql = postgres(config.databaseUrl, { max: 1, idle_timeout: 2 });
+      const rows = await sql<{ n: string }[]>`SELECT COUNT(*)::text AS n FROM note_search`;
+      const indexed = Number(rows[0]?.n ?? "0");
+
+      // Empty, or indexed far below the note count → the fast path is mostly
+      // useless. "Far below" = under 50% of the notes (a small natural lag from
+      // in-flight saves is fine). Both → warn (degraded, not broken: the slow
+      // fallback still returns results).
+      const low = totalNotes > 0 && indexed < totalNotes * 0.5;
+      if (indexed === 0 || low) {
+        return {
+          ok: false,
+          severity: "warn" as const,
+          detail: `Suchindex leer/veraltet → 'Suchindex neu aufbauen' drücken (${indexed}/${totalNotes} Notizen indexiert).`,
+        };
+      }
+      return {
+        ok: true,
+        severity: "info" as const,
+        detail: `${indexed}/${totalNotes} Notizen im note_search-Index.`,
+      };
+    } finally {
+      if (sql) await sql.end().catch(() => {});
+    }
+  });
+}
+
 // ── Sleep-agent scheduler + last run ──────────────────────────────────────────
 async function checkSleepAgent(): Promise<DiagnosticCheck[]> {
   const armed = await guard("sleep-agent", "Scheduler armiert", async () => {
@@ -601,6 +647,7 @@ diagnosticsRoutes.get("/", async (c) => {
       checkSearchTier1().then((x) => [x]),
       checkSearchTier2().then((x) => [x]),
       checkSearchCombined().then((x) => [x]),
+      checkSearchIndexFill().then((x) => [x]),
       checkSleepAgent(),
       checkMcpHealth().then((x) => [x]),
       checkGitVault().then((x) => [x]),

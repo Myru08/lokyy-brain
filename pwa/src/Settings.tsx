@@ -500,6 +500,18 @@ export function Settings({
   const [backfillError, setBackfillError] = useState<string>();
   const [backfillLastRun, setBackfillLastRun] = useState<string | null>(null);
 
+  // Vault maintenance — BM25 search-index reindex (Story: search-reindex).
+  // Populates `note_search` for every note so the Tier-1 fast path serves
+  // pre-existing notes instead of hitting the slow in-memory fallback.
+  const [reindexState, setReindexState] = useState<
+    "idle" | "running" | "ok" | "fail"
+  >("idle");
+  const [reindexError, setReindexError] = useState<string>();
+  const [reindexResult, setReindexResult] = useState<{
+    indexed: number;
+    ms: number;
+  } | null>(null);
+
   // ── Diagnose-Tab — per-service self-test suite (Observability story) ──
   //   - `diagnostics` is the last successful `api.getDiagnostics()` payload.
   //   - `diagState` reflects the in-flight run; auto-runs once on first open.
@@ -648,6 +660,20 @@ export function Settings({
     } catch (err) {
       setBackfillState("fail");
       setBackfillError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function runReindex() {
+    setReindexState("running");
+    setReindexError(undefined);
+    setReindexResult(null);
+    try {
+      const result = await api.reindexSearch();
+      setReindexResult(result);
+      setReindexState("ok");
+    } catch (err) {
+      setReindexState("fail");
+      setReindexError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -2133,6 +2159,69 @@ export function Settings({
                 ? new Date(backfillLastRun).toLocaleString("de-DE")
                 : "noch nie (manuell)"}
               .
+            </p>
+          </Section>
+
+          <Section title="Suchindex (BM25)">
+            <p
+              style={{
+                color: C.textDim,
+                fontSize: 13,
+                margin: "0 0 12px 0",
+              }}
+            >
+              Der schnelle Tier-1-Suchindex (<code style={{ color: C.gold }}>
+                note_search
+              </code>
+              ) wird nur beim Speichern/Anlegen/Verschieben einer Note
+              befüllt. Notizen, die es vor dieser Funktion schon gab, sind
+              daher nicht im Index — ihre Suche fällt auf den langsamen
+              Fallback zurück. Der Reindex baut den Index einmalig aus allen
+              Notes neu auf. Inhalt bleibt unverändert.
+            </p>
+
+            <div
+              style={{
+                display: "flex",
+                gap: 12,
+                alignItems: "center",
+                flexWrap: "wrap",
+              }}
+            >
+              <button
+                onClick={() => void runReindex()}
+                disabled={reindexState === "running"}
+                style={mobileBtn(btn, isMobile)}
+              >
+                {reindexState === "running" && (
+                  <Loader2 size={14} className="sw-spin" />
+                )}
+                Suchindex neu aufbauen
+              </button>
+              {reindexState === "ok" && reindexResult && (
+                <span style={{ color: C.ok, fontSize: 13 }}>
+                  <Check size={14} /> {reindexResult.indexed} Notizen indexiert
+                  {" "}({reindexResult.ms} ms)
+                </span>
+              )}
+              {reindexState === "fail" && (
+                <span style={{ color: C.err, fontSize: 13 }}>
+                  <X size={14} /> {reindexError}
+                </span>
+              )}
+            </div>
+
+            <p
+              style={{
+                color: C.textFaint,
+                fontSize: 12,
+                marginTop: 8,
+                marginBottom: 0,
+              }}
+            >
+              Danach liefert die Suche auch für ältere Notes sofort
+              Ergebnisse. Den Füllstand zeigt der Diagnose-Tab unter{" "}
+              <em>„note_search befüllt"</em>.
             </p>
           </Section>
 

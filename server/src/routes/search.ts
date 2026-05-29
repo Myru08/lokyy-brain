@@ -8,7 +8,11 @@ import {
   getLlmRouting,
   getMemoryProvider,
   getNote,
+  getTier1BM25,
   hybridSearch,
+  isForgotten,
+  listNotes,
+  parseFrontmatter,
   type HybridOpts,
   type RetrieveHit,
   type SearchOpts,
@@ -31,6 +35,65 @@ import {
 const DEFAULT_VAULT = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 
 export const searchRoutes = new Hono();
+
+/**
+ * POST /api/search/reindex — one-time (re)build of the `note_search` BM25
+ * corpus from every note on disk.
+ *
+ * WHY: the Tier-1 BM25 fast path (commit 6b01360) only serves notes that are
+ * present in `note_search`. That table is populated solely by the
+ * save/create/move hooks (`queueSearchIndexRefresh`), so notes that pre-date
+ * the fix were never indexed — search for them falls back to the slow
+ * in-memory rebuild. This endpoint walks `listNotes()` and upserts each note
+ * through the SAME `Tier1BM25.upsert` path the live hooks use (reused via
+ * `getTier1BM25()`), so the corpus matches the on-disk frontmatter exactly.
+ *
+ * Defensive by design: per-note failures are caught and counted, never thrown
+ * — a single poison note can't 500 the whole run. Returns `{ indexed, ms }`.
+ *
+ * Gating: mounted under `/api` alongside the other `/api/search/*` routes and
+ * subject to the same setup gate as its siblings (see server/src/index.ts).
+ */
+searchRoutes.post("/search/reindex", async (c) => {
+  const started = Date.now();
+  const bm25 = getTier1BM25();
+
+  // `listNotes()` returns summaries WITHOUT body — we need the full body +
+  // frontmatter to derive the `forgotten` flag and feed the BM25 corpus, so
+  // each note is re-read via `getNote()`. Same derivation as the save-path
+  // hook in notesService (title, body, tags, isForgotten(frontmatter)).
+  const summaries = await listNotes();
+
+  let indexed = 0;
+  let failed = 0;
+  for (const summary of summaries) {
+    try {
+      const note = await getNote(summary.id);
+      if (!note) {
+        // Listed but unreadable (deleted between list + read) — skip, count
+        // as a soft failure rather than aborting the run.
+        failed += 1;
+        continue;
+      }
+      const forgotten = isForgotten(parseFrontmatter(note.body).data);
+      await bm25.upsert(
+        note.id,
+        DEFAULT_VAULT,
+        note.title,
+        note.body,
+        note.tags,
+        forgotten,
+      );
+      indexed += 1;
+    } catch {
+      // Per-note errors are isolated: a malformed note must not break the
+      // whole reindex. Counted so the response still reflects partial success.
+      failed += 1;
+    }
+  }
+
+  return c.json({ indexed, failed, ms: Date.now() - started });
+});
 
 searchRoutes.post("/search", async (c) => {
   const { query, limit, tagFilter, folderPrefix } = await c.req.json<{

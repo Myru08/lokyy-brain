@@ -516,6 +516,19 @@ export const api = {
       }>,
     ),
 
+  /**
+   * Rebuild the Tier-1 BM25 search index (`note_search`) from every note on
+   * disk. One-shot maintenance action exposed in the Wartung tab: pre-existing
+   * notes that were never touched since the BM25 fast-path landed aren't in the
+   * corpus and hit the slow fallback — this populates them. Returns the number
+   * of notes (re)indexed and the wall-clock duration.
+   */
+  reindexSearch: (): Promise<{ indexed: number; ms: number }> =>
+    fetch(`${BASE}/search/reindex`, {
+      method: "POST",
+      credentials: "include",
+    }).then(json<{ indexed: number; ms: number }>),
+
   pipes: () => fetch(`${BASE}/pipes`).then(json<PipeJob[]>),
 
   /* --- Vault-Struktur: Datei-Baum + Operationen --- */
