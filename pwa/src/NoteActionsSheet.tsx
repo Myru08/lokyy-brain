@@ -69,6 +69,13 @@ export interface NoteActionsSheetProps {
   onCopyPrompt: () => void;
   onForget: () => void;
   onUnforget: () => void;
+  /**
+   * Story: Real "Notiz löschen" — hard-delete the open note (DISTINCT from
+   * Forget). Resolves on success, rejects with an Error whose `.message` is
+   * shown inline in the confirm row. App.tsx owns the actual delete + editor/
+   * tab cleanup. Optional — when omitted the delete row is hidden.
+   */
+  onDeleteNote?: () => Promise<void>;
 }
 
 interface RowProps {
@@ -234,16 +241,128 @@ export function NoteActionsSheet(props: NoteActionsSheetProps) {
             <Row
               icon={<Trash2 size={20} />}
               label="Forget"
-              sublabel="Aus Suchen ausblenden (bleibt im Vault)"
+              sublabel="Nur aus Suchen ausblenden (Notiz bleibt im Vault)"
               danger
               onClick={props.onForget}
               closeOnClick
               onAfter={onClose}
             />
           )}
+          {/* Story: Real "Notiz löschen" — separate danger row with its own
+              two-step affirmative confirm. Distinct from Forget above: this
+              removes the file from the vault for good. */}
+          {props.onDeleteNote && (
+            <DeleteRow onDeleteNote={props.onDeleteNote} onClose={onClose} />
+          )}
         </div>
       </section>
     </>
+  );
+}
+
+/**
+ * Story: Real "Notiz löschen" — mobile two-step delete row.
+ *
+ * Owns its own deliberate two-step affirmative state (NOT a single
+ * window.confirm). Idle shows a "Notiz löschen" danger row; tapping it swaps
+ * the row in-place into an explicit "Wirklich löschen?" prompt with two
+ * touch-sized buttons — [Endgültig löschen] / [Abbrechen]. Only the second
+ * deliberate tap fires the parent `onDeleteNote`. Errors surface inline; the
+ * row never closes the sheet on its own until the delete actually succeeds
+ * (App unmounts the note view, which tears the sheet down with it).
+ */
+function DeleteRow({
+  onDeleteNote,
+  onClose,
+}: {
+  onDeleteNote: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const [step, setStep] = useState<"idle" | "confirm" | "running">("idle");
+  const [error, setError] = useState<string | null>(null);
+
+  if (step === "idle") {
+    return (
+      <Row
+        icon={<Trash2 size={20} />}
+        label="Notiz löschen"
+        sublabel="Endgültig aus dem Vault entfernen"
+        danger
+        onClick={() => {
+          setError(null);
+          setStep("confirm");
+        }}
+      />
+    );
+  }
+
+  const running = step === "running";
+
+  async function handleConfirm() {
+    if (running) return;
+    setStep("running");
+    setError(null);
+    try {
+      await onDeleteNote();
+      // Success → App clears the active note and unmounts this sheet. Close
+      // defensively in case the parent keeps it mounted.
+      onClose();
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unbekannter Fehler");
+      setError(message);
+      setStep("confirm");
+    }
+  }
+
+  return (
+    <div style={DELETE_CONFIRM_WRAP_STYLE} role="group" aria-label="Löschen bestätigen">
+      <span style={DELETE_CONFIRM_PROMPT_STYLE}>
+        <Trash2 size={18} style={{ flexShrink: 0 }} />
+        Wirklich löschen?
+      </span>
+      <div style={DELETE_CONFIRM_BUTTONS_STYLE}>
+        <button
+          type="button"
+          disabled={running}
+          onClick={() => void handleConfirm()}
+          style={{
+            ...DELETE_CONFIRM_COMMIT_STYLE,
+            opacity: running ? 0.6 : 1,
+            cursor: running ? "default" : "pointer",
+          }}
+          aria-label="Endgültig löschen"
+        >
+          {running ? (
+            <Loader2 size={18} style={{ animation: "lokyy-spin 0.9s linear infinite" }} />
+          ) : (
+            <Trash2 size={18} />
+          )}
+          Endgültig löschen
+        </button>
+        <button
+          type="button"
+          disabled={running}
+          onClick={() => {
+            setStep("idle");
+            setError(null);
+          }}
+          style={{
+            ...DELETE_CONFIRM_CANCEL_STYLE,
+            opacity: running ? 0.6 : 1,
+            cursor: running ? "default" : "pointer",
+          }}
+          aria-label="Abbrechen"
+        >
+          Abbrechen
+        </button>
+      </div>
+      {error && (
+        <span style={DELETE_CONFIRM_ERR_STYLE} aria-live="polite">
+          Löschen fehlgeschlagen: {error}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -398,6 +517,75 @@ const ROW_SUBLABEL_STYLE: CSSProperties = {
   color: C.textDim,
   lineHeight: 1.3,
   marginTop: 1,
+};
+
+/* ── Story: Real "Notiz löschen" two-step confirm row styles ──────────── */
+
+const DELETE_CONFIRM_WRAP_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 10,
+  padding: "12px",
+  margin: "2px 0",
+  borderRadius: 10,
+  background: "rgba(239,68,68,0.08)",
+  border: "1px solid rgba(239,68,68,0.35)",
+};
+
+const DELETE_CONFIRM_PROMPT_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  fontSize: 15,
+  fontWeight: 700,
+  color: "#EF4444",
+  fontFamily: FONT.ui,
+};
+
+const DELETE_CONFIRM_BUTTONS_STYLE: CSSProperties = {
+  display: "flex",
+  gap: 8,
+};
+
+const DELETE_CONFIRM_COMMIT_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+  flex: 1,
+  minHeight: TOUCH_TARGET_MIN,
+  padding: "10px 12px",
+  border: "1px solid #EF4444",
+  borderRadius: 10,
+  background: "#EF4444",
+  color: "#fff",
+  fontSize: 15,
+  fontWeight: 700,
+  fontFamily: FONT.ui,
+};
+
+const DELETE_CONFIRM_CANCEL_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  gap: 6,
+  flex: 1,
+  minHeight: TOUCH_TARGET_MIN,
+  padding: "10px 12px",
+  border: `1px solid ${C.border}`,
+  borderRadius: 10,
+  background: "transparent",
+  color: C.text,
+  fontSize: 15,
+  fontWeight: 600,
+  fontFamily: FONT.ui,
+};
+
+const DELETE_CONFIRM_ERR_STYLE: CSSProperties = {
+  fontSize: 12,
+  color: C.err,
+  fontFamily: FONT.ui,
+  lineHeight: 1.35,
 };
 
 function Keyframes() {

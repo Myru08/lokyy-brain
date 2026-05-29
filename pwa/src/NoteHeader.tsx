@@ -9,6 +9,7 @@ import {
   Volume2,
   VolumeX,
   MoreVertical,
+  Trash2,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
@@ -70,6 +71,17 @@ export interface NoteHeaderProps {
    */
   onForget?: (noteId: string) => void;
   onUnforget?: (noteId: string) => void;
+  /**
+   * Story: Real "Notiz löschen" — hard-delete the currently-open note.
+   * DISTINCT from Forget (which only hides the note from search). App.tsx
+   * owns the actual `api.remove(id, "note")` + editor/tab cleanup; the
+   * control here owns ONLY the deliberate two-step affirmative confirm
+   * ("Notiz löschen" → "Wirklich löschen? [Endgültig löschen] [Abbrechen]")
+   * and surfacing the rejection inline. Resolves on success, rejects with an
+   * Error whose `.message` is shown to the user. Optional — when omitted the
+   * delete affordance is hidden.
+   */
+  onDeleteNote?: (noteId: string) => Promise<void>;
   /**
    * Save-lifecycle props (Story: editor save-lifecycle overhaul).
    * If omitted, the badge + manual-save button are hidden — keeps the
@@ -588,6 +600,83 @@ const UNFORGET_BUTTON_STYLE: CSSProperties = {
   letterSpacing: "0.02em",
 };
 
+/**
+ * Story: Real "Notiz löschen" — desktop trigger pill. Distinct from Forget:
+ * Forget is a soft (200,74,50) wash; delete uses a hard, fully-saturated red
+ * border + filled icon so a destructive permanent action reads as the most
+ * dangerous control in the row. Same pill footprint as the other header
+ * buttons for visual rhythm.
+ */
+const DELETE_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "rgba(239, 68, 68, 0.10)",
+  border: "1px solid rgba(239, 68, 68, 0.55)",
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: "#EF4444",
+  fontSize: 12,
+  fontWeight: 600,
+  fontFamily: FONT.ui,
+  letterSpacing: "0.02em",
+  minHeight: 32,
+};
+
+/** Second-step "Endgültig löschen" — solid red, unmistakably the commit. */
+const DELETE_CONFIRM_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "#EF4444",
+  border: "1px solid #EF4444",
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: "#fff",
+  fontSize: 12,
+  fontWeight: 700,
+  fontFamily: FONT.ui,
+  letterSpacing: "0.02em",
+  minHeight: 32,
+};
+
+/** Second-step "Abbrechen" — neutral escape hatch alongside the commit. */
+const DELETE_CANCEL_BUTTON_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 5,
+  padding: "3px 10px",
+  cursor: "pointer",
+  color: C.textDim,
+  fontSize: 12,
+  fontWeight: 500,
+  fontFamily: FONT.ui,
+  minHeight: 32,
+};
+
+const DELETE_PROMPT_STYLE: CSSProperties = {
+  fontSize: 12,
+  color: "#EF4444",
+  fontFamily: FONT.ui,
+  fontWeight: 600,
+  whiteSpace: "nowrap",
+};
+
+const DELETE_ERR_STYLE: CSSProperties = {
+  fontSize: 11,
+  color: C.err,
+  fontFamily: FONT.ui,
+  whiteSpace: "nowrap",
+  maxWidth: 320,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
 const FORGOTTEN_SUBTITLE_STYLE: CSSProperties = {
   fontSize: 11,
   color: "rgba(239, 68, 68, 0.65)",
@@ -905,6 +994,7 @@ export function NoteHeader({
   body,
   onForget,
   onUnforget,
+  onDeleteNote,
   syncState,
   lastSavedAt,
   errorMsg,
@@ -954,6 +1044,23 @@ export function NoteHeader({
   const [undoBusy, setUndoBusy] = useState<boolean>(false);
   // Mobile "⋮ more" sheet — collects every note action into touch rows.
   const [actionsSheetOpen, setActionsSheetOpen] = useState<boolean>(false);
+  // Story: Real "Notiz löschen" — deliberate two-step affirmative confirm for
+  // the DESKTOP inline control (the mobile sheet owns its own two-step state).
+  //   idle    → shows the "Notiz löschen" trigger
+  //   confirm → shows "Wirklich löschen? [Endgültig löschen] [Abbrechen]"
+  //   running → delete in flight (both buttons disabled)
+  //   err     → inline error message + back to confirm so the user can retry
+  type DeleteState =
+    | { kind: "idle" }
+    | { kind: "confirm" }
+    | { kind: "running" }
+    | { kind: "err"; message: string };
+  const [deleteState, setDeleteState] = useState<DeleteState>({ kind: "idle" });
+  // Reset the confirm affordance whenever the user switches notes so a primed
+  // "Wirklich löschen?" from note A never carries over to note B.
+  useEffect(() => {
+    setDeleteState({ kind: "idle" });
+  }, [noteId]);
   // Phase D Wave D1 — collapse the ID-badge on mobile (it dominates a
   // 375px header and the AI-Prompt button already encodes the ULID in the
   // copy payload) and grow the remaining buttons to 40px tall.
@@ -1094,6 +1201,27 @@ export function NoteHeader({
       }, 6000);
     } finally {
       setUndoBusy(false);
+    }
+  }
+
+  /**
+   * Delete handler — fires the parent `onDeleteNote` (real hard-delete of the
+   * open note) ONLY from the second affirmative step. The two-step gate lives
+   * in the JSX (idle → confirm → this); here we just drive running → err and
+   * surface the rejection inline. On success the note is gone and App.tsx
+   * clears `active`, so this component unmounts — no need to reset state.
+   */
+  async function handleDeleteConfirmed() {
+    if (!onDeleteNote) return;
+    if (deleteState.kind === "running") return;
+    setDeleteState({ kind: "running" });
+    try {
+      await onDeleteNote(noteId);
+      // active note cleared by App → this header unmounts; nothing to reset.
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : String(err ?? "unbekannter Fehler");
+      setDeleteState({ kind: "err", message });
     }
   }
 
@@ -1378,6 +1506,80 @@ export function NoteHeader({
       </>
     ) : null;
 
+  // Story: Real "Notiz löschen" — DESKTOP inline two-step delete control.
+  // Renders nothing until App wires `onDeleteNote`. The two-step affirmative
+  // gate (NOT a single window.confirm): tapping "Notiz löschen" swaps the pill
+  // into "Wirklich löschen? [Endgültig löschen] [Abbrechen]"; only the second
+  // deliberate tap calls the parent. Errors surface inline next to the
+  // controls. Distinct from Forget (which lives further right and only hides
+  // the note from search).
+  const deleteControls = onDeleteNote ? (
+    deleteState.kind === "idle" ? (
+      <button
+        type="button"
+        onClick={() => setDeleteState({ kind: "confirm" })}
+        style={DELETE_BUTTON_STYLE}
+        title="Notiz endgültig löschen — entfernt die Datei aus dem Vault (nicht nur aus der Suche)"
+        aria-label="Notiz löschen"
+      >
+        <Trash2 size={14} />
+        Notiz löschen
+      </button>
+    ) : (
+      <span
+        style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+        role="group"
+        aria-label="Löschen bestätigen"
+      >
+        <span style={DELETE_PROMPT_STYLE}>Wirklich löschen?</span>
+        <button
+          type="button"
+          onClick={() => void handleDeleteConfirmed()}
+          disabled={deleteState.kind === "running"}
+          style={{
+            ...DELETE_CONFIRM_BUTTON_STYLE,
+            opacity: deleteState.kind === "running" ? 0.6 : 1,
+            cursor: deleteState.kind === "running" ? "default" : "pointer",
+          }}
+          title="Diese Notiz endgültig löschen"
+          aria-label="Endgültig löschen"
+        >
+          {deleteState.kind === "running" ? (
+            <Loader2
+              size={14}
+              style={{ animation: "lokyy-spin 0.9s linear infinite" }}
+            />
+          ) : (
+            <Trash2 size={14} />
+          )}
+          Endgültig löschen
+        </button>
+        <button
+          type="button"
+          onClick={() => setDeleteState({ kind: "idle" })}
+          disabled={deleteState.kind === "running"}
+          style={{
+            ...DELETE_CANCEL_BUTTON_STYLE,
+            opacity: deleteState.kind === "running" ? 0.6 : 1,
+            cursor: deleteState.kind === "running" ? "default" : "pointer",
+          }}
+          aria-label="Abbrechen"
+        >
+          Abbrechen
+        </button>
+        {deleteState.kind === "err" && (
+          <span
+            style={DELETE_ERR_STYLE}
+            title={deleteState.message}
+            aria-live="polite"
+          >
+            Löschen fehlgeschlagen: {deleteState.message}
+          </span>
+        )}
+      </span>
+    )
+  ) : null;
+
   // ── Mobile: slim top bar + "⋮" actions sheet ──────────────────────────
   // On phones every action button is unreachable in the inline row, so the
   // header collapses to title + save-badge + a single "⋮" button that opens
@@ -1449,6 +1651,7 @@ export function NoteHeader({
           onCopyPrompt={() => void handleCopyPrompt()}
           onForget={() => onForget?.(noteId)}
           onUnforget={() => onUnforget?.(noteId)}
+          onDeleteNote={onDeleteNote ? () => onDeleteNote(noteId) : undefined}
         />
       </>
     );
@@ -1480,6 +1683,7 @@ export function NoteHeader({
           {polishControls}
           {ttsButton}
           {saveControls}
+          {deleteControls}
           <span
             style={{
               fontSize: 10,
@@ -1565,6 +1769,10 @@ export function NoteHeader({
               Forget
             </button>
           )}
+      {/* Story: Real "Notiz löschen" — desktop two-step delete, distinct from
+          and placed AFTER Forget so the destructive action is clearly its own
+          control rather than a variant of forget. */}
+      {deleteControls}
       {/* ID badge is desktop-only — the same ULID is embedded in the
           AI-Prompt copy payload, so mobile users still get the data they
           need without losing 90+ px of header chrome. */}

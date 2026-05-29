@@ -1639,6 +1639,40 @@ export function App() {
     }
   }
 
+  /**
+   * Story: Real "Notiz löschen" from the note view (mobile sheet + desktop
+   * header), distinct from Forget. Hard-deletes the CURRENTLY OPEN note via
+   * the SAME path as the FileTree delete — `api.remove(id, "note")` followed
+   * by the identical active-note + tab cleanup `handleDelete` performs (close
+   * the editor, drop any open tab, refresh the tree).
+   *
+   * The open note's `id` IS its path without `.md` — exactly the value
+   * FileTree passes as `node.path` — so the cleanup conditions below mirror
+   * `handleDelete` one-to-one (including closing child-note tabs, harmless
+   * for a single note but kept identical for a single source of truth).
+   *
+   * Unlike `handleDelete` (which `alert()`s for the FileTree flow), this
+   * REJECTS on failure so the calling control (NoteHeader / NoteActionsSheet)
+   * can surface the git / pre-commit error message INLINE rather than in a
+   * blocking browser dialog. Mirrors the `onPolish` Promise contract.
+   */
+  async function handleDeleteOpenNote(targetNoteId: string): Promise<void> {
+    await api.remove(targetNoteId, "note");
+    const cur = activeRef.current;
+    if (
+      cur &&
+      (cur.id === targetNoteId || cur.id.startsWith(targetNoteId + "/"))
+    ) {
+      setActive(null);
+    }
+    setOpenTabs((prev) =>
+      prev.filter(
+        (t) => t.id !== targetNoteId && !t.id.startsWith(targetNoteId + "/"),
+      ),
+    );
+    await refreshTree();
+  }
+
   const status = SYNC_LABEL[sync];
 
   if (settingsOpen) {
@@ -2080,6 +2114,7 @@ export function App() {
                   body={active.body}
                   onForget={(id) => void handleForget(id)}
                   onUnforget={(id) => void handleUnforget(id)}
+                  onDeleteNote={handleDeleteOpenNote}
                   syncState={sync}
                   lastSavedAt={lastSavedAt}
                   errorMsg={errorMsg}

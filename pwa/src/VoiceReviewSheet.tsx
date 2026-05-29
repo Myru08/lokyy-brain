@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import { Mic, Square, Trash2, Check, AlertTriangle, Loader2 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { TOUCH_TARGET_MIN } from "./responsive.js";
+import { mergeTranscript } from "./lib/transcriptMerge.js";
 
 /* ── Web-Speech-API types ─────────────────────────────────────────────
  * The Web-Speech-API is non-standard and not in @types/dom. We declare the
@@ -151,7 +152,15 @@ export function VoiceReviewSheet({
     setHasWebSpeech(getSpeechRecognitionCtor() !== null);
   }, []);
 
-  /** Join committed prefix + current-turn final map (index order). */
+  /**
+   * Join committed prefix + current-turn final map (index order).
+   *
+   * Folds the turn into the prefix via {@link mergeTranscript} so the Android
+   * re-delivery (where a restarted turn restates the growing phrase from the
+   * start) collapses on the word-level overlap instead of cumulatively
+   * re-appending. The normal desktop case has zero overlap (k=0), so this is
+   * an identical single-space append.
+   */
   function buildCommitted(): string {
     const turn = [...finalSegmentsRef.current.entries()]
       .sort((a, b) => a[0] - b[0])
@@ -159,8 +168,7 @@ export function VoiceReviewSheet({
       .filter(Boolean)
       .join(" ");
     const prefix = committedPrefixRef.current.trim();
-    if (prefix && turn) return `${prefix} ${turn}`;
-    return prefix || turn;
+    return mergeTranscript(prefix, turn);
   }
 
   const teardownRecognition = () => {
@@ -294,6 +302,12 @@ export function VoiceReviewSheet({
       // Auto-restart unless the user pressed Stop. Before restarting we REBASE:
       // fold the current turn's finals into the stable prefix and clear the
       // per-turn map so the next turn's index 0 starts fresh (no clobber).
+      //
+      // `buildCommitted()` runs the prefix↔turn join through mergeTranscript,
+      // so when Android re-delivers the growing phrase FROM THE START on the
+      // next restart, the overlap (the entire prior phrase) is dropped and only
+      // genuinely-new words survive — killing the cumulative stutter
+      // ("okay okay okay ich okay ich bin …").
       if (userStoppedRef.current) return;
       committedPrefixRef.current = buildCommitted();
       finalSegmentsRef.current = new Map();
@@ -333,12 +347,11 @@ export function VoiceReviewSheet({
     userStoppedRef.current = true;
     // Fold any trailing interim into the committed transcript so "what you see
     // is what gets inserted" — the recognizer may not have finalized the last
-    // word inside its ~1s confidence window when the user taps Stop.
+    // word inside its ~1s confidence window when the user taps Stop. Use
+    // mergeTranscript so an interim tail that restates already-committed words
+    // (common on the seam) overlaps-away instead of duplicating.
     const tail = interim.trim();
-    let committed = buildCommitted();
-    if (tail) {
-      committed = committed ? `${committed} ${tail}` : tail;
-    }
+    const committed = mergeTranscript(buildCommitted(), tail);
     try {
       recognitionRef.current?.stop();
     } catch {
