@@ -7,9 +7,13 @@ import {
   RefreshCw,
   AlertTriangle,
   PlayCircle,
+  Brain,
+  Network,
+  Clock,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { AiProviderSettings } from "./AiProviderSettings.js";
+import { AgentReviewPanel } from "./AgentReviewPanel.js";
 import { api } from "./api.js";
 import type {
   DiagnosticsResult,
@@ -17,6 +21,8 @@ import type {
   LogsResult,
   LogEntry,
   LogLevel,
+  SleepRunItem,
+  SleepStatus,
 } from "./api.js";
 import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
 
@@ -305,6 +311,7 @@ type TabKey =
   | "mcp"
   | "voice"
   | "skills"
+  | "kurator"
   | "wartung"
   | "diagnose"
   | "logs";
@@ -316,6 +323,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "mcp", label: "MCP" },
   { key: "voice", label: "Voice" },
   { key: "skills", label: "Skills" },
+  { key: "kurator", label: "Kurator" },
   { key: "wartung", label: "Wartung" },
   { key: "diagnose", label: "Diagnose" },
   { key: "logs", label: "Logs" },
@@ -533,6 +541,23 @@ export function Settings({
   const [logLevel, setLogLevel] = useState<"all" | LogLevel>("all");
   const [logService, setLogService] = useState<string>("all");
 
+  // ── Kurator-Tab — sleep-agent runs, manual trigger, found connections ──
+  const [kuratorRuns, setKuratorRuns] = useState<SleepRunItem[] | null>(null);
+  const [kuratorState, setKuratorState] = useState<
+    "idle" | "loading" | "ok" | "fail"
+  >("idle");
+  const [kuratorError, setKuratorError] = useState<string>();
+  // `running` = a REM run is in flight; `notice` carries the inline 409 hint.
+  const [kuratorTriggerState, setKuratorTriggerState] = useState<
+    "idle" | "running" | "done" | "busy"
+  >("idle");
+  const [kuratorTriggerNotice, setKuratorTriggerNotice] = useState<string>();
+  // Count of auto topic-notes (the "Bezüge") + open-state for the reused panel.
+  const [kuratorBezuegeCount, setKuratorBezuegeCount] = useState<number | null>(
+    null,
+  );
+  const [kuratorReviewOpen, setKuratorReviewOpen] = useState(false);
+
   /**
    * Fetch the canonical runtime view. The backend route is being built in
    * parallel; until it ships, a 404 / network error returns `null` and the
@@ -660,6 +685,63 @@ export function Settings({
     } catch (err) {
       setBackfillState("fail");
       setBackfillError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Load the recent sleep-agent runs for the Kurator status + history. */
+  async function loadKuratorRuns() {
+    setKuratorState("loading");
+    setKuratorError(undefined);
+    try {
+      const { runs } = await api.getSleepRuns({ limit: 20 });
+      setKuratorRuns(runs);
+      setKuratorState("ok");
+    } catch (err) {
+      setKuratorState("fail");
+      setKuratorError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Fetch the current connection ("Bezüge") count = auto topic-notes pending. */
+  async function loadKuratorBezuege() {
+    try {
+      const queue = await api.getAgentReviewQueue(30);
+      setKuratorBezuegeCount(queue.topicNotes.length);
+    } catch {
+      // Non-fatal — the count badge just stays unknown.
+      setKuratorBezuegeCount(null);
+    }
+  }
+
+  /**
+   * Trigger the REM phase — the run that ACTUALLY produces connections
+   * (topic-synthesis writes the auto topic-notes). NREM only does
+   * maintenance passes, so we deliberately fire `rem` here. After the run we
+   * refresh both the run history and the connection count. A 409 surfaces as
+   * an inline notice rather than throwing.
+   */
+  async function runKuratorRem() {
+    setKuratorTriggerState("running");
+    setKuratorTriggerNotice(undefined);
+    try {
+      const result = await api.triggerSleepPhase("rem");
+      if (!result.ok) {
+        // 409 — another run already in flight.
+        setKuratorTriggerState("busy");
+        setKuratorTriggerNotice(
+          "Es läuft bereits ein Lauf — bitte gleich nochmal versuchen.",
+        );
+        // Still refresh so the in-flight run shows up in the history.
+        await loadKuratorRuns();
+        return;
+      }
+      setKuratorTriggerState("done");
+      await Promise.all([loadKuratorRuns(), loadKuratorBezuege()]);
+    } catch (err) {
+      setKuratorTriggerState("idle");
+      setKuratorTriggerNotice(
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
@@ -965,6 +1047,17 @@ export function Settings({
   useEffect(() => {
     if (tab === "logs" && logs === null && logsState !== "loading") {
       void loadLogs();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Auto-load the sleep-agent run history + connection count the first time
+  // the Kurator tab is opened. Gated on `kuratorRuns === null` so re-visiting
+  // doesn't clobber a freshly-triggered run with a stale spinner.
+  useEffect(() => {
+    if (tab === "kurator" && kuratorRuns === null && kuratorState !== "loading") {
+      void loadKuratorRuns();
+      void loadKuratorBezuege();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
@@ -2039,6 +2132,38 @@ export function Settings({
         </Section>
       )}
 
+      {/* ───── Tab: Kurator ───── */}
+      {tab === "kurator" && (
+        <KuratorTab
+          runs={kuratorRuns}
+          state={kuratorState}
+          error={kuratorError}
+          triggerState={kuratorTriggerState}
+          triggerNotice={kuratorTriggerNotice}
+          bezuegeCount={kuratorBezuegeCount}
+          isMobile={isMobile}
+          onTrigger={() => void runKuratorRem()}
+          onRefresh={() => {
+            void loadKuratorRuns();
+            void loadKuratorBezuege();
+          }}
+          onOpenBezuege={() => setKuratorReviewOpen(true)}
+        />
+      )}
+
+      {/* Reused agent-review slide-over for the "Bezüge ansehen" action.
+          We render our own instance (App.tsx owns a separate one we must not
+          touch) and refresh the connection count whenever it reports back. */}
+      <AgentReviewPanel
+        open={kuratorReviewOpen}
+        onClose={() => setKuratorReviewOpen(false)}
+        onOpenNote={(id) => {
+          setKuratorReviewOpen(false);
+          onOpenNote?.(id);
+        }}
+        onCountChange={() => void loadKuratorBezuege()}
+      />
+
       {/* ───── Tab: Wartung ───── */}
       {tab === "wartung" && (
         <>
@@ -2736,6 +2861,359 @@ function ForgejoConnectionStatus({
         </button>
       </span>
     </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Kurator-Tab — sleep-agent status, run history, manual trigger, connections.
+ *
+ * The "Kurator" is the background consolidation agent (sleep-agent). This tab
+ * surfaces:
+ *   1. a plain-language status header (scheduler armed/idle + last run),
+ *   2. the recent run history (newest-first, with phase/status/duration),
+ *   3. a "Vollständiger Lauf (inkl. Bezüge)" button that triggers the REM
+ *      phase — the only phase whose topic-synthesis pass produces connections,
+ *   4. the count of found connections ("Bezüge") + a button that opens the
+ *      reused AgentReviewPanel.
+ * ────────────────────────────────────────────────────────────────────── */
+
+const KURATOR_STATUS_META: Record<
+  SleepStatus,
+  { label: string; color: string }
+> = {
+  pending: { label: "wartend", color: C.textDim },
+  running: { label: "läuft", color: C.gold },
+  completed: { label: "fertig", color: C.ok },
+  failed: { label: "fehlgeschlagen", color: C.err },
+  cancelled: { label: "abgebrochen", color: C.textFaint },
+};
+
+/** Human label for a sleep phase. */
+function kuratorPhaseLabel(phase: string): string {
+  switch (phase) {
+    case "rem":
+      return "REM (Bezüge)";
+    case "nrem":
+      return "NREM (Wartung)";
+    case "lint":
+      return "Lint";
+    case "dream":
+      return "Dream";
+    default:
+      return phase;
+  }
+}
+
+/** Format a run's wall-clock duration, or "—" while still running. */
+function kuratorDuration(run: SleepRunItem): string {
+  if (!run.finishedAt) return "läuft …";
+  const ms = new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  const m = Math.floor(s / 60);
+  return `${m} min ${Math.round(s % 60)} s`;
+}
+
+function StatusBadge({ status }: { status: SleepStatus }) {
+  const meta = KURATOR_STATUS_META[status];
+  return (
+    <span
+      style={{
+        fontSize: 10.5,
+        fontFamily: FONT.mono,
+        color: meta.color,
+        border: `1px solid ${meta.color}`,
+        borderRadius: 4,
+        padding: "1px 6px",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
+function KuratorTab({
+  runs,
+  state,
+  error,
+  triggerState,
+  triggerNotice,
+  bezuegeCount,
+  isMobile,
+  onTrigger,
+  onRefresh,
+  onOpenBezuege,
+}: {
+  runs: SleepRunItem[] | null;
+  state: "idle" | "loading" | "ok" | "fail";
+  error?: string;
+  triggerState: "idle" | "running" | "done" | "busy";
+  triggerNotice?: string;
+  bezuegeCount: number | null;
+  isMobile: boolean;
+  onTrigger: () => void;
+  onRefresh: () => void;
+  onOpenBezuege: () => void;
+}) {
+  const lastRun = runs && runs.length > 0 ? runs[0] : null;
+  const isRunning =
+    triggerState === "running" ||
+    (lastRun?.status === "running");
+
+  // Plain-language status line, e.g.
+  // "Läuft scharf · zuletzt 29.05. 14:41 · 91 Notizen verarbeitet".
+  const statusLine = (() => {
+    if (!lastRun) return "Noch kein Lauf aufgezeichnet.";
+    const when = new Date(lastRun.startedAt).toLocaleString("de-DE", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const statusWord = KURATOR_STATUS_META[lastRun.status].label;
+    return `Zuletzt ${when} · ${kuratorPhaseLabel(lastRun.phase)} · ${statusWord} · ${lastRun.notesProcessed} Notizen verarbeitet`;
+  })();
+
+  return (
+    <>
+      <Section title="Kurator-Status">
+        <p
+          style={{
+            color: C.textDim,
+            fontSize: 13,
+            margin: "0 0 12px 0",
+          }}
+        >
+          Der Kurator ist der Hintergrund-Agent, der deine Notizen im Schlaf
+          aufräumt und Querverbindungen („Bezüge") zwischen ihnen findet. Er
+          läuft automatisch (Leerlauf + nachts) — hier siehst du den Status und
+          kannst ihn manuell anstoßen.
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            padding: 12,
+            background: C.elevated,
+            borderRadius: 6,
+            fontSize: 13,
+            color: C.text,
+            flexWrap: "wrap",
+          }}
+        >
+          <Clock
+            size={16}
+            style={{ color: isRunning ? C.gold : C.ok, flexShrink: 0 }}
+          />
+          <span style={{ fontWeight: 600 }}>
+            {isRunning ? "Läuft gerade" : "Läuft scharf (Scheduler aktiv)"}
+          </span>
+          <span style={{ color: C.textDim }}>·</span>
+          <span style={{ color: C.textDim }}>{statusLine}</span>
+        </div>
+
+        {error && (
+          <p style={{ color: C.err, fontSize: 12, marginTop: 8, marginBottom: 0 }}>
+            <X size={13} /> {error}
+          </p>
+        )}
+      </Section>
+
+      <Section title="Bezüge (gefundene Querverbindungen)">
+        <p
+          style={{
+            color: C.textDim,
+            fontSize: 13,
+            margin: "0 0 12px 0",
+          }}
+        >
+          Im REM-Lauf erzeugt der Kurator automatische Themen-Notizen, die
+          mehrere bestehende Notizen verknüpfen. Diese liegen als Vorschlag im
+          Review-Bereich und warten auf deine Freigabe.
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            flexWrap: "wrap",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 14px",
+              background: C.elevated,
+              borderRadius: 6,
+            }}
+          >
+            <Network size={16} style={{ color: "#A855F7" }} />
+            <span style={{ fontSize: 22, fontWeight: 700, color: C.text }}>
+              {bezuegeCount === null ? "—" : bezuegeCount}
+            </span>
+            <span style={{ fontSize: 13, color: C.textDim }}>
+              offene Bezüge
+            </span>
+          </div>
+          <button
+            onClick={onOpenBezuege}
+            style={mobileBtn(btn, isMobile)}
+          >
+            <Network size={14} /> Bezüge ansehen
+          </button>
+        </div>
+      </Section>
+
+      <Section title="Manueller Lauf">
+        <p
+          style={{
+            color: C.textDim,
+            fontSize: 13,
+            margin: "0 0 12px 0",
+          }}
+        >
+          Stößt den REM-Lauf an — die Phase, in der die Themen-Synthese läuft
+          und neue Bezüge entstehen. Danach werden die Lauf-Historie und der
+          Bezüge-Zähler aktualisiert.
+        </p>
+
+        <div
+          style={{
+            display: "flex",
+            gap: 12,
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <button
+            onClick={onTrigger}
+            disabled={triggerState === "running"}
+            style={mobileBtn(btn, isMobile)}
+          >
+            {triggerState === "running" ? (
+              <Loader2 size={14} className="sw-spin" />
+            ) : (
+              <Brain size={14} />
+            )}
+            Vollständiger Lauf (inkl. Bezüge)
+          </button>
+          <button onClick={onRefresh} style={mobileBtn(btn, isMobile)}>
+            <RefreshCw size={14} /> Aktualisieren
+          </button>
+          {triggerState === "done" && (
+            <span style={{ color: C.ok, fontSize: 13 }}>
+              <Check size={14} /> Lauf abgeschlossen
+            </span>
+          )}
+          {triggerState === "busy" && (
+            <span style={{ color: C.gold, fontSize: 13 }}>
+              <AlertTriangle size={14} /> {triggerNotice}
+            </span>
+          )}
+          {triggerState === "idle" && triggerNotice && (
+            <span style={{ color: C.err, fontSize: 13 }}>
+              <X size={14} /> {triggerNotice}
+            </span>
+          )}
+        </div>
+      </Section>
+
+      <Section title="Lauf-Historie">
+        {state === "loading" && runs === null ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              color: C.textDim,
+              fontSize: 13,
+            }}
+          >
+            <Loader2 size={14} className="sw-spin" /> lädt …
+          </div>
+        ) : state === "fail" ? (
+          <p style={{ color: C.err, fontSize: 13, margin: 0 }}>
+            <X size={14} /> {error ?? "Laden fehlgeschlagen"}
+          </p>
+        ) : runs && runs.length === 0 ? (
+          <p style={{ color: C.textFaint, fontSize: 13, margin: 0 }}>
+            Noch keine Läufe aufgezeichnet.
+          </p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(runs ?? []).map((run) => (
+              <div
+                key={run.id}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: isMobile ? 8 : 14,
+                  padding: "10px 12px",
+                  background: C.elevated,
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 6,
+                  flexWrap: "wrap",
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: FONT.mono,
+                    fontSize: 11.5,
+                    color: C.textDim,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {new Date(run.startedAt).toLocaleString("de-DE", {
+                    day: "2-digit",
+                    month: "2-digit",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}
+                </span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: C.text,
+                    minWidth: 96,
+                  }}
+                >
+                  {kuratorPhaseLabel(run.phase)}
+                </span>
+                <StatusBadge status={run.status} />
+                <span
+                  style={{
+                    fontFamily: FONT.mono,
+                    fontSize: 11.5,
+                    color: C.textFaint,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {kuratorDuration(run)}
+                </span>
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: C.textDim,
+                    marginLeft: "auto",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {run.notesProcessed} Notizen
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+    </>
   );
 }
 

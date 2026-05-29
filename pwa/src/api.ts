@@ -230,6 +230,40 @@ export interface AgentReviewQueue {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * Sleep-Agent ("Kurator") — background consolidation runs.
+ *
+ * Mirrors `SleepRun` from `@lokyy/core` (sleep-agent/types.ts). The server
+ * serialises the in-memory record straight to JSON via `c.json(run)`, so the
+ * `Date` fields arrive as ISO-8601 strings here. `passStats` is free-form
+ * per-pass output; we keep it opaque — the Kurator UI reads `notesProcessed`
+ * plus the phase/status/timestamps, not the raw pass payloads.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export type SleepPhase = "nrem" | "rem" | "lint" | "dream" | "manual";
+export type SleepTrigger = "idle" | "nightly" | "manual";
+export type SleepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+export interface SleepRunItem {
+  id: string;
+  phase: SleepPhase;
+  trigger: SleepTrigger;
+  status: SleepStatus;
+  /** ISO-8601 — `new Date(startedAt)` to render. */
+  startedAt: string;
+  /** ISO-8601, absent while still running. */
+  finishedAt?: string | null;
+  passesCompleted: string[];
+  passStats: Record<string, unknown>;
+  errorMessage?: string | null;
+  notesProcessed: number;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Diagnostics + Logs (Observability — in-app self-test suite + log viewer).
  *
  * Shapes mirror `server/src/routes/diagnostics.ts` + `server/src/routes/logs.ts`.
@@ -826,6 +860,52 @@ export const api = {
     fetch(`${BASE}/agent-review/queue?limit=${limit}`, {
       credentials: "include",
     }).then(json<AgentReviewQueue>),
+
+  /* ──── Sleep-Agent ("Kurator") ──── */
+
+  /**
+   * Recent sleep-agent runs, newest-first. `limit` is capped server-side
+   * (1..200). Each run's `Date` fields arrive as ISO strings.
+   */
+  getSleepRuns: (opts: { limit?: number } = {}): Promise<{ runs: SleepRunItem[] }> => {
+    const limit = opts.limit ?? 20;
+    return fetch(`${BASE}/sleep-agent/runs?limit=${limit}`, {
+      credentials: "include",
+    }).then(json<{ runs: SleepRunItem[] }>);
+  },
+
+  /**
+   * Manually trigger a sleep-agent phase.
+   *
+   * `phase: "rem"` is the run that produces the connections ("Bezüge") — the
+   * topic-synthesis pass runs in REM and writes the auto topic-notes that
+   * surface in the agent-review queue. `phase: "nrem"` only does maintenance
+   * passes (importance recompute, ulid-backfill, synaptic pruning) and does
+   * NOT create connections.
+   *
+   * Returns `{ ok: true, run }` on success, or `{ ok: false, error }` with a
+   * 409 when another run is already in-flight (the agent's idempotency guard).
+   */
+  triggerSleepPhase: async (
+    phase: SleepPhase,
+  ): Promise<{ ok: true; run: SleepRunItem } | { ok: false; error: string }> => {
+    const res = await fetch(`${BASE}/sleep-agent/trigger`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phase }),
+      credentials: "include",
+    });
+    if (res.status === 409) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      return { ok: false, error: data.error ?? "sleep-agent already running" };
+    }
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      throw new ApiError(res.status, data.error ?? "sleep-agent trigger failed");
+    }
+    const run = (await res.json()) as SleepRunItem;
+    return { ok: true, run };
+  },
 
   /** Apply a pending Mem0 classifier decision (ADD/UPDATE/DELETE/NOOP). */
   acceptMem0Review: async (id: string): Promise<void> => {
