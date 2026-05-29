@@ -405,9 +405,19 @@ export function AiProviderSettings({
         return p;
       });
       const updated = await api.setLlmConfig({ providers: sanitized, routing });
-      setProviders(updated.providers);
-      setRouting(updated.routing);
-      setUsage(updated.usage);
+      // Defensive: the save already succeeded server-side. Never let a
+      // malformed/partial response throw during the post-save state update —
+      // that would unmount the tree (black screen). Only adopt fields that
+      // are actually present and well-shaped; fall back to current state.
+      if (Array.isArray(updated?.providers)) {
+        setProviders(updated.providers);
+      }
+      if (updated?.routing && typeof updated.routing === "object") {
+        setRouting(updated.routing);
+      }
+      if (Array.isArray(updated?.usage)) {
+        setUsage(updated.usage);
+      }
       setDirtyKeys(new Set());
       setSaveState("ok");
     } catch (err) {

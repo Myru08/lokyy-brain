@@ -35,7 +35,17 @@ let activeVaultId: string | null = null;
  */
 export function getMemoryProvider(vaultId: string): CombinedProvider {
   if (combined && activeVaultId === vaultId) return combined;
-  combined = new CombinedProvider(new Tier1Provider(), new Tier2Provider({ vaultId }));
+  // Pass the vaultId + the shared Tier1BM25 singleton so the Tier-1 leg of
+  // search() runs against the indexed `note_search` table (fast), scoped to
+  // this vault, instead of the cold per-note in-memory rebuild. The singleton
+  // is declared below; this function only runs at call time (after module
+  // evaluation), so the forward reference is safe.
+  combined = new CombinedProvider(
+    new Tier1Provider(),
+    new Tier2Provider({ vaultId }),
+    vaultId,
+    tier1Bm25Singleton,
+  );
   activeVaultId = vaultId;
   return combined;
 }

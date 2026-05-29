@@ -7,9 +7,13 @@ import {
   Tier1Provider,
   Tier2Provider,
   getHealth,
+  getLlmProviders,
+  getLlmRouting,
   getMemoryProvider,
+  maskApiKey,
   sleepAgent,
 } from "@lokyy/core";
+import type { LlmRole, LlmRoutingConfig, ProviderConfig } from "@lokyy/core";
 import { config } from "../config.js";
 import { logBuffer } from "../lib/logBuffer.js";
 
@@ -387,6 +391,201 @@ async function checkGitVault(): Promise<DiagnosticCheck> {
   });
 }
 
+// ── KI / Task-Routing: provider credentials + role assignments ────────────────
+// Surfaces the ROOT cause of empty semantic search: an unassigned Embedding role
+// in Task-Routing. The existing search probes report "0 hits" — these checks say
+// WHY. Provider-agnostic: reads the persisted LLM config (configStore) without
+// caring which cloud/local provider is wired.
+//
+// Service string "ki-routing" flows through the same DiagnosticCheck shape, so
+// the Diagnose UI renders this group generically — no UI change required.
+
+// Cloud providers we surface as credential checks. Ollama is intentionally
+// excluded from the "needs an API key" set — it's local and keyless.
+const CLOUD_PROVIDER_NAMES = ["anthropic", "openai", "google", "cohere", "voyage"] as const;
+
+// Human-facing role labels (German UI). Embedding is the load-bearing one.
+const ROLE_LABELS: Record<LlmRole, string> = {
+  embedding: "Embedding",
+  rerank: "Re-Rank",
+  "topic-synthesis": "Topic-Synthesis",
+  "query-rewrite": "Query-Rewrite",
+  hyde: "HyDE",
+  "self-rag": "Self-RAG",
+  lint: "Lint",
+  ner: "NER",
+  "mem0-classifier": "mem0-Classifier",
+  "intent-classifier": "Intent-Classifier",
+};
+
+// All non-embedding roles, reported as info so the operator sees full routing
+// state. Order = display order.
+const SECONDARY_ROLES: LlmRole[] = [
+  "rerank",
+  "topic-synthesis",
+  "query-rewrite",
+  "hyde",
+  "self-rag",
+  "ner",
+  "mem0-classifier",
+  "intent-classifier",
+  "lint",
+];
+
+/** True if a provider config carries usable credentials/connection info. */
+function providerHasCreds(p: ProviderConfig | undefined): boolean {
+  if (!p) return false;
+  const name = (p.name ?? "").toLowerCase();
+  // Local providers (Ollama / any explicitly local baseUrl) need no API key —
+  // a configured + enabled entry counts as "ready".
+  if (name === "ollama") return true;
+  return typeof p.apiKey === "string" && p.apiKey.trim().length > 0;
+}
+
+/** Look up a provider config by (case-insensitive) name. */
+function findProvider(providers: ProviderConfig[], name: string): ProviderConfig | undefined {
+  const lower = name.toLowerCase();
+  return providers.find((p) => (p.name ?? "").toLowerCase() === lower);
+}
+
+/**
+ * Provider-credentials sub-checks. Ollama-local present → ok. Empty cloud →
+ * info (local-only is a valid deployment, not an error).
+ */
+function checkProviderCredentials(providers: ProviderConfig[]): DiagnosticCheck[] {
+  const checks: DiagnosticCheck[] = [];
+
+  // Ollama (local, keyless) — present+enabled = ok, otherwise info (cloud-only
+  // setups don't need it, but Tier-2 embeddings via Ollama do).
+  const ollama = findProvider(providers, "ollama");
+  checks.push({
+    service: "ki-routing",
+    name: "Provider-Credentials: Ollama (lokal)",
+    ok: !!ollama,
+    severity: ollama ? "info" : "info",
+    detail: ollama
+      ? `konfiguriert (${ollama.enabled ? "aktiv" : "deaktiviert"})${
+          ollama.baseUrl ? ` @ ${ollama.baseUrl}` : ""
+        }`
+      : "nicht konfiguriert — für lokale Embeddings (Tier 2) Ollama-Provider anlegen.",
+  });
+
+  // Cloud providers — empty = info (local-only is valid), present = ok with a
+  // masked key so the operator can confirm WHICH key is wired without leaking it.
+  for (const name of CLOUD_PROVIDER_NAMES) {
+    const p = findProvider(providers, name);
+    const hasCreds = providerHasCreds(p);
+    const label = name.charAt(0).toUpperCase() + name.slice(1);
+    checks.push({
+      service: "ki-routing",
+      name: `Provider-Credentials: ${label}`,
+      ok: hasCreds,
+      // No creds is informational — running local-only is a legitimate choice.
+      severity: "info",
+      detail: hasCreds
+        ? `Credentials gesetzt${p?.apiKey ? ` (${maskApiKey(p.apiKey)})` : ""}${
+            p && !p.enabled ? " — Provider deaktiviert" : ""
+          }`
+        : "keine Credentials — Cloud-Provider ungenutzt (local-only ist gültig).",
+    });
+  }
+
+  return checks;
+}
+
+/**
+ * Role-assignment sub-checks. Embedding unassigned → error (it's the documented
+ * root cause of empty Tier-2 / semantic search). Everything else → info.
+ */
+function checkRoleAssignments(
+  routing: LlmRoutingConfig,
+  providers: ProviderConfig[],
+): DiagnosticCheck[] {
+  const roles = routing.roles ?? {};
+  const checks: DiagnosticCheck[] = [];
+
+  // ── Embedding — the load-bearing role. ──
+  const embedding = roles.embedding;
+  if (!embedding || !embedding.provider) {
+    checks.push({
+      service: "ki-routing",
+      name: "Rolle: Embedding",
+      ok: false,
+      severity: "error",
+      detail:
+        "Embedding-Rolle nicht zugewiesen → Tier 2 / semantische Suche bleibt leer. " +
+        "AI → Task-Routing → Embedding zuweisen, dann Migrate Embeddings.",
+    });
+  } else {
+    const provider = findProvider(providers, embedding.provider);
+    const model = embedding.model ?? provider?.defaultModel;
+    // Assigned-but-provider-missing is suspicious → warn; otherwise ok.
+    const providerKnown = !!provider;
+    checks.push({
+      service: "ki-routing",
+      name: "Rolle: Embedding",
+      ok: providerKnown,
+      severity: providerKnown ? "info" : "warn",
+      detail: providerKnown
+        ? `zugewiesen → ${embedding.provider}${model ? ` / ${model}` : ""}`
+        : `zugewiesen an unbekannten Provider "${embedding.provider}"${
+            model ? ` / ${model}` : ""
+          } — Provider in der Provider-Liste fehlt.`,
+    });
+  }
+
+  // ── All other roles — informational routing state. ──
+  for (const role of SECONDARY_ROLES) {
+    const assignment = roles[role];
+    const assigned = !!(assignment && assignment.provider);
+    const model = assignment?.model;
+    checks.push({
+      service: "ki-routing",
+      name: `Rolle: ${ROLE_LABELS[role]}`,
+      ok: true,
+      severity: "info",
+      detail: assigned
+        ? `zugewiesen → ${assignment.provider}${model ? ` / ${model}` : ""}`
+        : "nicht zugewiesen",
+    });
+  }
+
+  return checks;
+}
+
+/**
+ * KI / Task-Routing check group. Reads the persisted LLM config defensively —
+ * any failure (DB down, malformed JSON, core import error) degrades to a single
+ * info/error check instead of throwing.
+ */
+async function checkKiRouting(): Promise<DiagnosticCheck[]> {
+  const started = Date.now();
+  try {
+    const [providers, routing] = await Promise.all([
+      getLlmProviders(),
+      getLlmRouting(),
+    ]);
+    const checks = [
+      ...checkProviderCredentials(providers),
+      ...checkRoleAssignments(routing, providers),
+    ];
+    // Stamp a shared latency on the first check so the UI shows the read cost.
+    if (checks[0]) checks[0].latencyMs = Date.now() - started;
+    return checks;
+  } catch (err) {
+    return [
+      {
+        service: "ki-routing",
+        name: "LLM-Konfiguration lesbar",
+        ok: false,
+        severity: "error",
+        latencyMs: Date.now() - started,
+        detail: brief(`LLM-Config nicht lesbar (${errMsg(err)}) — Provider/Routing nicht prüfbar.`),
+      },
+    ];
+  }
+}
+
 diagnosticsRoutes.get("/", async (c) => {
   // Each group is independently guarded; Promise.all over already-guarded
   // promises can never reject. We still wrap the whole assembly so a truly
@@ -405,6 +604,7 @@ diagnosticsRoutes.get("/", async (c) => {
       checkSleepAgent(),
       checkMcpHealth().then((x) => [x]),
       checkGitVault().then((x) => [x]),
+      checkKiRouting(),
     ]);
     checks = groups.flat();
   } catch (err) {

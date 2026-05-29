@@ -1,34 +1,101 @@
 import { Tier1Provider } from "./Tier1Provider.js";
 import { Tier2Provider, EmbeddingUnavailableError } from "./Tier2Provider.js";
+import { Tier1BM25 } from "./Tier1BM25.js";
 import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./MemoryProvider.js";
 
 /**
  * CombinedProvider — Tier 1 + Tier 2 merged.
  *
- * Search: Tier 1 first (always available), then Tier 2 appended for hits
- * not already returned by Tier 1. relatedNotes: Tier 2 first (semantically
- * close beats structurally close), Tier 1 fallback when T2 returns empty.
+ * Search: the Tier-1 leg is served by the **indexed** `Tier1BM25` path
+ * (ParadeDB `pg_search` over the `note_search` table, with a built-in
+ * LIKE fallback when the extension is missing). This replaces the cold,
+ * per-note `getNote()` rebuild that `Tier1Provider` performed on first
+ * query — that rebuild was the ~25s structural-search latency (it read
+ * every note off disk/git). The BM25 path is a single indexed SQL query,
+ * so the hot path stays sub-second on a ~100-note vault.
+ *
+ * `Tier1Provider` (in-memory) is kept as the always-available fallback for
+ * two cases:
+ *   1. `note_search` returns zero hits for a non-empty query — e.g. the
+ *      table was never backfilled for pre-existing notes, or pg_search +
+ *      the table are both unavailable. We then fall back to the structural
+ *      index so result quality never regresses to 0.
+ *   2. Structured filter queries (tagFilter / folderPrefix / wikilinkTarget)
+ *      and `relatedNotes`, which need the structural tag/wikilink index that
+ *      `note_search` does not model.
+ *
+ * Then Tier 2 (semantic) is appended for hits not already returned.
+ * relatedNotes: Tier 2 first (semantically close beats structurally close),
+ * Tier 1 fallback when T2 returns empty.
  *
  * indexNote: Tier 1 marks dirty (free), Tier 2 fire-and-forget (Story 5.4).
+ * The `note_search` BM25 corpus is maintained separately via
+ * `queueSearchIndexRefresh` in `./index.ts` on every save — not here.
  */
 export class CombinedProvider implements MemoryProvider {
   readonly t1: Tier1Provider;
   readonly t2: Tier2Provider;
+  /** Indexed BM25 path used for the Tier-1 leg of `search`. */
+  private readonly bm25: Tier1BM25;
+  /** Vault to scope BM25 queries to (multi-tenant correctness). */
+  private readonly vaultId?: string;
 
-  constructor(t1: Tier1Provider, t2: Tier2Provider) {
+  constructor(t1: Tier1Provider, t2: Tier2Provider, vaultId?: string, bm25?: Tier1BM25) {
     this.t1 = t1;
     this.t2 = t2;
+    this.vaultId = vaultId;
+    this.bm25 = bm25 ?? new Tier1BM25();
   }
 
   async search(query: string, opts: SearchOpts = {}): Promise<SearchHit[]> {
-    const t1Hits = await this.t1.search(query, opts);
+    const limit = opts.limit ?? 25;
+
+    // ── Tier-1 leg: indexed BM25 (fast) with a structural fallback ──────────
+    //
+    // The BM25 path does not model the structured filters (tagFilter,
+    // folderPrefix, wikilinkTarget). When the caller passes one of those we
+    // must use the structural `Tier1Provider`, which understands them. Plain
+    // free-text queries (the CommandPalette / cmd-k hot path) take the fast
+    // indexed route.
+    const needsStructuralFilter = Boolean(
+      opts.tagFilter?.length || opts.folderPrefix || opts.wikilinkTarget,
+    );
+
+    let t1Hits: SearchHit[];
+    if (!needsStructuralFilter && query.trim().length > 0) {
+      // Tier1BM25.search already sanitizes the query, scopes by vault, and
+      // degrades to LIKE when pg_search is unavailable — and never reads a
+      // note off disk. Map BM25Hit → SearchHit (tier "t1").
+      const bm25Hits = await this.bm25.search(query, limit, this.vaultId);
+      if (bm25Hits.length > 0) {
+        t1Hits = bm25Hits.map((h) => ({
+          noteId: h.noteId,
+          title: h.title,
+          snippet: h.snippet,
+          score: h.score,
+          tier: "t1" as const,
+        }));
+      } else {
+        // Empty BM25 result for a real query → the corpus may be
+        // un-backfilled (note_search empty for legacy notes) or pg_search +
+        // the table are both unavailable. Fall back to the structural index
+        // so quality never regresses to 0. This is the only path that can
+        // still trigger the slower in-memory rebuild — and only when BM25
+        // found nothing at all.
+        t1Hits = await this.t1.search(query, opts);
+      }
+    } else {
+      // Structural filters or empty/filter-only query → structural index.
+      t1Hits = await this.t1.search(query, opts);
+    }
+
     const seen = new Set(t1Hits.map((h) => h.noteId));
     const t2Hits = await this.t2.search(query, opts);
     const merged = [...t1Hits];
     for (const h of t2Hits) {
       if (!seen.has(h.noteId)) merged.push(h);
     }
-    return merged.slice(0, opts.limit ?? 25);
+    return merged.slice(0, limit);
   }
 
   async relatedNotes(noteId: string, opts: RelatedOpts = {}): Promise<SearchHit[]> {
