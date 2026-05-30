@@ -200,3 +200,27 @@ development_status:
   # 10.13 setup-guard wiring in server/src/routes/{auth,setup}.ts (server-owned, dokumentiert),
   # 10.10 echte Single-Commit-Atomarität braucht gitService-Batch-API (dokumentierter Rest-Gap).
   epic-10-retrospective: optional
+
+  # ── Epic 11: Lokyy-Workspace ───────────────────────────────────────────────
+  # Quelle: 90_ideas/dynamische-seitenleisten-menuepunkte (01KSW7SYGZQ0G9XAPHY1EVR1ME)
+  # + share-to-inbox-pipeline (01KSW6SESJJ87M3J9ZQH7QK9VV). Plan: epic-11-lokyy-workspace.md
+  # Prompt-Bibliothek verworfen (Prompt = Skill ohne Ausführungsbefehl).
+  # Scope: anpassbare Sidebar (Ordner→Menüpunkt + View-Typ) + Skill-UX. Verarbeitungs-
+  # Pipelines bleiben Epic 6; nur die PWA-Share-Front-Tür (11.8) brückt hierher.
+  # Architect-Sign-off VOR Welle 1 (Menü-Config-Schema + View-Typ-Registry).
+  # Wellen: 1 (11.1,11.4) → 2 (11.3,11.2) → 3 (11.5,11.6,11.7) → 4 (11.8).
+  # Stories geschnitten 30.05 (Scrum Master). Architektur-Sign-off: epic-11-architecture-addendum.md (Winston).
+  epic-11: in-progress
+  11-1-sidebar-menu-config-model-vault-persistence: ready-for-dev
+  11-2-sidebar-menu-editor-ui-gear: ready-for-dev
+  11-3-sidebar-menu-rendering-system-vs-custom: ready-for-dev
+  11-4-view-type-registry-tree-skills: ready-for-dev
+  11-5-skill-library-view-cards-markdown: ready-for-dev
+  11-6-skill-creator-skill-seed: ready-for-dev
+  11-7-open-skill-format-mcp-exposure-docs: ready-for-dev
+  11-8-pwa-share-target-front-door: ready-for-dev   # K-4: nur Frontend, Server existiert
+  # Welle 5 — Workspace-Shell UX (Quelle: 90_ideas/workspace-shell-ux 01KSW8DAN19ZDFNSW5ZR44ZSBG)
+  11-9-collapsible-panel-faehnchen-pattern: ready-for-dev   # K-2: localStorage-State
+  11-10-clickable-logo-home-menu-point: ready-for-dev   # Paket mit 11.11
+  11-11-dashboard-home-view-type: ready-for-dev   # K-3: vaultActivity-Helper; Lose Enden = Checkbox + #todo
+  epic-11-retrospective: optional
