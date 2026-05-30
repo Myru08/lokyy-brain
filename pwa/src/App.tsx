@@ -337,6 +337,14 @@ export function App() {
   // auch der Default-Punkt nach Edits frisch aufgelöst wird).
   const [menuEditorOpen, setMenuEditorOpen] = useState(false);
   const [menuReloadKey, setMenuReloadKey] = useState(0);
+  // Epic 11 layout fix — explizite Modus-Steuerung der Hauptfläche.
+  //   "menu"   → die per Workspace-Menü gewählte View (resolveView) füllt <main>.
+  //   "editor" → der bestehende Editor (Tabs/Backlinks/Graph) füllt <main>.
+  // Ein View-Menüpunkt-Klick (dashboard/skills) setzt "menu"; `open(noteId)`
+  // (Notiz aus dem Tree oder einer View) setzt "editor". Boot startet auf
+  // "menu" (Home/Dashboard füllt die Hauptfläche). Der FileTree lebt IMMER im
+  // <aside> und wird nie durch eine View ersetzt.
+  const [mainView, setMainView] = useState<"editor" | "menu">("menu");
   const [backlinksRefresh, setBacklinksRefresh] = useState(0);
   const [openTabs, setOpenTabs] = useState<TabRef[]>([]);
   const [scrollToLine, setScrollToLine] = useState<number | null>(null);
@@ -420,9 +428,25 @@ export function App() {
           items.find((i) => i.id === "system:home") ??
           items.find((i) => i.kind === "system") ??
           items[0];
-        if (home) setActiveMenuItem(home);
+        if (home) {
+          setActiveMenuItem(home);
+          // Home anwählen heißt: die Hauptfläche zeigt wieder die View.
+          setMainView("menu");
+        }
       })
       .catch(() => {});
+  }
+
+  /**
+   * Epic 11 layout fix — ein Workspace-Menüpunkt wurde gewählt. Setzt ihn aktiv
+   * und schaltet die Hauptfläche auf die zugehörige View (resolveView füllt
+   * <main>). Der FileTree im <aside> bleibt davon unberührt — er wird nie
+   * ersetzt. Auf Mobile schließt die Auswahl zusätzlich den Drawer.
+   */
+  function selectMenuItem(item: MenuItem) {
+    setActiveMenuItem(item);
+    setMainView("menu");
+    if (isMobile) setSidebarOpen(false);
   }
 
   const saveTimer = useRef<number | null>(null);
@@ -866,6 +890,10 @@ export function App() {
   async function open(id: string) {
     await flushNow();
     setPendingServerBody(null);
+    // Eine Notiz zu öffnen schaltet die Hauptfläche auf den Editor (egal ob aus
+    // dem Tree oder aus einer View heraus). Die Menü-Auswahl bleibt erhalten,
+    // verdrängt den Editor aber nicht mehr.
+    setMainView("editor");
     try {
       const note = await api.getNote(id);
       dirtyBody.current = note.body;
@@ -2211,22 +2239,10 @@ export function App() {
             }}
           />
         )}
-        {/* Epic 11 — Workspace-Sidebar-Rail (Story 11.3), desktop-only. Schmale
-            navigierbare Menüleiste (System- + Custom-Punkte). Auswahl setzt den
-            aktiven Menüpunkt (App = Quelle der Wahrheit), das Zahnrad öffnet den
-            MenuEditor (Story 11.2). Auf Mobile bleibt der bestehende
-            Hamburger-Drawer (FileTree) die Navigation. */}
-        {!isMobile && (
-          <Sidebar
-            // Remount nach Editor-Close, damit die Rail ihr Menü neu fetcht
-            // (sie lädt nur beim Mount; menuReloadKey forciert den Refetch).
-            key={menuReloadKey}
-            activeItemId={activeMenuItem?.id ?? null}
-            onSelectItem={(item) => setActiveMenuItem(item)}
-            onOpenEditor={() => setMenuEditorOpen(true)}
-          />
-        )}
-        {/* Datei-Baum + Tag-Pane.
+        {/* Epic 11 Layout-Fix — KEINE separate Sidebar-Rail-Spalte mehr. Die
+            Menüpunkte werden jetzt als kompakte Liste OBEN im <aside> gerendert
+            (embedded Sidebar), darunter IMMER der FileTree, ganz unten Tags. */}
+        {/* Workspace-Menüpunkte + Datei-Baum + Tags.
             On desktop: always-visible static aside.
             On mobile: fixed slide-over drawer behind a hamburger button.
             The drawer state is controlled by `sidebarOpen`; opening a note
@@ -2304,53 +2320,50 @@ export function App() {
               </button>
             </div>
           )}
+          {/* (a) Workspace-Menüpunkte OBEN — kompakte Liste (embedded Sidebar),
+              KEINE eigene Rail-Spalte mehr. Auswahl setzt den aktiven
+              Menüpunkt + schaltet <main> auf die View (selectMenuItem); das
+              Zahnrad öffnet den MenuEditor (Story 11.2). key=menuReloadKey
+              forciert den Menü-Refetch nach einem Editor-Close. Sowohl Desktop
+              als auch Mobile (im Drawer) zeigen die Menüpunkte. */}
+          <Sidebar
+            key={menuReloadKey}
+            embedded
+            activeItemId={activeMenuItem?.id ?? null}
+            onSelectItem={selectMenuItem}
+            onOpenEditor={() => setMenuEditorOpen(true)}
+          />
+          {/* (b) Der FileTree DARUNTER — IMMER sichtbar, wird NIE durch eine
+              View ersetzt. Notiz-Öffnen läuft über open()/openAndCloseDrawer →
+              <main> schaltet auf den Editor. */}
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 8px" }}>
-            {/* Epic 11: Auf Desktop rendert das Navigations-Panel die per
-                Workspace-Menü gewählte View (resolveView(item.viewType)) — für
-                den Default-/Tree-Punkt ist das die bestehende FileTree-Logik
-                (TreeView umhüllt FileTree). Auf Mobile bleibt der direkte
-                FileTree-Drawer unverändert (die Sidebar-Rail ist desktop-only).
-                Beim Notiz-Öffnen aus der View läuft alles über open() — die
-                bestehende Editor-/Tab-/Graph-Funktionalität bleibt intakt. */}
-            {!isMobile && activeMenuItem ? (
-              <Suspense fallback={null}>
-                {(() => {
-                  const View = resolveView(activeMenuItem.viewType);
-                  return (
-                    <View
-                      item={activeMenuItem}
-                      onOpenNote={(id) => void open(id)}
-                    />
-                  );
-                })()}
-              </Suspense>
-            ) : (
-              <FileTree
-                ref={fileTreeRef}
-                tree={tree}
-                activeId={active?.id ?? null}
-                onOpen={openAndCloseDrawer}
-                onCreate={handleCreate}
-                onRename={handleRename}
-                onMove={handleMove}
-                onDelete={handleDelete}
-                tagFilteredNoteIds={tagFilteredNoteIds}
-              />
-            )}
+            <FileTree
+              ref={fileTreeRef}
+              tree={tree}
+              activeId={active?.id ?? null}
+              onOpen={openAndCloseDrawer}
+              onCreate={handleCreate}
+              onRename={handleRename}
+              onMove={handleMove}
+              onDelete={handleDelete}
+              tagFilteredNoteIds={tagFilteredNoteIds}
+            />
           </div>
-          {/* Story 11.9 — Tags hinter dem einheitlichen Aufklapp-Fähnchen
-              (default geschlossen). Das bestehende TagPane bleibt unverändert;
-              CollapsiblePanel liefert Header + Scroll + Toggle. */}
+          {/* (c) Tags GANZ UNTEN — Aufklapp-Fähnchen, das von UNTEN nach OBEN
+              aufklappt (side="bottom"). Geschlossen sitzt nur das horizontale
+              Fähnchen an der Unterkante; offen füllt das TagPane (scroll-/
+              suchbar) nach oben hin. Das TagPane bleibt unverändert. */}
           <div
             style={{
               flexShrink: 0,
               maxHeight: "40%",
               minHeight: 0,
               display: "flex",
+              flexDirection: "column",
               borderTop: `1px solid ${C.border}`,
             }}
           >
-            <CollapsiblePanel id="tags" title="Tags" side="left">
+            <CollapsiblePanel id="tags" title="Tags" side="bottom">
               <div style={{ padding: "8px" }}>
                 <TagPane
                   activeTag={tagFilter}
@@ -2394,7 +2407,29 @@ export function App() {
             onActivate={(id) => void openNoteById(id)}
             onClose={closeTab}
           />
-          {active ? (
+          {/* Epic 11 Layout-Fix — Hauptflächen-Modus.
+              "menu" + aktiver View-Menüpunkt (dashboard/skills) → die View
+              (resolveView) FÜLLT die Hauptfläche. onOpenNote aus der View ruft
+              open() → setMainView("editor"), die Main-Fläche wechselt auf den
+              Editor. viewType "tree" hat keine eigene Main-View (der FileTree
+              lebt im aside) → fällt auf Editor/Leerzustand zurück. */}
+          {mainView === "menu" &&
+          activeMenuItem &&
+          activeMenuItem.viewType !== "tree" ? (
+            <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+              <Suspense fallback={null}>
+                {(() => {
+                  const View = resolveView(activeMenuItem.viewType);
+                  return (
+                    <View
+                      item={activeMenuItem}
+                      onOpenNote={(id) => void open(id)}
+                    />
+                  );
+                })()}
+              </Suspense>
+            </div>
+          ) : active ? (
             <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
               <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
                 <NoteHeader

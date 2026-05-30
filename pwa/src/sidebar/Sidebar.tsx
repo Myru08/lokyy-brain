@@ -70,6 +70,15 @@ export interface SidebarProps {
    * Argument → Editor im Listen-/Anlege-Modus (Zahnrad-Button oben).
    */
   onOpenEditor: (item?: MenuItem) => void;
+  /**
+   * Eingebetteter Modus (Epic 11 Layout-Fix): NICHT als eigene Rail-Spalte
+   * rendern, sondern als kompakte Menü-Liste OBEN im bestehenden `<aside>`
+   * (über dem FileTree). Es gibt dann keine eigene Rail-Breite und keinen
+   * Collapse-Toggle — die Items werden immer expandiert gezeigt und das
+   * Wrapper-Element trägt keine eigene Spalten-Border. Default `false`
+   * (eigenständige Rail, altes Verhalten).
+   */
+  embedded?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -111,18 +120,23 @@ export function Sidebar({
   activeItemId,
   onSelectItem,
   onOpenEditor,
+  embedded = false,
 }: SidebarProps) {
   const [items, setItems] = useState<MenuItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const [collapsed, setCollapsed] = useState<boolean>(() => {
+  // Im eingebetteten Modus gibt es keinen Collapse — die Liste ist immer
+  // expandiert (kompakt im aside-Header). Der Collapse-State bleibt nur für die
+  // eigenständige Rail relevant.
+  const [collapsedRaw, setCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(LS_COLLAPSED) === "1";
     } catch {
       return false;
     }
   });
+  const collapsed = embedded ? false : collapsedRaw;
 
   // Letzte aktive Auswahl persistieren (Muster lokyy:*). Die App ist die
   // Quelle der Wahrheit (activeItemId-Prop); wir spiegeln sie nur, damit ein
@@ -135,10 +149,11 @@ export function Sidebar({
   }, [activeItemId]);
 
   useEffect(() => {
+    if (embedded) return; // eingebettet kein eigener Collapse-State
     try {
-      localStorage.setItem(LS_COLLAPSED, collapsed ? "1" : "0");
+      localStorage.setItem(LS_COLLAPSED, collapsedRaw ? "1" : "0");
     } catch {}
-  }, [collapsed]);
+  }, [collapsedRaw, embedded]);
 
   const loadMenu = useCallback(async () => {
     setLoading(true);
@@ -174,21 +189,42 @@ export function Sidebar({
 
   const width = collapsed ? 56 : 240;
 
+  // Eingebettet: kein eigenes <aside>-Element (das ist bereits der aside in
+  // App.tsx), sondern ein <div>-Block ohne eigene Spalten-Breite/-Border, der
+  // sich auf seine Inhaltshöhe beschränkt und den FileTree darunter nicht
+  // verdrängt. Eigenständig (Rail): bisheriges Verhalten unverändert.
+  const Wrapper: "aside" | "div" = embedded ? "div" : "aside";
+
   return (
-    <aside
-      style={{
-        width,
-        flexShrink: 0,
-        height: "100%",
-        boxSizing: "border-box",
-        display: "flex",
-        flexDirection: "column",
-        background: C.panel,
-        borderRight: `1px solid ${C.border}`,
-        fontFamily: FONT.ui,
-        transition: "width 140ms ease",
-        overflow: "hidden",
-      }}
+    <Wrapper
+      style={
+        embedded
+          ? {
+              flexShrink: 0,
+              boxSizing: "border-box",
+              display: "flex",
+              flexDirection: "column",
+              maxHeight: "45%",
+              minHeight: 0,
+              background: C.panel,
+              borderBottom: `1px solid ${C.border}`,
+              fontFamily: FONT.ui,
+              overflow: "hidden",
+            }
+          : {
+              width,
+              flexShrink: 0,
+              height: "100%",
+              boxSizing: "border-box",
+              display: "flex",
+              flexDirection: "column",
+              background: C.panel,
+              borderRight: `1px solid ${C.border}`,
+              fontFamily: FONT.ui,
+              transition: "width 140ms ease",
+              overflow: "hidden",
+            }
+      }
     >
       {/* Kopf: Zahnrad (Editor öffnen, 11.2) + Collapse-Toggle. */}
       <div
@@ -230,18 +266,20 @@ export function Sidebar({
               <SettingsIcon size={16} />
             </button>
           )}
-          <button
-            type="button"
-            title={collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen"}
-            aria-label={collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen"}
-            aria-expanded={!collapsed}
-            onClick={() => setCollapsed((c) => !c)}
-            style={iconButtonStyle}
-            onMouseEnter={hoverOn}
-            onMouseLeave={hoverOff}
-          >
-            {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
-          </button>
+          {!embedded && (
+            <button
+              type="button"
+              title={collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen"}
+              aria-label={collapsed ? "Seitenleiste ausklappen" : "Seitenleiste einklappen"}
+              aria-expanded={!collapsed}
+              onClick={() => setCollapsed((c) => !c)}
+              style={iconButtonStyle}
+              onMouseEnter={hoverOn}
+              onMouseLeave={hoverOff}
+            >
+              {collapsed ? <ChevronRight size={16} /> : <ChevronLeft size={16} />}
+            </button>
+          )}
         </div>
       </div>
 
@@ -304,7 +342,7 @@ export function Sidebar({
             />
           ))}
       </nav>
-    </aside>
+    </Wrapper>
   );
 }
 

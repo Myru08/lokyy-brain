@@ -1,6 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, ChevronUp, ChevronDown } from "lucide-react";
 import { C, FONT } from "../theme.js";
+
+/** An welcher Kante das Fähnchen sitzt. */
+export type PanelSide = "left" | "right" | "bottom" | "top";
 
 /**
  * CollapsiblePanel — einheitliches Aufklapp-Fähnchen-Pattern (Story 11.9).
@@ -24,8 +27,16 @@ export function CollapsiblePanel(props: {
   title: string;
   /** lucide icon, optional */
   icon?: ReactNode;
-  /** bestimmt, an welcher Kante das Fähnchen sitzt */
-  side: "left" | "right";
+  /**
+   * Bestimmt, an welcher Kante das Fähnchen sitzt und in welche Richtung das
+   * Panel aufklappt:
+   *   "left"/"right"   → vertikales Fähnchen an der Seitenkante, klappt zur
+   *                      Seite auf (volle Höhe).
+   *   "bottom"         → horizontales Fähnchen UNTEN, klappt nach OBEN auf
+   *                      (volle Breite, scroll-/suchbare Fläche).
+   *   "top"            → horizontales Fähnchen OBEN, klappt nach UNTEN auf.
+   */
+  side: PanelSide;
   /** Default false ("alle Panels default geschlossen") */
   defaultOpen?: boolean;
   /** das bestehende Panel (TagPane/Outline/BacklinksPanel) UNVERÄNDERT */
@@ -48,9 +59,22 @@ export function CollapsiblePanel(props: {
     } catch {}
   }, [id, open]);
 
+  // Orientierung: bottom/top sind horizontal (Fähnchen quer, klappt vertikal
+  // auf), left/right sind vertikal (Fähnchen hochkant, klappt seitlich auf).
+  const horizontal = side === "bottom" || side === "top";
+
   // Geschlossen → schmales Fähnchen an der side-Kante.
   if (!open) {
-    const OpenChevron = side === "left" ? ChevronRight : ChevronLeft;
+    // Pfeil zeigt in die Aufklapp-Richtung: bottom → nach oben, top → nach
+    // unten, left → nach rechts, right → nach links.
+    const OpenChevron =
+      side === "bottom"
+        ? ChevronUp
+        : side === "top"
+          ? ChevronDown
+          : side === "left"
+            ? ChevronRight
+            : ChevronLeft;
     return (
       <button
         type="button"
@@ -58,24 +82,48 @@ export function CollapsiblePanel(props: {
         title={`${title} öffnen`}
         aria-label={`${title} öffnen`}
         aria-expanded={false}
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 8,
-          flexShrink: 0,
-          width: 32,
-          height: "100%",
-          padding: "12px 0",
-          border: "none",
-          [side === "left" ? "borderRight" : "borderLeft"]:
-            `1px solid ${C.border}`,
-          background: C.panel,
-          color: C.textDim,
-          cursor: "pointer",
-          font: `500 11px ${FONT.ui}`,
-          transition: "color 120ms, background 120ms",
-        }}
+        style={
+          horizontal
+            ? {
+                display: "flex",
+                flexDirection: "row",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 8,
+                flexShrink: 0,
+                width: "100%",
+                height: 32,
+                padding: "0 12px",
+                border: "none",
+                [side === "bottom" ? "borderTop" : "borderBottom"]:
+                  `1px solid ${C.border}`,
+                background: C.panel,
+                color: C.textDim,
+                cursor: "pointer",
+                font: `500 11px ${FONT.ui}`,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                transition: "color 120ms, background 120ms",
+              }
+            : {
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "center",
+                gap: 8,
+                flexShrink: 0,
+                width: 32,
+                height: "100%",
+                padding: "12px 0",
+                border: "none",
+                [side === "left" ? "borderRight" : "borderLeft"]:
+                  `1px solid ${C.border}`,
+                background: C.panel,
+                color: C.textDim,
+                cursor: "pointer",
+                font: `500 11px ${FONT.ui}`,
+                transition: "color 120ms, background 120ms",
+              }
+        }
         onMouseEnter={(e) => {
           const el = e.currentTarget;
           el.style.color = C.accent;
@@ -92,15 +140,23 @@ export function CollapsiblePanel(props: {
           <span style={{ display: "flex", lineHeight: 0 }}>{icon}</span>
         )}
         <span
-          style={{
-            writingMode: "vertical-rl",
-            textOrientation: "mixed",
-            // links sitzt das Fähnchen, Text soll von oben nach unten lesbar sein
-            transform: side === "left" ? "rotate(180deg)" : undefined,
-            letterSpacing: "0.04em",
-            whiteSpace: "nowrap",
-            textTransform: "uppercase",
-          }}
+          style={
+            horizontal
+              ? {
+                  letterSpacing: "0.04em",
+                  whiteSpace: "nowrap",
+                  textTransform: "uppercase",
+                }
+              : {
+                  writingMode: "vertical-rl",
+                  textOrientation: "mixed",
+                  // links sitzt das Fähnchen, Text von oben nach unten lesbar
+                  transform: side === "left" ? "rotate(180deg)" : undefined,
+                  letterSpacing: "0.04em",
+                  whiteSpace: "nowrap",
+                  textTransform: "uppercase",
+                }
+          }
         >
           {title}
         </span>
@@ -109,35 +165,47 @@ export function CollapsiblePanel(props: {
   }
 
   // Offen → volle, scroll-/suchbare Fläche; Header mit Schließen-Knopf.
-  const CloseChevron = side === "left" ? ChevronLeft : ChevronRight;
-  return (
-    <section
-      aria-label={title}
+  // Schließen-Pfeil zeigt zurück zur Kante: bottom → nach unten, top → nach
+  // oben, left → nach links, right → nach rechts.
+  const CloseChevron =
+    side === "bottom"
+      ? ChevronDown
+      : side === "top"
+        ? ChevronUp
+        : side === "left"
+          ? ChevronLeft
+          : ChevronRight;
+
+  // Für side="bottom" sitzt der Header (mit Schließen) UNTEN an der Fähnchen-
+  // Kante, der scrollbare Inhalt darüber — das Panel klappt also nach OBEN auf.
+  // Für side="top" sitzt der Header oben. left/right behalten den Header oben.
+  const headerAtBottom = side === "bottom";
+
+  const sectionBorderStyle: React.CSSProperties =
+    side === "bottom"
+      ? { borderTop: `1px solid ${C.border}` }
+      : side === "top"
+        ? { borderBottom: `1px solid ${C.border}` }
+        : side === "left"
+          ? { borderRight: `1px solid ${C.border}` }
+          : { borderLeft: `1px solid ${C.border}` };
+
+  const header = (
+    <header
       style={{
         display: "flex",
-        flexDirection: "column",
-        height: "100%",
-        minHeight: 0,
+        alignItems: "center",
+        gap: 8,
         flexShrink: 0,
-        background: C.panel,
-        [side === "left" ? "borderRight" : "borderLeft"]:
-          `1px solid ${C.border}`,
+        padding: "8px 10px",
+        [headerAtBottom ? "borderTop" : "borderBottom"]:
+          `1px solid ${C.borderSoft}`,
+        color: C.text,
+        font: `600 12px ${FONT.ui}`,
+        letterSpacing: "0.02em",
+        textTransform: "uppercase",
       }}
     >
-      <header
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
-          flexShrink: 0,
-          padding: "8px 10px",
-          borderBottom: `1px solid ${C.borderSoft}`,
-          color: C.text,
-          font: `600 12px ${FONT.ui}`,
-          letterSpacing: "0.02em",
-          textTransform: "uppercase",
-        }}
-      >
         {icon != null && (
           <span style={{ display: "flex", lineHeight: 0, color: C.textDim }}>
             {icon}
@@ -178,7 +246,39 @@ export function CollapsiblePanel(props: {
           <CloseChevron size={16} />
         </button>
       </header>
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{children}</div>
+  );
+
+  const body = (
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>{children}</div>
+  );
+
+  return (
+    <section
+      aria-label={title}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        // bottom/top füllen die Breite ihres Containers; left/right die Höhe.
+        ...(horizontal
+          ? { width: "100%", maxHeight: "100%" }
+          : { height: "100%" }),
+        minHeight: 0,
+        flexShrink: 0,
+        background: C.panel,
+        ...sectionBorderStyle,
+      }}
+    >
+      {headerAtBottom ? (
+        <>
+          {body}
+          {header}
+        </>
+      ) : (
+        <>
+          {header}
+          {body}
+        </>
+      )}
     </section>
   );
 }
