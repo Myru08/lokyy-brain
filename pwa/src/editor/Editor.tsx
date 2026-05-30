@@ -20,6 +20,10 @@ import { mermaidPreviewExtension, mermaidTheme } from "./mermaidPreview.js";
 import { dataviewExtension, dataviewTheme } from "./dataviewWidget.js";
 import { imagePasteExtension } from "./imagePaste.js";
 import { wikilinkHoverExtension, hoverPreviewTheme } from "./hoverPreview.js";
+import {
+  frontmatterHideExtension,
+  frontmatterHideTheme,
+} from "./frontmatterHide.js";
 
 /**
  * Per-note cursor persistence (Story: editor save-lifecycle overhaul).
@@ -208,6 +212,11 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         lokyyTheme,
         lokyyHighlight,
         combinedAutocomplete,
+        // Frontmatter (führender YAML-Block) im Body ausblenden — Metadaten
+        // leben ausschließlich im Properties-Panel. Text bleibt im Doc-State,
+        // Speichern verliert das Frontmatter NICHT. Früh eingehängt, damit der
+        // Block-Range vor allen Inhalts-Previews greift.
+        frontmatterHideExtension, frontmatterHideTheme,
         livePreview,
         wikilinkExtension(
           (target) => onOpenRef.current(target),

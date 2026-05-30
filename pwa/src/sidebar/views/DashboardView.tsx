@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type ReactNode,
@@ -126,15 +127,17 @@ function Tile({
   );
 }
 
-/** Eine große Kennzahl mit Beschriftung. */
+/** Eine große Kennzahl mit Beschriftung. `size` skaliert die Ziffer. */
 function Stat({
   value,
   label,
   accent = false,
+  size = 34,
 }: {
   value: ReactNode;
   label: string;
   accent?: boolean;
+  size?: number;
 }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
@@ -142,14 +145,23 @@ function Stat({
         style={{
           color: accent ? C.accent : C.text,
           fontFamily: FONT.serif,
-          fontSize: 34,
+          fontSize: size,
           fontWeight: 600,
-          lineHeight: 1.05,
+          lineHeight: 1.02,
         }}
       >
         {value}
       </div>
-      <div style={{ color: C.textDim, fontSize: 12 }}>{label}</div>
+      <div
+        style={{
+          color: C.textDim,
+          fontSize: size >= 48 ? 13 : 12,
+          textTransform: size >= 48 ? "uppercase" : "none",
+          letterSpacing: size >= 48 ? "0.05em" : "normal",
+        }}
+      >
+        {label}
+      </div>
     </div>
   );
 }
@@ -258,17 +270,51 @@ function heatColor(commits: number, max: number): string {
 }
 
 /**
+ * Misst die Breite des umgebenden Elements (ResizeObserver) und liefert sie
+ * zurück. Liefert 0, bis das Element gemessen ist — Caller rendern dann
+ * defensiv (z.B. erst ab `width > 0`).
+ */
+function useMeasuredWidth(): [
+  (node: HTMLDivElement | null) => void,
+  number,
+] {
+  const [width, setWidth] = useState(0);
+  const observerRef = useRef<ResizeObserver | null>(null);
+  const ref = useCallback((node: HTMLDivElement | null) => {
+    observerRef.current?.disconnect();
+    if (!node) return;
+    setWidth(node.clientWidth);
+    if (typeof ResizeObserver === "undefined") return;
+    const obs = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? node.clientWidth;
+      setWidth(w);
+    });
+    obs.observe(node);
+    observerRef.current = obs;
+  }, []);
+  return [ref, width];
+}
+
+/**
  * GitHub-artige Wochen-Spalten-Heatmap aus den gap-gefüllten `days[]`.
- * Spalten = Wochen, Zeilen = Wochentage (So…Sa). Wir richten den Start auf
- * den Wochentag des ersten Tages aus, damit die Spalten sauber sitzen.
+ * Spalten = Wochen, Zeilen = Wochentage (So…Sa).
+ *
+ * **Politur (O-5 Feedback):** KOMPLETT scroll-frei. Wir messen die Kachel-
+ * Breite und passen Zellengröße + Anzahl sichtbarer Wochen so an, dass das
+ * Raster exakt in die verfügbare Breite passt. Bei schmalen Kacheln werden
+ * die ältesten Wochen abgeschnitten (neueste rechts bleiben sichtbar) und
+ * die Zellen auf eine lesbare Mindestgröße geklemmt.
  */
 function ActivityHeatmap({ days }: { days: DashboardActivityDay[] }) {
+  const [wrapRef, width] = useMeasuredWidth();
+
   const max = useMemo(
     () => days.reduce((m, d) => (d.commits > m ? d.commits : m), 0),
     [days],
   );
+
   // In Wochen-Spalten gruppieren (7 Zeilen, Index = Wochentag des Datums).
-  const weeks = useMemo(() => {
+  const allWeeks = useMemo(() => {
     const cols: (DashboardActivityDay | null)[][] = [];
     let current: (DashboardActivityDay | null)[] = [];
     for (const day of days) {
@@ -290,30 +336,242 @@ function ActivityHeatmap({ days }: { days: DashboardActivityDay[] }) {
     return cols;
   }, [days]);
 
-  if (days.length === 0) {
-    return <div style={QUIET_HINT}>Noch keine Commit-Aktivität.</div>;
-  }
+  // Responsive Layout: Zellengröße + sichtbare Wochen aus der Kachelbreite.
+  // Wir zielen auf möglichst viele Wochen bei lesbarer Zellengröße. Erst die
+  // größtmögliche Zelle wählen, bei der ALLE Wochen passen; reicht das nicht,
+  // auf die Mindestgröße gehen und nur die jüngsten N Wochen zeigen.
+  const GAP = 3;
+  const MIN_CELL = 7;
+  const MAX_CELL = 13;
+  const layout = useMemo(() => {
+    const weekCount = allWeeks.length;
+    if (width <= 0 || weekCount === 0) {
+      return { cell: 11, weeks: allWeeks };
+    }
+    // Breite, die eine Spalte (Zelle + Gap) bei Zellengröße `c` belegt.
+    const colsThatFit = (c: number) =>
+      Math.floor((width + GAP) / (c + GAP));
+    // Größte Zelle finden, bei der alle Wochen passen.
+    for (let c = MAX_CELL; c >= MIN_CELL; c--) {
+      if (colsThatFit(c) >= weekCount) {
+        return { cell: c, weeks: allWeeks };
+      }
+    }
+    // Nicht alle passen: Mindestzelle, jüngste Wochen behalten.
+    const fit = Math.max(1, colsThatFit(MIN_CELL));
+    return { cell: MIN_CELL, weeks: allWeeks.slice(-fit) };
+  }, [width, allWeeks]);
 
   return (
-    <div style={{ overflowX: "auto", paddingBottom: 2 }}>
-      <div style={{ display: "flex", gap: 3 }}>
-        {weeks.map((week, wi) => (
-          <div key={wi} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
-            {week.map((day, di) => (
-              <div
-                key={di}
-                title={day ? `${day.date}: ${day.commits} Commit(s)` : ""}
-                style={{
-                  width: 11,
-                  height: 11,
-                  borderRadius: 2.5,
-                  background: day ? heatColor(day.commits, max) : "transparent",
-                }}
-              />
-            ))}
+    <div ref={wrapRef} style={{ width: "100%", minWidth: 0 }}>
+      {days.length === 0 ? (
+        <div style={QUIET_HINT}>Noch keine Commit-Aktivität.</div>
+      ) : (
+        <div style={{ display: "flex", gap: GAP, overflow: "hidden" }}>
+          {layout.weeks.map((week, wi) => (
+            <div
+              key={wi}
+              style={{ display: "flex", flexDirection: "column", gap: GAP }}
+            >
+              {week.map((day, di) => (
+                <div
+                  key={di}
+                  title={day ? `${day.date}: ${day.commits} Commit(s)` : ""}
+                  style={{
+                    width: layout.cell,
+                    height: layout.cell,
+                    borderRadius: Math.max(2, layout.cell * 0.22),
+                    background: day
+                      ? heatColor(day.commits, max)
+                      : "transparent",
+                  }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Halbkreis-Gauge (Vault-Gesundheit) ───────────────────────────────────── */
+
+/**
+ * Radiales Halbkreis-Gauge (SVG, Theme-Farben) für die Vault-Gesundheit.
+ * `value` 0..1 = Anteil „gesund" (1 = makellos). Bei vielen defekten Links
+ * schlägt der Bogen von Orange-Akzent in Richtung Fehler-Rot um. Reiner SVG-
+ * Arc, kein ext. Dependency.
+ */
+function HealthGauge({
+  ratio,
+  brokenLinks,
+}: {
+  ratio: number;
+  brokenLinks: number;
+}) {
+  const clamped = Math.max(0, Math.min(1, ratio));
+  // Halbkreis-Geometrie.
+  const W = 132;
+  const H = 74;
+  const cx = W / 2;
+  const cy = H - 6;
+  const r = 56;
+  const stroke = 10;
+  // Bogen geht von 180° (links) nach 0° (rechts).
+  const polar = (deg: number) => {
+    const rad = (Math.PI * deg) / 180;
+    return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+  };
+  const start = polar(180);
+  const end = polar(180 - 180 * clamped);
+  const full = polar(0);
+  const largeArc = 180 * clamped > 180 ? 1 : 0;
+  const arcColor =
+    brokenLinks === 0 ? C.ok : clamped > 0.85 ? C.gold : C.err;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+      <svg
+        width={W}
+        height={H}
+        viewBox={`0 0 ${W} ${H}`}
+        role="img"
+        aria-label={`Vault-Gesundheit: ${brokenLinks} defekte Links`}
+      >
+        {/* Track */}
+        <path
+          d={`M ${start.x} ${start.y} A ${r} ${r} 0 0 1 ${full.x} ${full.y}`}
+          fill="none"
+          stroke={C.elevated}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+        />
+        {/* Wert-Bogen */}
+        {clamped > 0 && (
+          <path
+            d={`M ${start.x} ${start.y} A ${r} ${r} 0 ${largeArc} 1 ${end.x} ${end.y}`}
+            fill="none"
+            stroke={arcColor}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+          />
+        )}
+        {/* Zentrale Kennzahl */}
+        <text
+          x={cx}
+          y={cy - 14}
+          textAnchor="middle"
+          fontFamily={FONT.serif}
+          fontSize={26}
+          fontWeight={600}
+          fill={brokenLinks > 0 ? C.accent : C.text}
+        >
+          {brokenLinks}
+        </text>
+        <text
+          x={cx}
+          y={cy + 2}
+          textAnchor="middle"
+          fontFamily={FONT.ui}
+          fontSize={9.5}
+          fill={C.textDim}
+        >
+          defekte Links
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+/* ── Typ-Breakdown (Notizen pro Typ als Mini-Bars) ─────────────────────────── */
+
+/** Deutsche Labels für die geläufigsten Doc-Typen (Fallback: roher Key). */
+const TYPE_LABELS: Record<string, string> = {
+  note: "Notizen",
+  capture: "Captures",
+  project: "Projekte",
+  task: "Tasks",
+  decision: "Entscheidungen",
+  meeting: "Meetings",
+  customer: "Kunden",
+  workflow: "Workflows",
+  intervention: "Interventionen",
+  content: "Content",
+  skill: "Skills",
+};
+
+/**
+ * Horizontale Mini-Bar-Liste „Notizen pro Typ". Rein aus
+ * `counts.byType` — kein neuer Backend-Call. Sortiert absteigend, zeigt die
+ * Top-Typen, der Rest wird zu „weitere" zusammengefasst.
+ */
+function TypeBreakdown({
+  byType,
+  total,
+}: {
+  byType: Record<string, number>;
+  total: number;
+}) {
+  const rows = useMemo(() => {
+    const entries = Object.entries(byType).sort((a, b) => b[1] - a[1]);
+    const top = entries.slice(0, 5);
+    const restCount = entries
+      .slice(5)
+      .reduce((sum, [, n]) => sum + n, 0);
+    const max = entries.reduce((m, [, n]) => (n > m ? n : m), 0) || 1;
+    return { top, restCount, max };
+  }, [byType]);
+
+  if (rows.top.length === 0) {
+    return <div style={QUIET_HINT}>Noch keine Notizen.</div>;
+  }
+
+  const pct = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7, flex: 1 }}>
+      {rows.top.map(([type, count]) => (
+        <div key={type} style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 11.5,
+              color: C.textDim,
+            }}
+          >
+            <span style={{ color: C.text }}>
+              {TYPE_LABELS[type] ?? type}
+            </span>
+            <span style={{ fontFamily: FONT.mono, color: C.textFaint }}>
+              {count} · {pct(count)}%
+            </span>
           </div>
-        ))}
-      </div>
+          <div
+            style={{
+              height: 5,
+              borderRadius: 3,
+              background: C.elevated,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                width: `${Math.max(3, (count / rows.max) * 100)}%`,
+                height: "100%",
+                background: C.accent,
+                borderRadius: 3,
+              }}
+            />
+          </div>
+        </div>
+      ))}
+      {rows.restCount > 0 && (
+        <div style={{ ...QUIET_HINT, marginTop: 2 }}>
+          +{rows.restCount} in weiteren Typen
+        </div>
+      )}
     </div>
   );
 }
@@ -377,6 +635,14 @@ export function DashboardView({ onOpenNote }: ViewProps) {
   const [capturing, setCapturing] = useState(false);
   const [captureMsg, setCaptureMsg] = useState<string | null>(null);
 
+  // Import-Widget (reused den bestehenden Import-Mechanismus: api.importUrl
+  // → /api/pipes/import, derselbe Pfad wie das ImportPanel). Ziel-Ordner-
+  // Default wird wie im Panel aus den System-Settings gezogen.
+  const [importUrlText, setImportUrlText] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importMsg, setImportMsg] = useState<string | null>(null);
+  const [importFolder, setImportFolder] = useState("30_captures");
+
   const loadSummary = useCallback(async () => {
     setSummaryErr(null);
     try {
@@ -399,6 +665,14 @@ export function DashboardView({ onOpenNote }: ViewProps) {
       .catch(() => setLooseEnds(null));
     // R-1: Konsolidierung darf leer/fehlend sein.
     void api.getAgentReviewQueue().then(setReview).catch(() => setReview(null));
+    // Import-Ziel-Default (still degradieren auf "30_captures").
+    void api
+      .getImportDefaults()
+      .then((d) => {
+        const v = d.defaultImportFolder?.trim();
+        if (v) setImportFolder(v);
+      })
+      .catch(() => {});
   }, [loadSummary]);
 
   // Heutiges Journal öffnen oder anlegen.
@@ -439,6 +713,33 @@ export function DashboardView({ onOpenNote }: ViewProps) {
     }
   }, [capture, capturing]);
 
+  // Import-Widget: stößt den bestehenden aktiven Import an (Auto-Typ-Erkennung
+  // serverseitig). Quittiert ähnlich wie das ImportPanel — niemals rohe JSON.
+  const submitImport = useCallback(async () => {
+    const target = importUrlText.trim();
+    if (!target || importing) return;
+    if (!/^https?:\/\//i.test(target)) {
+      setImportMsg("Bitte eine http(s)-URL angeben.");
+      return;
+    }
+    setImporting(true);
+    setImportMsg(null);
+    try {
+      await api.importUrl({
+        url: target,
+        targetFolder: importFolder.trim() || "30_captures",
+      });
+      setImportUrlText("");
+      setImportMsg("Import gestartet — landet in der Pipe. ✓");
+    } catch (e) {
+      setImportMsg(
+        e instanceof Error ? e.message : "Import fehlgeschlagen",
+      );
+    } finally {
+      setImporting(false);
+    }
+  }, [importUrlText, importing, importFolder]);
+
   if (summaryErr) {
     return (
       <div style={{ padding: 16, color: C.err, fontFamily: FONT.mono, fontSize: 12 }}>
@@ -478,36 +779,71 @@ export function DashboardView({ onOpenNote }: ViewProps) {
           gap: 12,
         }}
       >
-        {/* Hero-Zahlen */}
-        <Tile title="Vault" span={2}>
-          <div style={{ display: "flex", gap: 28, flexWrap: "wrap" }}>
-            <Stat value={summary.counts.notes} label="Notizen" accent />
-            <Stat value={summary.counts.tags} label="Tags" />
-            <Stat
-              value={Object.keys(summary.counts.byType).length}
-              label="Typen"
+        {/* Hero-Zahlen — prominent + Typ-Breakdown */}
+        <Tile title="Vault" span={2} rowSpan={2}>
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              height: "100%",
+              gap: 14,
+            }}
+          >
+            {/* Riesige primäre Kennzahl */}
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+              <Stat value={summary.counts.notes} label="Notizen" accent size={64} />
+            </div>
+            {/* Sekundäre Kennzahlen */}
+            <div style={{ display: "flex", gap: 32, flexWrap: "wrap" }}>
+              <Stat value={summary.counts.tags} label="Tags" size={30} />
+              <Stat
+                value={Object.keys(summary.counts.byType).length}
+                label="Typen"
+                size={30}
+              />
+            </div>
+            {/* Breakdown pro Typ — nutzt die Kachelfläche, klickt nirgendwo
+                hin (reine Übersicht; Filter-Navigation = separates nice-to-have). */}
+            <TypeBreakdown
+              byType={summary.counts.byType}
+              total={summary.counts.notes}
             />
           </div>
         </Tile>
 
-        {/* Vault-Gesundheit */}
+        {/* Vault-Gesundheit — radiales Gauge + Liste defekter Links */}
         <Tile title="Gesundheit">
-          <Stat
-            value={summary.health.brokenLinks}
-            label="defekte Links"
-            accent={summary.health.brokenLinks > 0}
-          />
-          {summary.health.brokenTop.length > 0 && (
-            <div style={{ marginTop: 8 }}>
-              {summary.health.brokenTop.slice(0, 4).map((b, i) => (
-                <NoteRow
-                  key={`${b.sourceId}-${i}`}
-                  label={`↪ ${b.target}`}
-                  onOpen={() => onOpenNote(b.sourceId)}
-                />
-              ))}
-            </div>
-          )}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              height: "100%",
+            }}
+          >
+            <HealthGauge
+              ratio={
+                1 -
+                Math.min(
+                  1,
+                  summary.health.brokenLinks /
+                    Math.max(1, summary.counts.notes),
+                )
+              }
+              brokenLinks={summary.health.brokenLinks}
+            />
+            {summary.health.brokenTop.length > 0 && (
+              <div style={{ minHeight: 0, overflow: "hidden" }}>
+                {summary.health.brokenTop.slice(0, 4).map((b, i) => (
+                  <NoteRow
+                    key={`${b.sourceId}-${i}`}
+                    label={`↪ ${b.target}`}
+                    onOpen={() => onOpenNote(b.sourceId)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         </Tile>
 
         {/* Sync / System */}
@@ -668,6 +1004,51 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               />
               {captureMsg && (
                 <span style={{ ...QUIET_HINT, color: C.textDim }}>{captureMsg}</span>
+              )}
+            </div>
+          </div>
+        </Tile>
+
+        {/* Import — reused den aktiven Import-Mechanismus (api.importUrl →
+            /api/pipes/import). Keine neue Backend-Route. */}
+        <Tile title="Import" span={2}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={QUIET_HINT}>
+              URL einfügen — Website oder YouTube. Der Typ wird automatisch
+              erkannt und in {importFolder} abgelegt.
+            </div>
+            <input
+              value={importUrlText}
+              onChange={(e) => setImportUrlText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void submitImport();
+                }
+              }}
+              placeholder="https://…"
+              spellCheck={false}
+              style={{
+                fontFamily: FONT.mono,
+                fontSize: 13,
+                color: C.text,
+                background: C.bg,
+                border: `1px solid ${C.border}`,
+                borderRadius: 8,
+                padding: "8px 10px",
+                outline: "none",
+                width: "100%",
+                boxSizing: "border-box",
+              }}
+            />
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <ActionButton
+                label={importing ? "Starte…" : "Importieren"}
+                primary
+                onClick={() => void submitImport()}
+              />
+              {importMsg && (
+                <span style={{ ...QUIET_HINT, color: C.textDim }}>{importMsg}</span>
               )}
             </div>
           </div>
