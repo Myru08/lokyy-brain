@@ -674,6 +674,15 @@ export function createServer(): Server {
               ...(s.input_schema !== undefined ? { input_schema: s.input_schema } : {}),
               execution: s.execution,
               allowed_tools: s.allowed_tools,
+              // Epic 12 — optional folder-skill structure (omitted for
+              // single-note skills, which leave these undefined).
+              ...(s.basePath !== undefined ? { base_path: s.basePath } : {}),
+              ...(s.references && s.references.length > 0
+                ? { references: s.references }
+                : {}),
+              ...(s.templates && s.templates.length > 0
+                ? { templates: s.templates }
+                : {}),
             }));
           return text({ skills: summaries });
         }
@@ -713,12 +722,25 @@ export function createServer(): Server {
             skill.allowed_tools.length > 0
               ? `You should only use these tools: ${skill.allowed_tools.join(", ")}.\n\n${prompt}`
               : prompt;
+          // Epic 12 — progressive disclosure: surface companion reference
+          // PATHS only (with a load-on-demand hint), never embed their bodies.
+          // SKILL.md is the entry door; the agent reads references via
+          // read_note when it actually needs them.
+          const referencePaths = (skill.references ?? []).map((r) => r.path);
           return text({
             ok: true,
             skill_name: skillName,
             prompt: finalPrompt,
             allowed_tools: skill.allowed_tools,
             ...(skill.output !== undefined ? { output: skill.output } : {}),
+            ...(referencePaths.length > 0
+              ? {
+                  references: referencePaths,
+                  references_hint:
+                    "This skill ships reference docs. Load any you need on demand via read_note — they are not embedded here.",
+                }
+              : {}),
+            ...(skill.basePath !== undefined ? { base_path: skill.basePath } : {}),
           });
         }
         case "delete_note": {

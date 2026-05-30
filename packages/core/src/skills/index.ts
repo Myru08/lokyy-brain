@@ -1,5 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 
 import {
   parseFrontmatter,
@@ -33,6 +33,25 @@ export interface SkillOutput {
 }
 
 /**
+ * A companion `.md` reference doc that travels with a folder-skill (Anthropic
+ * Agent Skills format, Epic 12). `path` is relative to the vault root; `title`
+ * comes from the file's frontmatter `title` when present, else the filename.
+ */
+export interface SkillReference {
+  path: string;
+  title: string;
+}
+
+/**
+ * A companion template file that travels with a folder-skill. Any extension
+ * (e.g. `.jsx`, `.json`) — non-`.md` templates are not Vault-Contract notes.
+ * `path` is relative to the vault root.
+ */
+export interface SkillTemplate {
+  path: string;
+}
+
+/**
  * A typed skill definition parsed from a `type: skill` note. `prompt` is the
  * Markdown body below the frontmatter (the template that `renderPrompt`
  * substitutes tokens into).
@@ -46,6 +65,24 @@ export interface SkillDef {
   input_schema?: Record<string, unknown>;
   output?: SkillOutput;
   prompt: string;
+  /**
+   * Path of the skill (relative to the vault root). For a folder-skill this is
+   * the skill DIRECTORY (`70_pai/skills/<name>`); for a single-note skill it is
+   * the note path (`70_pai/skills/<name>.md`). Optional — populated by
+   * `listSkillNotes` (file I/O), never by `parseSkill` (pure). (Epic 12)
+   */
+  basePath?: string;
+  /**
+   * Companion reference docs under `<skillDir>/references/` (folder-skills
+   * only; empty/undefined for single-note skills). Progressive disclosure:
+   * paths only — the body is loaded on demand via read_note. (Epic 12)
+   */
+  references?: SkillReference[];
+  /**
+   * Companion template files under `<skillDir>/templates/` (folder-skills
+   * only; empty/undefined for single-note skills). (Epic 12)
+   */
+  templates?: SkillTemplate[];
 }
 
 /**
@@ -222,11 +259,70 @@ async function walkMarkdown(dir: string, acc: string[] = []): Promise<string[]> 
   return acc;
 }
 
+/** List immediate child file paths of `dir` (non-recursive; skip dot-files). */
+async function listFiles(dir: string): Promise<string[]> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return []; // dir does not exist — nothing to list
+  }
+  const out: string[] = [];
+  for (const entry of entries) {
+    if (entry.name.startsWith(".")) continue;
+    if (entry.isFile()) out.push(join(dir, entry.name));
+  }
+  return out;
+}
+
+/** A vault-root-relative path with forward slashes (stable across platforms). */
+function toVaultRelative(vaultRoot: string, absPath: string): string {
+  return relative(vaultRoot, absPath).split(sep).join("/");
+}
+
 /**
- * List all `type: skill` notes under a vault root (searched recursively;
- * skills primarily live in `70_pai/skills/` but any path is honored). A
- * skill that fails to parse/validate is skipped with a logged warning —
- * this NEVER throws because of a single broken skill (AC#3).
+ * Collect the `references/` (`.md`, title from frontmatter or filename) and
+ * `templates/` (any extension) companion files of a folder-skill directory.
+ * Pure file I/O — returns vault-relative paths. Missing subdirs yield [].
+ */
+async function collectSkillStructure(
+  vaultRoot: string,
+  skillDir: string,
+): Promise<{ references: SkillReference[]; templates: SkillTemplate[] }> {
+  const references: SkillReference[] = [];
+  for (const file of await listFiles(join(skillDir, "references"))) {
+    if (!file.endsWith(".md")) continue;
+    let title = basename(file, ".md");
+    try {
+      const { data } = parseFrontmatter(await readFile(file, "utf8"));
+      if (typeof data.title === "string" && data.title.trim().length > 0) {
+        title = data.title;
+      }
+    } catch {
+      // unreadable/invalid reference → fall back to filename title
+    }
+    references.push({ path: toVaultRelative(vaultRoot, file), title });
+  }
+
+  const templates: SkillTemplate[] = (
+    await listFiles(join(skillDir, "templates"))
+  ).map((file) => ({ path: toVaultRelative(vaultRoot, file) }));
+
+  return { references, templates };
+}
+
+/**
+ * List all skills under a vault root (Epic 12). A skill is either:
+ *   - a FOLDER skill: `<dir>/SKILL.md` (`type: skill`) → the DIRECTORY is the
+ *     skill; its `references/` + `templates/` companions are collected and
+ *     `basePath` points at the directory; or
+ *   - a SINGLE-NOTE skill: any other `<name>.md` with `type: skill` → as before,
+ *     `references`/`templates` left undefined and `basePath` is the note path.
+ *
+ * Companion `.md` docs (e.g. `references/foo.md` with `type: reference`) are not
+ * `type: skill`, so they are never loaded as standalone skills. A skill that
+ * fails to parse/validate is skipped with a logged warning — this NEVER throws
+ * because of a single broken skill (AC#3, preserved from Story 9-2).
  */
 export async function listSkillNotes(vaultRoot: string): Promise<SkillDef[]> {
   // Prefer the conventional `70_pai/skills/` subtree when present; otherwise
@@ -251,17 +347,42 @@ export async function listSkillNotes(vaultRoot: string): Promise<SkillDef[]> {
       continue;
     }
     // Cheap pre-filter: only attempt to parse notes that declare `type: skill`.
+    // Companion `references/*.md` carry `type: reference`, so they fall out here
+    // and never become their own skill (Epic 12 discovery hygiene).
     const { data } = parseFrontmatter(raw);
     if (data.type !== "skill") continue;
+
+    let skill: SkillDef;
     try {
-      skills.push(parseSkill(raw));
+      skill = parseSkill(raw);
     } catch (err) {
       console.warn(
         `[listSkillNotes] skipping invalid skill ${file}: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
+      continue;
     }
+
+    // A `type: skill` note named `SKILL.md` denotes a FOLDER skill — its parent
+    // directory IS the skill; collect references/templates and set basePath to
+    // the directory. Any other `<name>.md` is a single-note skill (basePath =
+    // the note path, no companions). The SKILL.md itself is only enumerated
+    // once by the walk, so it never double-appears as a child skill.
+    if (basename(file) === "SKILL.md") {
+      const skillDir = dirname(file);
+      const { references, templates } = await collectSkillStructure(
+        vaultRoot,
+        skillDir,
+      );
+      skill.basePath = toVaultRelative(vaultRoot, skillDir);
+      skill.references = references;
+      skill.templates = templates;
+    } else {
+      skill.basePath = toVaultRelative(vaultRoot, file);
+    }
+
+    skills.push(skill);
   }
   return skills;
 }

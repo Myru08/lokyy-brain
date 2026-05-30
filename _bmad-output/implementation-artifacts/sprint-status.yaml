@@ -229,3 +229,12 @@ development_status:
   11-10-clickable-logo-home-menu-point: review   # Welle 5 done, Logo→Home gewired
   11-11-dashboard-home-view-type: review   # Welle 5 done (Backend-Batch + PWA-Finish), build grün
   epic-11-retrospective: optional
+
+  # ── Epic 12: Ordner-Skills (Anthropic Agent Skills Format) ─────────────────
+  # Quelle: 90_ideas/ordner-skills-struktur-anthropic-format. Plan: epic-12-ordner-skills.md
+  # Skill = Ordner mit SKILL.md + references/ + templates/; Einzel-Note-Skills bleiben.
+  epic-12: in-progress
+  12-1-core-ordner-skill-discovery: review   # done, build+261 Tests grün, Einzel-Note-Regression ok
+  12-2-skillsview-strukturansicht: backlog
+  12-3-import-anthropic-skills: backlog
+  epic-12-retrospective: optional

@@ -200,6 +200,129 @@ body
       await rm(empty, { recursive: true, force: true });
     }
   });
+
+  it("populates basePath as the note path for a single-note skill (Epic 12)", async () => {
+    const skills = await listSkillNotes(root);
+    const single = skills.find((s) => s.skill_name === "weekly-review");
+    expect(single?.basePath).toBe("70_pai/skills/weekly-review.md");
+    // Single-note skills carry no folder companions.
+    expect(single?.references ?? []).toEqual([]);
+    expect(single?.templates ?? []).toEqual([]);
+  });
+});
+
+/**
+ * Epic 12 / Story 12.1 — folder-skills (Anthropic Agent Skills format).
+ * A `<name>/SKILL.md` (type:skill) is ONE skill; its `references/*.md` and
+ * `templates/*` companions are collected. Single-note skills stay valid.
+ */
+const FOLDER_SKILL = `---
+id: 01JFABCDEFGHJKMNPQRSTVWXYZ
+type: skill
+title: Dashboard Builder
+skill_name: dashboard-builder
+description: Build a dashboard from a template.
+execution: client
+allowed_tools:
+  - read_note
+created: "2026-05-30T10:00:00.000Z"
+updated: "2026-05-30T10:00:00.000Z"
+---
+Build the dashboard. Consult the reference docs as needed.
+`;
+
+const REFERENCE_DOC = `---
+id: 01JREFAAAAAAAAAAAAAAAAAAAA
+type: reference
+title: Layout Guidelines
+created: "2026-05-30T10:00:00.000Z"
+updated: "2026-05-30T10:00:00.000Z"
+---
+Use a 12-column grid.
+`;
+
+const REFERENCE_DOC_NO_TITLE = `---
+id: 01JREFBBBBBBBBBBBBBBBBBBBB
+type: reference
+title: " "
+created: "2026-05-30T10:00:00.000Z"
+updated: "2026-05-30T10:00:00.000Z"
+---
+Misc notes.
+`;
+
+describe("listSkillNotes — folder skills (Story 12.1)", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(join(tmpdir(), "lokyy-folderskills-"));
+    const skillsDir = join(root, "70_pai", "skills");
+    // 1) A folder-skill with references/ + templates/.
+    const folderDir = join(skillsDir, "dashboard-builder");
+    await mkdir(join(folderDir, "references"), { recursive: true });
+    await mkdir(join(folderDir, "templates"), { recursive: true });
+    await writeFile(join(folderDir, "SKILL.md"), FOLDER_SKILL, "utf8");
+    await writeFile(join(folderDir, "references", "foo.md"), REFERENCE_DOC, "utf8");
+    await writeFile(
+      join(folderDir, "references", "bar.md"),
+      REFERENCE_DOC_NO_TITLE,
+      "utf8",
+    );
+    await writeFile(
+      join(folderDir, "templates", "bar.jsx"),
+      "export const Dashboard = () => null;\n",
+      "utf8",
+    );
+    // 2) A single-note skill alongside it (regression / backward-compat).
+    await writeFile(join(skillsDir, "weekly-review.md"), VALID_SKILL, "utf8");
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("loads the folder as ONE skill with references/templates + basePath", async () => {
+    const skills = await listSkillNotes(root);
+    const folder = skills.find((s) => s.skill_name === "dashboard-builder");
+    expect(folder).toBeDefined();
+    expect(folder?.basePath).toBe("70_pai/skills/dashboard-builder");
+    // references collected (title from frontmatter, else filename), sorted by
+    // discovery order — assert set membership to stay order-independent.
+    const refPaths = (folder?.references ?? []).map((r) => r.path).sort();
+    expect(refPaths).toEqual([
+      "70_pai/skills/dashboard-builder/references/bar.md",
+      "70_pai/skills/dashboard-builder/references/foo.md",
+    ]);
+    const fooRef = folder?.references?.find((r) => r.path.endsWith("foo.md"));
+    expect(fooRef?.title).toBe("Layout Guidelines"); // from frontmatter title
+    const barRef = folder?.references?.find((r) => r.path.endsWith("bar.md"));
+    expect(barRef?.title).toBe("bar"); // blank title → filename fallback
+    // templates collected (any extension).
+    expect((folder?.templates ?? []).map((t) => t.path)).toEqual([
+      "70_pai/skills/dashboard-builder/templates/bar.jsx",
+    ]);
+  });
+
+  it("does NOT surface SKILL.md or reference docs as extra skills", async () => {
+    const skills = await listSkillNotes(root);
+    // Exactly two skills: the folder-skill + the single-note skill.
+    expect(skills.map((s) => s.skill_name).sort()).toEqual([
+      "dashboard-builder",
+      "weekly-review",
+    ]);
+    // No skill is named "SKILL" or accidentally carries the reference title.
+    expect(skills.some((s) => s.skill_name === "SKILL")).toBe(false);
+  });
+
+  it("REGRESSION: single-note skill stays valid with empty structure (backwardCompat)", async () => {
+    const skills = await listSkillNotes(root);
+    const single = skills.find((s) => s.skill_name === "weekly-review");
+    expect(single).toBeDefined();
+    expect(single?.title).toBe("Weekly Review");
+    expect(single?.basePath).toBe("70_pai/skills/weekly-review.md");
+    expect(single?.references ?? []).toEqual([]);
+    expect(single?.templates ?? []).toEqual([]);
+  });
 });
 
 describe("getSkillSchema (Story 10.5)", () => {
