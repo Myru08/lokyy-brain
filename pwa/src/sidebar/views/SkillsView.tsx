@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
+import { Plus } from "lucide-react";
 import type { Note, TreeNode } from "@lokyy/shared";
 import { api } from "../../api.js";
 import { C, FONT } from "../../theme.js";
 import type { ViewProps } from "./registry.js";
+import { NewSkillDialog } from "./NewSkillDialog.js";
 
 /**
  * SkillsView — echter Renderer für `viewType: "skills"` (Story 11.5).
@@ -30,6 +33,62 @@ import type { ViewProps } from "./registry.js";
 
 /** Default-Ordner, falls der Menüpunkt keinen Ordner trägt (System-Item-Fallback). */
 const DEFAULT_SKILLS_FOLDER = "70_pai/skills";
+
+/* ── Layout-Styles (Shell + Kopfzeile mit „+ Neuer Skill") ───────────── */
+
+const SHELL_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  height: "100%",
+  boxSizing: "border-box",
+};
+
+const HEADER_BAR_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  padding: "10px 12px",
+  borderBottom: `1px solid ${C.border}`,
+  flexShrink: 0,
+};
+
+const HEADER_TITLE_STYLE: CSSProperties = {
+  color: C.gold,
+  fontFamily: FONT.ui,
+  fontWeight: 700,
+  fontSize: 12,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+};
+
+const NEW_SKILL_BTN_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  padding: "5px 10px",
+  background: C.accentSoft,
+  border: `1px solid ${C.border}`,
+  borderRadius: 7,
+  color: C.accentHi,
+  fontFamily: FONT.ui,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+const NOTICE_STYLE: CSSProperties = {
+  margin: "10px 12px 0",
+  padding: "8px 11px",
+  borderRadius: 7,
+  background: "rgba(127,163,122,0.12)",
+  border: "1px solid rgba(127,163,122,0.4)",
+  color: C.ok,
+  fontFamily: FONT.ui,
+  fontSize: 12.5,
+  lineHeight: 1.4,
+};
 
 /** Aus dem Frontmatter extrahierte Skill-Metadaten + Vorschau. */
 interface SkillCard {
@@ -211,6 +270,9 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
   const [cards, setCards] = useState<SkillCard[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  /** Quittung nach erfolgreichem Anlegen (z. B. „Skill 'x' angelegt"). */
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -276,63 +338,110 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
     return [...byGroup.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [cards]);
 
+  // Bekannte skill_name (= letztes Pfadsegment der card.id) für die
+  // Duplikat-Prüfung im Dialog. Beispiel-id: "70_pai/skills/weekly-review".
+  const existingSkillNames = useMemo(
+    () => cards.map((c) => c.id.split("/").pop() ?? c.id),
+    [cards],
+  );
+
+  const handleCreated = useCallback(
+    (noteId: string) => {
+      setDialogOpen(false);
+      const name = noteId.split("/").pop() ?? noteId;
+      setNotice(`Skill „${name}" angelegt.`);
+      void load();
+    },
+    [load],
+  );
+
+  // Gemeinsamer Kopf (Titel + „+ Neuer Skill") — in allen States sichtbar.
+  const header = (
+    <div style={HEADER_BAR_STYLE}>
+      <span style={HEADER_TITLE_STYLE}>Skill-Bibliothek</span>
+      <button
+        type="button"
+        onClick={() => {
+          setNotice(null);
+          setDialogOpen(true);
+        }}
+        style={NEW_SKILL_BTN_STYLE}
+        title="Neuen Skill per Vorlage anlegen"
+      >
+        <Plus size={14} />
+        Neuer Skill
+      </button>
+    </div>
+  );
+
+  const dialog = dialogOpen ? (
+    <NewSkillDialog
+      onClose={() => setDialogOpen(false)}
+      onCreated={handleCreated}
+      existingSkillNames={existingSkillNames}
+    />
+  ) : null;
+
   if (error) {
     return (
-      <div style={{ padding: 16, color: C.err, fontFamily: FONT.mono, fontSize: 12 }}>
-        {error}
+      <div style={SHELL_STYLE}>
+        {header}
+        <div style={{ padding: 16, color: C.err, fontFamily: FONT.mono, fontSize: 12 }}>
+          {error}
+        </div>
+        {dialog}
       </div>
     );
   }
 
   if (loading) {
     return (
-      <div style={{ padding: 16, color: C.textFaint, fontFamily: FONT.mono, fontSize: 12 }}>
-        Lade Skills…
+      <div style={SHELL_STYLE}>
+        {header}
+        <div style={{ padding: 16, color: C.textFaint, fontFamily: FONT.mono, fontSize: 12 }}>
+          Lade Skills…
+        </div>
+        {dialog}
       </div>
     );
   }
 
   if (cards.length === 0) {
     return (
-      <div
-        style={{
-          padding: "24px 16px",
-          color: C.textDim,
-          fontFamily: FONT.ui,
-          fontSize: 13,
-          lineHeight: 1.6,
-        }}
-      >
+      <div style={SHELL_STYLE}>
+        {header}
+        {notice && <div style={NOTICE_STYLE}>{notice}</div>}
         <div
           style={{
-            color: C.gold,
-            fontWeight: 700,
-            fontSize: 13,
-            letterSpacing: "0.05em",
-            textTransform: "uppercase",
-            marginBottom: 6,
+            padding: "16px",
+            color: C.textDim,
+            fontFamily: FONT.mono,
+            fontSize: 12.5,
+            lineHeight: 1.6,
           }}
         >
-          Skill-Bibliothek
+          <div style={{ color: C.textFaint }}>Keine Skills in „{folder}".</div>
         </div>
-        <div style={{ fontFamily: FONT.mono, color: C.textFaint }}>
-          Keine Skills in „{folder}".
-        </div>
+        {dialog}
       </div>
     );
   }
 
   return (
-    <div
-      style={{
-        padding: "12px 12px 24px",
-        fontFamily: FONT.ui,
-        overflowY: "auto",
-        height: "100%",
-        boxSizing: "border-box",
-      }}
-    >
-      {groups.map(([group, list]) => (
+    <div style={SHELL_STYLE}>
+      {header}
+      {notice && <div style={NOTICE_STYLE}>{notice}</div>}
+      <div
+        style={{
+          padding: "12px 12px 24px",
+          fontFamily: FONT.ui,
+          overflowY: "auto",
+          flex: 1,
+          minHeight: 0,
+          boxSizing: "border-box",
+        }}
+      >
+        {groups.map(([group, list]) => (
         <section key={group || "_root"} style={{ marginBottom: 18 }}>
           {group && (
             <div
@@ -353,8 +462,10 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
               <SkillCardItem key={card.id} card={card} onOpen={onOpenNote} />
             ))}
           </div>
-        </section>
-      ))}
+          </section>
+        ))}
+      </div>
+      {dialog}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
 import {
@@ -49,6 +50,123 @@ import type { ViewProps } from "./registry.js";
 /** Vault-Ordner für die täglichen Journal-Notizen. */
 const DAILY_FOLDER = "40_daily";
 
+/* ── Dashboard-Layout: Reihenfolge + Persistenz ────────────────────────────── */
+
+/**
+ * localStorage-Key für die nutzer-sortierte Kachel-Reihenfolge. **Geräte-
+ * spezifisch** (wie der Panel-/Resize-State), NICHT im Vault — das Layout ist
+ * eine reine UI-Präferenz pro Browser.
+ */
+const ORDER_STORAGE_KEY = "lokyy:dashboard:order";
+
+/**
+ * Bringt die gespeicherte Reihenfolge mit dem aktuellen Satz an Default-Keys
+ * in Einklang — die einzige nicht-triviale Logik hier, daher rein & getestet.
+ *
+ * Vertrag (vorwärtskompatibel):
+ *   1. Bekannte Keys werden in der **gespeicherten** Reihenfolge ausgegeben.
+ *   2. Keys, die in `defaultKeys` existieren, aber NICHT gespeichert sind
+ *      (neue Kacheln nach einem Update), werden **hinten angehängt** — und
+ *      zwar in ihrer Default-Reihenfolge.
+ *   3. Gespeicherte Keys, die es nicht mehr gibt (entfernte Kacheln), werden
+ *      **verworfen**.
+ *   4. Duplikate in `savedOrder` werden ignoriert (erstes Vorkommen zählt).
+ *
+ * Ergebnis ist immer eine Permutation von `defaultKeys` (gleiche Menge).
+ */
+export function applyOrder(
+  defaultKeys: readonly string[],
+  savedOrder: readonly string[] | null | undefined,
+): string[] {
+  const known = new Set(defaultKeys);
+  const result: string[] = [];
+  const seen = new Set<string>();
+  // (1)+(3)+(4): gespeicherte Reihenfolge, nur gültige & ungesehene Keys.
+  for (const key of savedOrder ?? []) {
+    if (known.has(key) && !seen.has(key)) {
+      result.push(key);
+      seen.add(key);
+    }
+  }
+  // (2): neue/fehlende Default-Keys in Default-Reihenfolge hinten anhängen.
+  for (const key of defaultKeys) {
+    if (!seen.has(key)) {
+      result.push(key);
+      seen.add(key);
+    }
+  }
+  return result;
+}
+
+/** Liest die gespeicherte Reihenfolge defensiv (try/catch wie useResizableWidth). */
+export function readSavedOrder(): string[] | null {
+  try {
+    const raw = localStorage.getItem(ORDER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {
+      return parsed as string[];
+    }
+  } catch {}
+  return null;
+}
+
+/** Schreibt die Reihenfolge defensiv zurück (try/catch). */
+export function writeSavedOrder(order: readonly string[]): void {
+  try {
+    localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(order));
+  } catch {}
+}
+
+/**
+ * Hook: hält die effektive Kachel-Reihenfolge (Default + gespeicherte Prefs),
+ * persistiert Änderungen und kann auf den Default zurücksetzen.
+ *
+ * `defaultKeys` ist die kanonische Default-Reihenfolge der aktuell gerenderten
+ * Kacheln. Der Hook bleibt damit immer in Sync, falls Kacheln dazukommen oder
+ * wegfallen (über `applyOrder`).
+ */
+function useDashboardOrder(defaultKeys: readonly string[]): {
+  order: string[];
+  reorder: (fromKey: string, toKey: string) => void;
+  reset: () => void;
+} {
+  const [saved, setSaved] = useState<string[] | null>(() => readSavedOrder());
+
+  // Effektive Reihenfolge — immer eine Permutation der aktuellen defaultKeys.
+  const order = useMemo(
+    () => applyOrder(defaultKeys, saved),
+    [defaultKeys, saved],
+  );
+
+  const reorder = useCallback(
+    (fromKey: string, toKey: string) => {
+      if (fromKey === toKey) return;
+      setSaved((prev) => {
+        const base = applyOrder(defaultKeys, prev);
+        const from = base.indexOf(fromKey);
+        const to = base.indexOf(toKey);
+        if (from < 0 || to < 0) return prev;
+        const next = base.slice();
+        const [moved] = next.splice(from, 1);
+        next.splice(to, 0, moved);
+        writeSavedOrder(next);
+        return next;
+      });
+    },
+    [defaultKeys],
+  );
+
+  const reset = useCallback(() => {
+    setSaved(null);
+    try {
+      localStorage.removeItem(ORDER_STORAGE_KEY);
+    } catch {}
+  }, []);
+
+  return { order, reorder, reset };
+}
+
 /* ── kleine Helfer ───────────────────────────────────────────────────────── */
 
 function pad2(n: number): string {
@@ -79,51 +197,252 @@ function relativeTime(iso: string): string {
 
 /* ── Kachel-Primitive ──────────────────────────────────────────────────────── */
 
+/** Drag-and-Drop-Handles, die der Container je Kachel durchreicht. */
+type TileDnd = {
+  draggable: boolean;
+  isDragging: boolean;
+  isDropTarget: boolean;
+  onDragStart: (e: ReactDragEvent) => void;
+  onDragEnter: (e: ReactDragEvent) => void;
+  onDragOver: (e: ReactDragEvent) => void;
+  onDrop: (e: ReactDragEvent) => void;
+  onDragEnd: (e: ReactDragEvent) => void;
+};
+
 /**
  * Eine Bento-Kachel. `span`/`rowSpan` steuern, wie viele Grid-Spalten/Zeilen
  * sie belegt (responsives auto-fill-Grid, s. Container unten).
+ *
+ * `dnd` (optional) macht die Kachel per HTML5-Drag-and-Drop umsortierbar:
+ * ein dezentes Drag-Handle erscheint bei Hover; die ganze Kachel ist während
+ * des Drags die Greiffläche. Ohne `dnd` verhält sich die Kachel wie zuvor.
  */
 function Tile({
   title,
   span = 1,
   rowSpan = 1,
   children,
+  dnd,
 }: {
   title: string;
   span?: number;
   rowSpan?: number;
   children: ReactNode;
+  dnd?: TileDnd;
 }) {
+  const [hover, setHover] = useState(false);
+  const showHandle = !!dnd && (hover || dnd.isDragging);
   return (
     <section
+      draggable={dnd?.draggable ?? false}
+      onDragStart={dnd?.onDragStart}
+      onDragEnter={dnd?.onDragEnter}
+      onDragOver={dnd?.onDragOver}
+      onDrop={dnd?.onDrop}
+      onDragEnd={dnd?.onDragEnd}
+      onMouseEnter={dnd ? () => setHover(true) : undefined}
+      onMouseLeave={dnd ? () => setHover(false) : undefined}
       style={{
+        position: "relative",
         gridColumn: `span ${span}`,
         gridRow: `span ${rowSpan}`,
         background: C.panel,
-        border: `1px solid ${C.border}`,
+        border: `1px solid ${dnd?.isDropTarget ? C.accent : C.border}`,
         borderRadius: 12,
         padding: "14px 16px",
         display: "flex",
         flexDirection: "column",
         minWidth: 0,
         overflow: "hidden",
+        opacity: dnd?.isDragging ? 0.45 : 1,
+        cursor: dnd?.draggable ? "grab" : undefined,
+        transition: "opacity 100ms ease, border-color 100ms ease",
       }}
     >
       <div
         style={{
-          color: C.gold,
-          fontFamily: FONT.mono,
-          fontSize: 11,
-          letterSpacing: "0.06em",
-          textTransform: "uppercase",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
           marginBottom: 10,
           flexShrink: 0,
         }}
       >
-        {title}
+        <div
+          style={{
+            color: C.gold,
+            fontFamily: FONT.mono,
+            fontSize: 11,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title}
+        </div>
+        {dnd && (
+          <span
+            aria-hidden="true"
+            title="Ziehen, um die Kachel zu verschieben"
+            style={{
+              color: C.textFaint,
+              fontSize: 13,
+              lineHeight: 1,
+              letterSpacing: "1px",
+              userSelect: "none",
+              opacity: showHandle ? 0.8 : 0,
+              transition: "opacity 120ms ease",
+              flexShrink: 0,
+            }}
+          >
+            ⠿
+          </span>
+        )}
       </div>
       <div style={{ flex: 1, minHeight: 0 }}>{children}</div>
     </section>
+  );
+}
+
+/** Deklarative Kachel-Definition — Inhalt + Layout-Hinweise, identifiziert per `key`. */
+type TileDef = {
+  /** Stabiler, layout-unabhängiger Identifier (Persistenz-Schlüssel). */
+  key: string;
+  title: string;
+  span?: number;
+  rowSpan?: number;
+  content: ReactNode;
+};
+
+/**
+ * DashboardGrid — rendert die Bento-Kacheln in nutzer-sortierter Reihenfolge
+ * und macht sie per HTML5-Drag-and-Drop umsortierbar (nativ, kein npm-Paket).
+ *
+ * Die Reihenfolge wird gerätespezifisch in localStorage gehalten
+ * (`lokyy:dashboard:order`, via `useDashboardOrder`/`applyOrder`). Neue Kacheln
+ * nach einem Update landen automatisch hinten; entfernte werden ignoriert.
+ * Ein „Layout zurücksetzen"-Button stellt die Default-Reihenfolge wieder her.
+ *
+ * Drag-Modell: jede Kachel ist `draggable`; beim Überfahren einer anderen
+ * Kachel wird live umsortiert (move-on-hover), Drop bestätigt nur. Das fühlt
+ * sich flüssig an und braucht keinen Platzhalter.
+ */
+function DashboardGrid({ children }: { children: TileDef[] }) {
+  // Reine Layout-Daten (key/span/rowSpan) per key nachschlagbar.
+  const defs = children;
+  const byKey = useMemo(() => {
+    const m = new Map<string, TileDef>();
+    for (const d of defs) m.set(d.key, d);
+    return m;
+  }, [defs]);
+
+  // Kanonische Default-Reihenfolge = Reihenfolge im Array (stabil pro Render).
+  const defaultKeys = useMemo(() => defs.map((d) => d.key), [defs]);
+  const { order, reorder, reset } = useDashboardOrder(defaultKeys);
+
+  // Welche Kachel wird gerade gezogen / ist aktuelles Drop-Ziel?
+  const [dragKey, setDragKey] = useState<string | null>(null);
+  const [overKey, setOverKey] = useState<string | null>(null);
+
+  const makeDnd = useCallback(
+    (key: string): TileDnd => ({
+      draggable: true,
+      isDragging: dragKey === key,
+      isDropTarget: !!dragKey && overKey === key && dragKey !== key,
+      onDragStart: (e) => {
+        setDragKey(key);
+        // Firefox verlangt gesetzte Daten, sonst feuert kein dragover.
+        try {
+          e.dataTransfer.setData("text/plain", key);
+          e.dataTransfer.effectAllowed = "move";
+        } catch {}
+      },
+      onDragEnter: (e) => {
+        e.preventDefault();
+        setOverKey(key);
+      },
+      onDragOver: (e) => {
+        // preventDefault erlaubt erst das Drop.
+        e.preventDefault();
+        try {
+          e.dataTransfer.dropEffect = "move";
+        } catch {}
+        // Live umsortieren, sobald wir über eine andere Kachel schweben.
+        setDragKey((current) => {
+          if (current && current !== key) reorder(current, key);
+          return current;
+        });
+      },
+      onDrop: (e) => {
+        e.preventDefault();
+        setDragKey(null);
+        setOverKey(null);
+      },
+      onDragEnd: () => {
+        setDragKey(null);
+        setOverKey(null);
+      },
+    }),
+    [dragKey, overKey, reorder],
+  );
+
+  // Hat der User die Default-Reihenfolge verändert? (Reset nur dann anbieten.)
+  const isReordered = useMemo(
+    () => order.some((k, i) => k !== defaultKeys[i]),
+    [order, defaultKeys],
+  );
+
+  return (
+    <div
+      style={{
+        padding: "16px 16px 28px",
+        fontFamily: FONT.ui,
+        overflowY: "auto",
+        height: "100%",
+        boxSizing: "border-box",
+      }}
+    >
+      {isReordered && (
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            marginBottom: 10,
+          }}
+        >
+          <ActionButton label="Layout zurücksetzen" onClick={reset} />
+        </div>
+      )}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
+          gridAutoRows: "minmax(120px, auto)",
+          gridAutoFlow: "dense",
+          gap: 12,
+        }}
+      >
+        {order.map((key) => {
+          const def = byKey.get(key);
+          if (!def) return null;
+          return (
+            <Tile
+              key={def.key}
+              title={def.title}
+              span={def.span}
+              rowSpan={def.rowSpan}
+              dnd={makeDnd(def.key)}
+            >
+              {def.content}
+            </Tile>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -761,26 +1080,15 @@ export function DashboardView({ onOpenNote }: ViewProps) {
   const reviewTotal = review?.totalPending ?? 0;
 
   return (
-    <div
-      style={{
-        padding: "16px 16px 28px",
-        fontFamily: FONT.ui,
-        overflowY: "auto",
-        height: "100%",
-        boxSizing: "border-box",
-      }}
-    >
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-          gridAutoRows: "minmax(120px, auto)",
-          gridAutoFlow: "dense",
-          gap: 12,
-        }}
-      >
-        {/* Hero-Zahlen — prominent + Typ-Breakdown */}
-        <Tile title="Vault" span={2} rowSpan={2}>
+    <DashboardGrid>
+      {[
+        /* Hero-Zahlen — prominent + Typ-Breakdown */
+        {
+          key: "vault",
+          title: "Vault",
+          span: 2,
+          rowSpan: 2,
+          content: (
           <div
             style={{
               display: "flex",
@@ -809,10 +1117,14 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               total={summary.counts.notes}
             />
           </div>
-        </Tile>
+          ),
+        },
 
-        {/* Vault-Gesundheit — radiales Gauge + Liste defekter Links */}
-        <Tile title="Gesundheit">
+        /* Vault-Gesundheit — radiales Gauge + Liste defekter Links */
+        {
+          key: "health",
+          title: "Gesundheit",
+          content: (
           <div
             style={{
               display: "flex",
@@ -844,10 +1156,14 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               </div>
             )}
           </div>
-        </Tile>
+          ),
+        },
 
-        {/* Sync / System */}
-        <Tile title="System">
+        /* Sync / System */
+        {
+          key: "system",
+          title: "System",
+          content: (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <span
@@ -869,11 +1185,16 @@ export function DashboardView({ onOpenNote }: ViewProps) {
             </div>
             <div style={QUIET_HINT}>Vault: {summary.system.vaultId}</div>
           </div>
-        </Tile>
+          ),
+        },
 
-        {/* Git-Activity-Heatmap + Streak */}
-        <Tile title="Aktivität" span={2}>
-          {activity ? (
+        /* Git-Activity-Heatmap + Streak */
+        {
+          key: "activity",
+          title: "Aktivität",
+          span: 2,
+          content: (
+          activity ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <ActivityHeatmap days={activity.days} />
               <div style={{ display: "flex", gap: 24 }}>
@@ -887,12 +1208,18 @@ export function DashboardView({ onOpenNote }: ViewProps) {
             </div>
           ) : (
             <Skeleton lines={4} />
-          )}
-        </Tile>
+          )
+          ),
+        },
 
-        {/* Zuletzt bearbeitet */}
-        <Tile title="Zuletzt bearbeitet" span={2} rowSpan={2}>
-          {summary.recent.length === 0 ? (
+        /* Zuletzt bearbeitet */
+        {
+          key: "recent",
+          title: "Zuletzt bearbeitet",
+          span: 2,
+          rowSpan: 2,
+          content: (
+          summary.recent.length === 0 ? (
             <div style={QUIET_HINT}>Noch keine Notizen.</div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -905,11 +1232,15 @@ export function DashboardView({ onOpenNote }: ViewProps) {
                 />
               ))}
             </div>
-          )}
-        </Tile>
+          )
+          ),
+        },
 
-        {/* Heutiges Journal */}
-        <Tile title="Heutiges Journal">
+        /* Heutiges Journal */
+        {
+          key: "today",
+          title: "Heutiges Journal",
+          content: (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ color: C.textDim, fontSize: 13 }}>
               {summary.today
@@ -922,11 +1253,15 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               onClick={() => void openOrCreateToday()}
             />
           </div>
-        </Tile>
+          ),
+        },
 
-        {/* Serendipity */}
-        <Tile title="Serendipität">
-          {summary.serendipity ? (
+        /* Serendipity */
+        {
+          key: "serendipity",
+          title: "Serendipität",
+          content: (
+          summary.serendipity ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={QUIET_HINT}>Zufällig aus deinem Vault:</div>
               <NoteRow
@@ -936,12 +1271,18 @@ export function DashboardView({ onOpenNote }: ViewProps) {
             </div>
           ) : (
             <div style={QUIET_HINT}>Vault ist noch leer.</div>
-          )}
-        </Tile>
+          )
+          ),
+        },
 
-        {/* Lose Enden */}
-        <Tile title="Lose Enden" span={2} rowSpan={2}>
-          {looseEnds === null ? (
+        /* Lose Enden */
+        {
+          key: "loose-ends",
+          title: "Lose Enden",
+          span: 2,
+          rowSpan: 2,
+          content: (
+          looseEnds === null ? (
             <Skeleton lines={5} />
           ) : looseEnds.items.length === 0 ? (
             <div style={QUIET_HINT}>Keine offenen Punkte. Sauber. ✓</div>
@@ -961,11 +1302,16 @@ export function DashboardView({ onOpenNote }: ViewProps) {
                 </div>
               )}
             </div>
-          )}
-        </Tile>
+          )
+          ),
+        },
 
-        {/* Quick-Capture + Quick-Actions */}
-        <Tile title="Quick-Capture" span={2}>
+        /* Quick-Capture + Quick-Actions */
+        {
+          key: "quick-capture",
+          title: "Quick-Capture",
+          span: 2,
+          content: (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <textarea
               value={capture}
@@ -978,6 +1324,8 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               }}
               placeholder="Gedanke oder URL… (⌘/Ctrl+Enter)"
               rows={2}
+              draggable={false}
+              onDragStart={(e) => e.stopPropagation()}
               style={{
                 resize: "vertical",
                 fontFamily: FONT.ui,
@@ -1007,11 +1355,16 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               )}
             </div>
           </div>
-        </Tile>
+          ),
+        },
 
-        {/* Import — reused den aktiven Import-Mechanismus (api.importUrl →
-            /api/pipes/import). Keine neue Backend-Route. */}
-        <Tile title="Import" span={2}>
+        /* Import — reused den aktiven Import-Mechanismus (api.importUrl →
+           /api/pipes/import). Keine neue Backend-Route. */
+        {
+          key: "import",
+          title: "Import",
+          span: 2,
+          content: (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={QUIET_HINT}>
               URL einfügen — Website oder YouTube. Der Typ wird automatisch
@@ -1028,6 +1381,8 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               }}
               placeholder="https://…"
               spellCheck={false}
+              draggable={false}
+              onDragStart={(e) => e.stopPropagation()}
               style={{
                 fontFamily: FONT.mono,
                 fontSize: 13,
@@ -1052,11 +1407,15 @@ export function DashboardView({ onOpenNote }: ViewProps) {
               )}
             </div>
           </div>
-        </Tile>
+          ),
+        },
 
-        {/* Konsolidierung (graceful empty) */}
-        <Tile title="Konsolidierung">
-          {reviewTotal === 0 ? (
+        /* Konsolidierung (graceful empty) */
+        {
+          key: "consolidation",
+          title: "Konsolidierung",
+          content: (
+          reviewTotal === 0 ? (
             <div style={QUIET_HINT}>
               Keine offenen Vorschläge. Der Kurator meldet sich, wenn er etwas
               findet.
@@ -1069,9 +1428,10 @@ export function DashboardView({ onOpenNote }: ViewProps) {
                 {review?.topicNotes.length ?? 0} Themen
               </div>
             </div>
-          )}
-        </Tile>
-      </div>
-    </div>
+          )
+          ),
+        },
+      ]}
+    </DashboardGrid>
   );
 }
