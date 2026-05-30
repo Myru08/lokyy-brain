@@ -18,6 +18,11 @@ import {
   listSkillNotes,
   validateSkillInput,
   renderPrompt,
+  // Story 12.3 — import_skill: import an Anthropic-format folder-skill
+  // (SKILL.md + references/ + templates/) into the vault, injecting SPEC-valid
+  // frontmatter for the .md files via the shared core `importSkill`.
+  importSkill,
+  type ImportSkillFile,
   DOC_TYPES,
   derivePathForType,
   folderForType,
@@ -318,6 +323,42 @@ export function createServer(): Server {
             },
           },
           required: ["skill_name"],
+        },
+      },
+      {
+        name: "import_skill",
+        description:
+          "Import an Anthropic-format FOLDER-skill into Lokyy-Brain in ONE call: a `SKILL.md` manifest plus optional `references/*.md` and `templates/*` files. The server SLUGIFIES `skill_name` into the directory under `70_pai/skills/{slug}/` and INJECTS SPEC-valid frontmatter where it is missing — `SKILL.md` becomes a valid `type: skill` note, each `references/*.md` becomes a `type: reference` note, and non-`.md` templates are written verbatim (byte-for-byte). Source files ship WITHOUT vault frontmatter (that is the whole point — Anthropic skills don't carry it). Re-importing the same skill is an idempotent upsert (on-disk id/created preserved). Use this instead of N create_note calls when bringing in a packaged skill. A `SKILL.md` at the root is REQUIRED. The skill's write-scope is enforced per file (same gate as create_note). Returns { imported: { skillName (the slug), written: [vault paths], skipped: [] }, commitPrefix }. Structured errors: { error: 'no-skill-manifest' } when no SKILL.md is present, { error: 'no-files' } when `files` is empty, { error: 'invalid-files' } when a file entry is malformed, plus the usual scope_violation errors.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            skill_name: {
+              type: "string",
+              description:
+                "Free-form skill name; the server slugifies it to a lowercase-kebab directory name (e.g. 'Dashboard Builder' → 'dashboard-builder').",
+            },
+            files: {
+              type: "array",
+              description:
+                "The skill's files, paths relative to the skill ROOT. MUST include a `SKILL.md`.",
+              items: {
+                type: "object",
+                properties: {
+                  rel_path: {
+                    type: "string",
+                    description:
+                      "POSIX path relative to the skill root, e.g. 'SKILL.md', 'references/layout.md', 'templates/dashboard.jsx'.",
+                  },
+                  content: {
+                    type: "string",
+                    description: "UTF-8 file content (markdown body, JSX/JSON source, …).",
+                  },
+                },
+                required: ["rel_path", "content"],
+              },
+            },
+          },
+          required: ["skill_name", "files"],
         },
       },
       {
@@ -743,6 +784,44 @@ export function createServer(): Server {
             ...(skill.basePath !== undefined ? { base_path: skill.basePath } : {}),
           });
         }
+        case "import_skill": {
+          // Story 12.3 — import an Anthropic-format folder-skill. Parse the
+          // MCP arg shape ({ rel_path, content }) into core's ImportSkillFile
+          // ({ relPath, content }), enforce per-file write-scope BEFORE any
+          // disk write (same gate as create_note), then delegate the
+          // frontmatter injection + git write to the shared core importSkill.
+          const skillName = String(args.skill_name ?? "");
+          const parsed = parseImportSkillFiles(args.files);
+          if (!parsed.ok) return text(parsed.error);
+          const files = parsed.files;
+
+          // No-manifest / empty guards surfaced as structured errors up front
+          // (core throws plain Errors here; classify them to typed shapes so a
+          // caller can react instead of getting tool-execution-failed).
+          if (files.length === 0) {
+            return text({ error: "no-files", skill_name: skillName });
+          }
+          if (!files.some((f) => isSkillManifestRel(f.relPath))) {
+            return text({ error: "no-skill-manifest", skill_name: skillName });
+          }
+
+          // Per-file write-scope: build each target vault path under the
+          // slugified skill dir and reject the whole import if ANY is denied
+          // (all-or-nothing, consistent with the bulk-write tools).
+          const slug = slugifyForScope(skillName);
+          const scopeErr = firstWriteScopeViolation(
+            files.map((f) => `70_pai/skills/${slug}/${normalizeRelForScope(f.relPath)}`),
+            // skill paths already carry their own extension; do NOT append .md
+            { appendMdExtension: false },
+          );
+          if (scopeErr) throw scopeErr;
+
+          const result = await importSkill({ skillName, files });
+          return text({
+            imported: result,
+            commitPrefix: activeScope().commitPrefix,
+          });
+        }
         case "delete_note": {
           // Story 10.3. Default soft-delete (move to trash); hard=true removes.
           const path = String(args.path ?? "");
@@ -1159,9 +1238,18 @@ function normalizeBulkUpdate(raw: unknown): BulkUpdateItem[] {
  * the bulk op all-or-nothing on scope, consistent with its atomicity), or null
  * when every id is writable.
  */
-function firstWriteScopeViolation(ids: string[]): ScopeViolation | null {
+function firstWriteScopeViolation(
+  ids: string[],
+  opts: { appendMdExtension?: boolean } = {},
+): ScopeViolation | null {
+  // Bulk note tools pass note ids WITHOUT the .md extension, so we append it
+  // to match the scope globs. import_skill (Story 12.3) instead passes full
+  // vault paths that already carry their own extension (SKILL.md, *.jsx, …),
+  // so it opts out of the append.
+  const appendMd = opts.appendMdExtension ?? true;
   for (const id of ids) {
-    if (!canWrite(`${id}.md`)) return new ScopeViolation("write", id);
+    const path = appendMd ? `${id}.md` : id;
+    if (!canWrite(path)) return new ScopeViolation("write", id);
   }
   return null;
 }
@@ -1245,6 +1333,95 @@ function projectRow(row: DataviewRow): Record<string, unknown> {
  */
 function skillNotePath(skillName: string): string {
   return `70_pai/skills/${skillName}.md`;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 12.3 — import_skill helpers (folder-skill import).
+ * ------------------------------------------------------------------ */
+
+/** Structured error payloads `import_skill` returns before touching disk. */
+export type ImportSkillInputError = {
+  error: "invalid-files";
+  message: string;
+};
+
+/**
+ * Validate + map the MCP `files` arg ({ rel_path, content }) onto core's
+ * `ImportSkillFile` ({ relPath, content }). The MCP SDK does NOT enforce the
+ * inputSchema, so each entry is checked explicitly: it must be an object with
+ * a non-empty string `rel_path` and a string `content`. On any malformed entry
+ * we return a single structured `invalid-files` error (the import is rejected
+ * wholesale rather than silently dropping bad rows). Pure → unit-testable.
+ */
+export function parseImportSkillFiles(
+  raw: unknown,
+):
+  | { ok: true; files: ImportSkillFile[] }
+  | { ok: false; error: ImportSkillInputError } {
+  if (!Array.isArray(raw)) {
+    return {
+      ok: false,
+      error: { error: "invalid-files", message: "`files` must be an array." },
+    };
+  }
+  const files: ImportSkillFile[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    const entry = raw[i];
+    if (!entry || typeof entry !== "object") {
+      return {
+        ok: false,
+        error: { error: "invalid-files", message: `files[${i}] must be an object.` },
+      };
+    }
+    const rel = (entry as Record<string, unknown>).rel_path;
+    const content = (entry as Record<string, unknown>).content;
+    if (typeof rel !== "string" || rel.trim().length === 0) {
+      return {
+        ok: false,
+        error: {
+          error: "invalid-files",
+          message: `files[${i}].rel_path must be a non-empty string.`,
+        },
+      };
+    }
+    if (typeof content !== "string") {
+      return {
+        ok: false,
+        error: {
+          error: "invalid-files",
+          message: `files[${i}].content must be a string.`,
+        },
+      };
+    }
+    files.push({ relPath: rel, content });
+  }
+  return { ok: true, files };
+}
+
+/** Normalize a relPath to POSIX slashes, stripping any leading slash. */
+function normalizeRelForScope(relPath: string): string {
+  return relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+}
+
+/** Is `relPath` the skill's top-level `SKILL.md` (case-insensitive)? */
+function isSkillManifestRel(relPath: string): boolean {
+  return normalizeRelForScope(relPath).toLowerCase() === "skill.md";
+}
+
+/**
+ * Slugify a free-form skill name into the lowercase-kebab directory token —
+ * MUST mirror core's `slugifySkillName` so the write-scope check targets the
+ * SAME path core will write to. (Kept local rather than importing to avoid a
+ * surface dependency on a core internal; covered by the e2e round-trip.)
+ */
+function slugifyForScope(name: string): string {
+  const slug = name
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "skill";
 }
 
 /**

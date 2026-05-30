@@ -149,6 +149,58 @@ describe("error handling via json<T>", () => {
   });
 });
 
+describe("importSkill", () => {
+  it("posts multipart with skillName, repeated files, and a positional paths array", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ skillName: "my-skill", written: ["SKILL.md"], skipped: [] }, { status: 201 }),
+    );
+
+    const fileA = new File(["a"], "SKILL.md");
+    const fileB = new File(["b"], "layout.md");
+    const result = await api.importSkill("my-skill", [
+      { relPath: "SKILL.md", file: fileA },
+      { relPath: "references/layout.md", file: fileB },
+    ]);
+
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/skills/import");
+    expect(opts.method).toBe("POST");
+    // No JSON Content-Type header — the browser sets the multipart boundary.
+    expect(opts.headers).toBeUndefined();
+
+    const form = opts.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get("skillName")).toBe("my-skill");
+    expect(form.get("paths")).toBe(
+      JSON.stringify(["SKILL.md", "references/layout.md"]),
+    );
+    expect(form.getAll("files")).toHaveLength(2);
+
+    expect(result).toEqual({
+      skillName: "my-skill",
+      written: ["SKILL.md"],
+      skipped: [],
+    });
+  });
+
+  it("surfaces the server `message` through ApiError on a non-ok response", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        { error: "frontmatter_invalid", message: "SKILL.md fehlt id" },
+        { ok: false, status: 422 },
+      ),
+    );
+
+    const err = await api
+      .importSkill("x", [{ relPath: "SKILL.md", file: new File(["x"], "SKILL.md") }])
+      .catch((e) => e as ApiError);
+
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.status).toBe(422);
+    expect(err.message).toBe("SKILL.md fehlt id");
+  });
+});
+
 describe("putNote", () => {
   it("PUTs the body as JSON to /api/notes/:id on the happy path", async () => {
     const note = { id: "x", body: "hello" };

@@ -52,6 +52,7 @@ import { entitiesRoutes } from "./routes/entities.js";
 import { peersRoutes } from "./routes/peers.js";
 import { forgetRoutes } from "./routes/forget.js";
 import { backfillRoutes } from "./routes/backfill.js";
+import { skillsRoutes } from "./routes/skills.js";
 import {
   forgejoApiRoutes,
   forgejoOauthRoutes,
@@ -300,6 +301,13 @@ app.route("/api/graph", graphRoutes);
 // path first.
 app.route("/api/pipes/voice", voiceRoutes);
 app.route("/api/pipes", pipesRoutes);
+
+// Epic 12 / Story 12.3 — folder-skill import.
+//   POST /api/skills/import   multipart folder upload → core importSkill →
+//                             70_pai/skills/<slug>/ written through gitService.
+// Flat (no :vaultId). Gated by setup state, consistent with the data routes.
+app.use("/api/skills/*", setupGate);
+app.route("/api/skills", skillsRoutes);
 
 // Voice defaults — folder, title pattern, language, mode. Persisted in
 // `system_config[voice_defaults]`. Consumed by voiceHandler. Public for

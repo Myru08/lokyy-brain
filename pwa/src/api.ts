@@ -813,6 +813,57 @@ export const api = {
   },
 
   /**
+   * Import a FOLDER skill (Story 12.3). Posts a multipart/form-data body to
+   * `POST /api/skills/import`: a `skillName` field, every file under the
+   * repeated `files` field, and a positional `paths` JSON array carrying each
+   * file's path RELATIVE to the skill root (`SKILL.md`, `references/x.md`, …).
+   *
+   * The `paths` array is the authoritative source of relative paths server-side
+   * (it survives proxies that strip directory info from the filename); we pass
+   * it alongside the files so the import does not depend on `webkitRelativePath`
+   * surviving the wire. `files` and `paths` are positionally aligned.
+   *
+   * On a non-2xx the server returns a structured `{ error, message? }` body —
+   * we surface `message` (falling back to `error`) through `ApiError` so the
+   * caller can show a clean receipt instead of the raw response.
+   */
+  importSkill: async (
+    skillName: string,
+    files: { relPath: string; file: File }[],
+  ): Promise<{ skillName: string; written: string[]; skipped: string[] }> => {
+    const form = new FormData();
+    form.append("skillName", skillName);
+    const paths: string[] = [];
+    for (const { relPath, file } of files) {
+      paths.push(relPath);
+      // Keep the relative path on the part name too, so the server's
+      // filename-fallback resolves correctly even without the `paths` field.
+      form.append("files", file, relPath);
+    }
+    form.append("paths", JSON.stringify(paths));
+    const res = await fetch(`${BASE}/skills/import`, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+    });
+    if (!res.ok) {
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        message?: string;
+      };
+      throw new ApiError(
+        res.status,
+        data.message ?? data.error ?? "Skill-Import fehlgeschlagen",
+      );
+    }
+    return (await res.json()) as {
+      skillName: string;
+      written: string[];
+      skipped: string[];
+    };
+  },
+
+  /**
    * Templates — list reusable note templates from `00_meta/templates/`.
    * Returns the lightweight refs used by the template picker UI.
    */

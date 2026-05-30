@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { ChevronRight, FileText, FolderTree, Plus } from "lucide-react";
+import { ChevronRight, FileText, FolderTree, FolderUp, Plus } from "lucide-react";
 import type { Note, TreeNode } from "@lokyy/shared";
 import { api } from "../../api.js";
 import { C, FONT } from "../../theme.js";
 import type { ViewProps } from "./registry.js";
 import { NewSkillDialog } from "./NewSkillDialog.js";
+import { ImportSkillDialog } from "./ImportSkillDialog.js";
 import {
   deriveSkillStructures,
   type CompanionFile,
@@ -85,6 +86,22 @@ const NEW_SKILL_BTN_STYLE: CSSProperties = {
   border: `1px solid ${C.border}`,
   borderRadius: 7,
   color: C.accentHi,
+  fontFamily: FONT.ui,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+  flexShrink: 0,
+};
+
+const IMPORT_SKILL_BTN_STYLE: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 5,
+  padding: "5px 10px",
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 7,
+  color: C.textDim,
   fontFamily: FONT.ui,
   fontSize: 12,
   fontWeight: 600,
@@ -266,6 +283,8 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  /** Ordner-Skill-Import-Dialog (Story 12.3) offen? */
+  const [importOpen, setImportOpen] = useState(false);
   /** Quittung nach erfolgreichem Anlegen (z. B. „Skill 'x' angelegt"). */
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -343,32 +362,75 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
     [load],
   );
 
-  // Gemeinsamer Kopf (Titel + „+ Neuer Skill") — in allen States sichtbar.
+  const handleImported = useCallback(
+    (result: { skillName: string; written: string[]; skipped: string[] }) => {
+      setImportOpen(false);
+      const count = result.written.length;
+      const skipped =
+        result.skipped.length > 0
+          ? ` (${result.skipped.length} übersprungen)`
+          : "";
+      setNotice(
+        `Skill „${result.skillName}" importiert — ${count} ${
+          count === 1 ? "Datei" : "Dateien"
+        }${skipped}.`,
+      );
+      void load();
+    },
+    [load],
+  );
+
+  // Gemeinsamer Kopf (Titel + „Importieren" + „+ Neuer Skill") — überall sichtbar.
   const header = (
     <div style={HEADER_BAR_STYLE}>
       <span style={HEADER_TITLE_STYLE}>Skill-Bibliothek</span>
-      <button
-        type="button"
-        onClick={() => {
-          setNotice(null);
-          setDialogOpen(true);
-        }}
-        style={NEW_SKILL_BTN_STYLE}
-        title="Neuen Skill per Vorlage anlegen"
-      >
-        <Plus size={14} />
-        Neuer Skill
-      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+        <button
+          type="button"
+          onClick={() => {
+            setNotice(null);
+            setImportOpen(true);
+          }}
+          style={IMPORT_SKILL_BTN_STYLE}
+          title="Einen vorhandenen Skill-Ordner importieren"
+        >
+          <FolderUp size={14} />
+          Importieren
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setNotice(null);
+            setDialogOpen(true);
+          }}
+          style={NEW_SKILL_BTN_STYLE}
+          title="Neuen Skill per Vorlage anlegen"
+        >
+          <Plus size={14} />
+          Neuer Skill
+        </button>
+      </div>
     </div>
   );
 
-  const dialog = dialogOpen ? (
-    <NewSkillDialog
-      onClose={() => setDialogOpen(false)}
-      onCreated={handleCreated}
-      existingSkillNames={existingSkillNames}
-    />
-  ) : null;
+  const dialog = (
+    <>
+      {dialogOpen && (
+        <NewSkillDialog
+          onClose={() => setDialogOpen(false)}
+          onCreated={handleCreated}
+          existingSkillNames={existingSkillNames}
+        />
+      )}
+      {importOpen && (
+        <ImportSkillDialog
+          onClose={() => setImportOpen(false)}
+          onImported={handleImported}
+          existingSkillNames={existingSkillNames}
+        />
+      )}
+    </>
+  );
 
   if (error) {
     return (

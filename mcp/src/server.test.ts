@@ -209,6 +209,63 @@ const noteDiffMock = vi.fn(async () => ({ sha: null, diff: "" }));
 // Story 10.13 — resolveVaultResolution drives get_health.vault_warning at boot.
 const resolveVaultResolutionMock = vi.fn();
 
+/**
+ * Story 12.3 — import_skill ↔ list_skills round-trip store. `importSkill`
+ * records the imported folder-skill here (slug + written paths); `listSkillNotes`
+ * reads it back so the e2e exercises the REAL MCP wiring (ListTools entry,
+ * import_skill case, scope gate, error wrapper, AND the list_skills mapping)
+ * without a live git/Postgres backend. The slugify mirrors core exactly.
+ */
+function slugifySkillForTest(name: string): string {
+  const slug = name
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "skill";
+}
+
+interface ImportedSkill {
+  skill_name: string;
+  basePath: string;
+  references: { path: string }[];
+  templates: { path: string }[];
+}
+const importedSkills = new Map<string, ImportedSkill>();
+
+const importSkillMock = vi.fn(
+  async (args: { skillName: string; files: { relPath: string; content: string }[] }) => {
+    const slug = slugifySkillForTest(args.skillName);
+    const base = `70_pai/skills/${slug}`;
+    const written = args.files.map((f) => `${base}/${f.relPath.replace(/^\/+/, "")}`);
+    importedSkills.set(slug, {
+      skill_name: slug,
+      basePath: base,
+      references: written
+        .filter((p) => p.startsWith(`${base}/references/`) && p.endsWith(".md"))
+        .map((p) => ({ path: p })),
+      templates: written
+        .filter((p) => p.startsWith(`${base}/templates/`))
+        .map((p) => ({ path: p })),
+    });
+    return { skillName: slug, written, skipped: [] as string[] };
+  },
+);
+
+const listSkillNotesMock = vi.fn(async () =>
+  [...importedSkills.values()].map((s) => ({
+    skill_name: s.skill_name,
+    title: s.skill_name,
+    description: "imported skill",
+    execution: "client" as const,
+    allowed_tools: [] as string[],
+    basePath: s.basePath,
+    references: s.references,
+    templates: s.templates,
+  })),
+);
+
 vi.mock("@lokyy/core", async (importActual) => {
   const actual = await importActual<typeof import("@lokyy/core")>();
   return {
@@ -231,6 +288,11 @@ vi.mock("@lokyy/core", async (importActual) => {
     listTags: (...a: unknown[]) => listTagsMock(...a),
     noteHistory: (...a: unknown[]) => noteHistoryMock(...a),
     noteDiff: (...a: unknown[]) => noteDiffMock(...a),
+    // Story 12.3 — import_skill ↔ list_skills round-trip (shared in-memory store).
+    importSkill: (...a: unknown[]) =>
+      importSkillMock(...(a as Parameters<typeof importSkillMock>)),
+    listSkillNotes: (...a: unknown[]) =>
+      listSkillNotesMock(...(a as Parameters<typeof listSkillNotesMock>)),
   };
 });
 
@@ -251,7 +313,10 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     // Full read/write scope so canWrite passes for delete_note.
     await writeFile(
       join(vaultDir, "00_meta", "mcp-scopes.yaml"),
-      "scopes:\n  test-agent:\n    read: ['**/*.md']\n    write: ['**/*.md']\n    commit_prefix: '[agent:test]'\n",
+      // `70_pai/skills/**` lets import_skill write non-.md templates (.jsx) —
+      // a `**/*.md`-only scope would (correctly) deny them. SPEC skill agents
+      // get a folder-wide skill scope for exactly this reason.
+      "scopes:\n  test-agent:\n    read: ['**/*.md', '70_pai/skills/**']\n    write: ['**/*.md', '70_pai/skills/**']\n    commit_prefix: '[agent:test]'\n",
       "utf8",
     );
 
@@ -312,6 +377,8 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
         "get_history",
         "get_note_diff",
         "validate_note",
+        // Story 12.3.
+        "import_skill",
       ]),
     );
   });
@@ -770,6 +837,75 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     expect(out.valid).toBe(false);
     expect(out.error).toBe("not-found");
   });
+
+  /* ---- Story 12.3 — import_skill ↔ list_skills round-trip ---- */
+
+  it("import_skill writes a folder-skill and list_skills surfaces it", async () => {
+    importedSkills.clear();
+    const files = [
+      { rel_path: "SKILL.md", content: "# Dashboard Builder\n\nBuild a dashboard.\n" },
+      { rel_path: "references/layout.md", content: "# Layout\n\n12-column grid.\n" },
+      { rel_path: "templates/dash.jsx", content: "export const D = () => null;\n" },
+    ];
+
+    const importRes = await client.callTool({
+      name: "import_skill",
+      arguments: { skill_name: "Dashboard Builder", files },
+    });
+    const imported = payload(importRes).imported;
+    expect(imported.skillName).toBe("dashboard-builder");
+    expect(imported.written).toEqual([
+      "70_pai/skills/dashboard-builder/SKILL.md",
+      "70_pai/skills/dashboard-builder/references/layout.md",
+      "70_pai/skills/dashboard-builder/templates/dash.jsx",
+    ]);
+    expect(imported.skipped).toEqual([]);
+    // The MCP arg shape was mapped to core's ImportSkillFile shape.
+    expect(importSkillMock).toHaveBeenCalledWith({
+      skillName: "Dashboard Builder",
+      files: [
+        { relPath: "SKILL.md", content: files[0].content },
+        { relPath: "references/layout.md", content: files[1].content },
+        { relPath: "templates/dash.jsx", content: files[2].content },
+      ],
+    });
+
+    // list_skills now surfaces the imported skill as ONE folder-skill.
+    const listRes = await client.callTool({ name: "list_skills", arguments: {} });
+    const skills = payload(listRes).skills;
+    const folder = skills.find(
+      (s: { skill_name: string }) => s.skill_name === "dashboard-builder",
+    );
+    expect(folder).toBeDefined();
+    expect(folder.base_path).toBe("70_pai/skills/dashboard-builder");
+    expect(folder.references.map((r: { path: string }) => r.path)).toContain(
+      "70_pai/skills/dashboard-builder/references/layout.md",
+    );
+    expect(folder.templates.map((t: { path: string }) => t.path)).toContain(
+      "70_pai/skills/dashboard-builder/templates/dash.jsx",
+    );
+  });
+
+  it("import_skill without a SKILL.md → structured no-skill-manifest", async () => {
+    const res = await client.callTool({
+      name: "import_skill",
+      arguments: {
+        skill_name: "Broken",
+        files: [{ rel_path: "references/foo.md", content: "# Foo\n" }],
+      },
+    });
+    const out = payload(res);
+    expect(out.error).toBe("no-skill-manifest");
+  });
+
+  it("import_skill with malformed files → structured invalid-files", async () => {
+    const res = await client.callTool({
+      name: "import_skill",
+      arguments: { skill_name: "Bad", files: [{ rel_path: "SKILL.md" }] },
+    });
+    const out = payload(res);
+    expect(out.error).toBe("invalid-files");
+  });
 });
 
 /**
@@ -876,7 +1012,10 @@ describe("MCP get_health — vault_warning when ambiguous (e2e)", () => {
     await mkdir(join(vaultDir, "00_meta"), { recursive: true });
     await writeFile(
       join(vaultDir, "00_meta", "mcp-scopes.yaml"),
-      "scopes:\n  test-agent:\n    read: ['**/*.md']\n    write: ['**/*.md']\n    commit_prefix: '[agent:test]'\n",
+      // `70_pai/skills/**` lets import_skill write non-.md templates (.jsx) —
+      // a `**/*.md`-only scope would (correctly) deny them. SPEC skill agents
+      // get a folder-wide skill scope for exactly this reason.
+      "scopes:\n  test-agent:\n    read: ['**/*.md', '70_pai/skills/**']\n    write: ['**/*.md', '70_pai/skills/**']\n    commit_prefix: '[agent:test]'\n",
       "utf8",
     );
 

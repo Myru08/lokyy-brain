@@ -274,6 +274,19 @@ export {
   type SkillFieldDoc,
 } from "./skills/index.js";
 
+// ─── Skill import (Epic 12 / Story 12.3) ────────────────────────────────
+// Shared logic for the PWA upload route AND the MCP import tool: imports an
+// Anthropic-format folder-skill (SKILL.md + references/ + templates/) into
+// the vault, injecting SPEC-valid frontmatter for `.md` files and writing
+// non-`.md` templates verbatim — all through gitService.save().
+export {
+  importSkill,
+  slugifySkillName,
+  type ImportSkillArgs,
+  type ImportSkillFile,
+  type ImportSkillResult,
+} from "./skills/import.js";
+
 // ─── Database (Story 1.8) ───────────────────────────────────────────────
 export {
   initDb,
