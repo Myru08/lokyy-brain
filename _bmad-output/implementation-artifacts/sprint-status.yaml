@@ -210,6 +210,11 @@ development_status:
   # Architect-Sign-off VOR Welle 1 (Menü-Config-Schema + View-Typ-Registry).
   # Wellen: 1 (11.1,11.4) → 2 (11.3,11.2) → 3 (11.5,11.6,11.7) → 4 (11.8).
   # Stories geschnitten 30.05 (Scrum Master). Architektur-Sign-off: epic-11-architecture-addendum.md (Winston).
+  # 30.05 autonom umgesetzt (Welle 1-5 via Workflows). Alle 11 Stories code-complete + `pnpm -r build` grün +
+  # committet/gepusht (4e47e89→e06b1a1). Stories auf "review" = wartet auf finale Live-UI-QA. OFFEN: visuelle
+  # Interceptor-Verifikation hinter Login braucht eingeloggtes, konfiguriertes Backend (deployte Instanz läuft auf
+  # altem Code; keine lokale server/.env). 11.11-Backend-Agent brach an StructuredOutput-Hürde ab → PWA-Teil im
+  # Folge-Workflow nachgezogen. Epic bleibt in-progress bis QA-Sign-off + Deploy.
   epic-11: in-progress
   11-1-sidebar-menu-config-model-vault-persistence: review   # Welle 1 done, build+tests grün
   11-2-sidebar-menu-editor-ui-gear: review   # Welle 2 done, build grün
