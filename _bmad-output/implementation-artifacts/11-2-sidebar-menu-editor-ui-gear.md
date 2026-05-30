@@ -33,6 +33,15 @@ damit ich meine Seitenleiste selbst zusammenstellen kann.
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle2` (2026-05-30).
+
 ### Completion Notes List
+- `MenuEditor.tsx`: Modal-CRUD für Custom-Items (Label, Icon via IconPicker, Ordner-Picker, View-Typ, Shortcut). Speichern nur via `api.putMenu` (custom-only). Neue IDs = client-generierte ULIDs (crypto). System read-only mit Lock.
+- **Shortcuts in v1:** KeyboardEvent → kanonischer Combo; zentrale `RESERVED_SHORTCUTS` (Palette Cmd/Ctrl+K/+O/+W/+S, CM6-Keymaps) + Kollision ggü. anderen Custom-Items; Konflikt → AlertTriangle, blockiert Speichern bis aufgelöst.
+- `IconPicker.tsx`: gefilterbares Grid kuratierter lucide-Icons, `resolveIcon` mit `Folder`-Fallback. (Self-Fix während Build: `Sticky`→`StickyNote`, doppelter Key entfernt.)
+
 ### File List
+- NEU `pwa/src/sidebar/MenuEditor.tsx`, `pwa/src/sidebar/IconPicker.tsx`
+
 ### Change Log
+- 2026-05-30 — Welle 2. `pnpm --filter pwa build` grün; via Wireup verdrahtet; `pnpm -r build` grün (Orchestrator-verifiziert). Status → review.

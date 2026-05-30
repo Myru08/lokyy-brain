@@ -14,7 +14,10 @@ import { DragHandle, useResizableWidth } from "./Resizable.js";
 const GraphView = lazy(() =>
   import("./GraphView.js").then((m) => ({ default: m.GraphView })),
 );
-import { api, ApiError } from "./api.js";
+import { api, ApiError, type MenuItem } from "./api.js";
+import { Sidebar } from "./sidebar/Sidebar.js";
+import { MenuEditor } from "./sidebar/MenuEditor.js";
+import { resolveView } from "./sidebar/views/registry.js";
 import { SplitView } from "./SplitView.js";
 import type { EditorHandle } from "./editor/Editor.js";
 import { prefetchTags } from "./editor/tagAutocomplete.js";
@@ -323,6 +326,16 @@ export function App() {
   // the old live-into-editor flow — record → editable transcript → insert.
   const [voiceReviewOpen, setVoiceReviewOpen] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
+  // Epic 11 / Story 11.3+11.4 wireup — Sidebar-Menü-System.
+  // `activeMenuItem` ist die im Workspace-Menü gewählte Ansicht (Ordner +
+  // View-Typ); App ist die Quelle der Wahrheit, die Sidebar spiegelt sie nur.
+  // Der erste System-Punkt wird beim Mount als Default gesetzt.
+  const [activeMenuItem, setActiveMenuItem] = useState<MenuItem | null>(null);
+  // Lokaler Open-State des Zahnrad-Editors (Story 11.2). Beim Schließen wird
+  // das Menü neu geladen (Sidebar fetcht selbst; wir bumpen einen Key, damit
+  // auch der Default-Punkt nach Edits frisch aufgelöst wird).
+  const [menuEditorOpen, setMenuEditorOpen] = useState(false);
+  const [menuReloadKey, setMenuReloadKey] = useState(0);
   const [backlinksRefresh, setBacklinksRefresh] = useState(0);
   const [openTabs, setOpenTabs] = useState<TabRef[]>([]);
   const [scrollToLine, setScrollToLine] = useState<number | null>(null);
@@ -551,6 +564,49 @@ export function App() {
       window.clearInterval(iv);
     };
   }, []);
+
+  // Epic 11 — Default-Menüauswahl. App lädt das gemergte Menü (System-zuerst)
+  // selbst, um beim Boot den ersten Punkt aktiv zu setzen; die Sidebar fetcht
+  // dieselbe Liste eigenständig für ihr Rendering. Wir bevorzugen die zuletzt
+  // aktive Auswahl aus localStorage (Muster lokyy:*), fallen sonst auf den
+  // ersten System-Punkt (bzw. das erste Item) zurück. Re-läuft nach jedem
+  // Editor-Close (menuReloadKey), damit umbenannte/gelöschte Punkte den
+  // Default nicht ins Leere zeigen lassen. Fire-and-forget; ein Fehler lässt
+  // die Main-Fläche einfach beim Editor/Leerzustand.
+  useEffect(() => {
+    let alive = true;
+    api
+      .getMenu()
+      .then((cfg) => {
+        if (!alive) return;
+        const items = cfg.items;
+        if (items.length === 0) return;
+        let last: string | null = null;
+        try {
+          last = localStorage.getItem("lokyy:sidebar:active");
+        } catch {
+          /* localStorage blocked — fall through to default */
+        }
+        setActiveMenuItem((prev) => {
+          // Re-resolve the current selection against the fresh list so a
+          // renamed/edited item keeps its folder/viewType in sync; if it
+          // vanished (deleted), fall back to last-active → first system →
+          // first item.
+          if (prev) {
+            const stillThere = items.find((i) => i.id === prev.id);
+            if (stillThere) return stillThere;
+          }
+          const remembered = last && items.find((i) => i.id === last);
+          if (remembered) return remembered;
+          const firstSystem = items.find((i) => i.kind === "system");
+          return firstSystem ?? items[0] ?? null;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [menuReloadKey]);
 
   // Global Cmd/Ctrl+K opens Command Palette
   useEffect(() => {
@@ -2107,6 +2163,21 @@ export function App() {
             }}
           />
         )}
+        {/* Epic 11 — Workspace-Sidebar-Rail (Story 11.3), desktop-only. Schmale
+            navigierbare Menüleiste (System- + Custom-Punkte). Auswahl setzt den
+            aktiven Menüpunkt (App = Quelle der Wahrheit), das Zahnrad öffnet den
+            MenuEditor (Story 11.2). Auf Mobile bleibt der bestehende
+            Hamburger-Drawer (FileTree) die Navigation. */}
+        {!isMobile && (
+          <Sidebar
+            // Remount nach Editor-Close, damit die Rail ihr Menü neu fetcht
+            // (sie lädt nur beim Mount; menuReloadKey forciert den Refetch).
+            key={menuReloadKey}
+            activeItemId={activeMenuItem?.id ?? null}
+            onSelectItem={(item) => setActiveMenuItem(item)}
+            onOpenEditor={() => setMenuEditorOpen(true)}
+          />
+        )}
         {/* Datei-Baum + Tag-Pane.
             On desktop: always-visible static aside.
             On mobile: fixed slide-over drawer behind a hamburger button.
@@ -2186,17 +2257,38 @@ export function App() {
             </div>
           )}
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 8px" }}>
-            <FileTree
-              ref={fileTreeRef}
-              tree={tree}
-              activeId={active?.id ?? null}
-              onOpen={openAndCloseDrawer}
-              onCreate={handleCreate}
-              onRename={handleRename}
-              onMove={handleMove}
-              onDelete={handleDelete}
-              tagFilteredNoteIds={tagFilteredNoteIds}
-            />
+            {/* Epic 11: Auf Desktop rendert das Navigations-Panel die per
+                Workspace-Menü gewählte View (resolveView(item.viewType)) — für
+                den Default-/Tree-Punkt ist das die bestehende FileTree-Logik
+                (TreeView umhüllt FileTree). Auf Mobile bleibt der direkte
+                FileTree-Drawer unverändert (die Sidebar-Rail ist desktop-only).
+                Beim Notiz-Öffnen aus der View läuft alles über open() — die
+                bestehende Editor-/Tab-/Graph-Funktionalität bleibt intakt. */}
+            {!isMobile && activeMenuItem ? (
+              <Suspense fallback={null}>
+                {(() => {
+                  const View = resolveView(activeMenuItem.viewType);
+                  return (
+                    <View
+                      item={activeMenuItem}
+                      onOpenNote={(id) => void open(id)}
+                    />
+                  );
+                })()}
+              </Suspense>
+            ) : (
+              <FileTree
+                ref={fileTreeRef}
+                tree={tree}
+                activeId={active?.id ?? null}
+                onOpen={openAndCloseDrawer}
+                onCreate={handleCreate}
+                onRename={handleRename}
+                onMove={handleMove}
+                onDelete={handleDelete}
+                tagFilteredNoteIds={tagFilteredNoteIds}
+              />
+            )}
           </div>
           <div
             style={{
@@ -2425,6 +2517,20 @@ export function App() {
         }}
         onCountChange={setPendingCount}
       />
+
+      {/* Workspace-Menü-Editor (Zahnrad in der Sidebar-Rail, Story 11.2).
+          Lädt Menü + Vault-Baum selbst und speichert über api.putMenu. Beim
+          Schließen bumpen wir menuReloadKey, damit die Default-Auflösung in
+          App neu läuft (umbenannte/gelöschte Punkte synchron halten); die
+          Sidebar-Rail fetcht ihr Menü beim nächsten Mount/Re-render selbst. */}
+      {menuEditorOpen && (
+        <MenuEditor
+          onClose={() => {
+            setMenuEditorOpen(false);
+            setMenuReloadKey((n) => n + 1);
+          }}
+        />
+      )}
 
       {/* Mobile bottom tab bar — Story: Mobile Shell. Gated to mobile so the
           desktop layout is untouched. Each tab is a thin callback into the

@@ -212,8 +212,8 @@ development_status:
   # Stories geschnitten 30.05 (Scrum Master). Architektur-Sign-off: epic-11-architecture-addendum.md (Winston).
   epic-11: in-progress
   11-1-sidebar-menu-config-model-vault-persistence: review   # Welle 1 done, build+tests grün
-  11-2-sidebar-menu-editor-ui-gear: ready-for-dev
-  11-3-sidebar-menu-rendering-system-vs-custom: ready-for-dev
+  11-2-sidebar-menu-editor-ui-gear: review   # Welle 2 done, build grün
+  11-3-sidebar-menu-rendering-system-vs-custom: review   # Welle 2 done, build grün
   11-4-view-type-registry-tree-skills: review   # Welle 1 done, build+tests grün
   11-5-skill-library-view-cards-markdown: ready-for-dev
   11-6-skill-creator-skill-seed: ready-for-dev

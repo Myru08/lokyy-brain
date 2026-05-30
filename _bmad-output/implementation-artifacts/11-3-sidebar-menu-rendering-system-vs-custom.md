@@ -30,6 +30,14 @@ zwischen ihnen wechseln, damit ich meinen Workspace tatsächlich navigieren kann
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle2` (2026-05-30).
+
 ### Completion Notes List
+- `Sidebar.tsx`: `api.getMenu()` → System-first-then-Custom (defensiver stable-sort), Icon (lucide, kebab→Pascal-Normalisierung + `Circle`-Fallback) + Label, aktiver Punkt hervorgehoben, `onSelectItem`/`onOpenEditor`-Callbacks. System read-only; Custom mit Pencil/Trash2 + Zahnrad. Collapse 240↔56px, State in localStorage (`lokyy:sidebar:*`, K-2).
+- Kein App.tsx-Edit (R-3); View-Mounting bleibt Wireup. Props `{activeItemId, onSelectItem, onOpenEditor}`.
+
 ### File List
+- NEU `pwa/src/sidebar/Sidebar.tsx`
+
 ### Change Log
+- 2026-05-30 — Welle 2. Eigenständig tsc-clean; via Wireup in App.tsx gemountet; `pnpm -r build` grün (Orchestrator-verifiziert). Status → review.
