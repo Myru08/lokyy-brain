@@ -590,3 +590,19 @@ export {
   type DecryptedToken,
   type ForgejoOauthConfig,
 } from "./forgejo/refresh.js";
+
+// ─── Sidebar menu config (Epic 11 / Story 11.1) ─────────────────────────
+// Lokyy-Workspace sidebar menu = (folder) + (view type). System-Items are
+// code constants (SYSTEM_ITEMS, always merged first, never persisted); custom
+// items live in `00_meta/sidebar-menu.yaml` and are read/written exclusively
+// via gitService (Forgejo-first). Consumed by the flat server route
+// `server/src/routes/workspace.ts` (GET/PUT /api/workspace/menu).
+export {
+  read as readMenuConfig,
+  write as writeMenuConfig,
+  SYSTEM_ITEMS,
+  MENU_FILE as MENU_CONFIG_FILE,
+  type ViewType,
+  type MenuItem,
+  type MenuConfig,
+} from "./workspace/menuConfig.js";

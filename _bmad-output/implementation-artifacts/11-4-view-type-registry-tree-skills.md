@@ -35,6 +35,15 @@ Renderer zuordnet, damit das Leitprinzip „Menüpunkt = (Ordner) + (View-Typ)" 
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle1` (2026-05-30).
+
 ### Completion Notes List
+- `registry.ts` (§2): inline-gespiegelte `MenuItem`/`ViewType` (kein core-Import, §0), `ViewProps`, statisches `VIEW_REGISTRY` (Record über die geschlossene Union → Compiler erzwingt Vollständigkeit), `resolveView()` mit `?? tree`-Fallback. Kein Laufzeit-`register()`.
+- **K-1 eingehalten:** `SkillsView.tsx`/`DashboardView.tsx` NICHT angelegt — nur als Lazy-`ComponentType` mit Inline-„Coming soon"-Fallback (via `createElement`, damit `registry.ts` `.ts` bleibt) referenziert; TODO-Kommentare markieren die späteren Lazy-Importe für 11.5/11.11.
+- `TreeView.tsx`: komponiert die bestehende `FileTree` (unverändert) mit `folder`-Scope; `scopeToFolder()` mit graceful „Ordner nicht gefunden"; `onOpen`→`onOpenNote`; nur lokales `activeId` fürs Highlighting, kein eigener Router/Editor-State.
+
 ### File List
+- NEU `pwa/src/sidebar/views/registry.ts`, `…/TreeView.tsx`, `…/registry.test.ts` (5/5 grün)
+
 ### Change Log
+- 2026-05-30 — Welle 1. `tsc --noEmit` clean; `pnpm --filter pwa build` grün; `pnpm -r build` grün (Orchestrator-verifiziert). Status → review. Mount in App.tsx bleibt Scope 11.3.

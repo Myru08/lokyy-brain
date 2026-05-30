@@ -311,6 +311,36 @@ export interface LogsQuery {
   service?: string;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Lokyy-Workspace sidebar menu (Epic 11 / Story 11.1).
+ *
+ * Inlined structural mirror of `MenuItem` / `ViewType` / `MenuConfig` from
+ * `packages/core/src/workspace/menuConfig.ts`. @lokyy/core is node-only and
+ * forbidden from the PWA bundle (§0), so the shapes live here — keep field
+ * names + the closed `ViewType` enum 1:1 with the source. The view-type
+ * registry in `pwa/src/sidebar/views/registry.ts` mirrors the same union.
+ *
+ * `kind:"system"` items (Home, Skills) are code constants merged in front by
+ * the server and are NEVER persisted; `putMenu` sends only the user's custom
+ * items, and the server re-drops any incoming system item defensively.
+ * ────────────────────────────────────────────────────────────────────── */
+export type ViewType = "tree" | "skills" | "dashboard"; // closed list v1
+
+export interface MenuItem {
+  id: string; // ULID for custom items; reserved "system:*" for system items
+  label: string;
+  icon: string; // lucide-react icon name
+  folder: string; // vault-relative path, "" = root
+  viewType: ViewType;
+  shortcut: string | null;
+  kind: "system" | "custom";
+}
+
+export interface MenuConfig {
+  version: number;
+  items: MenuItem[];
+}
+
 /**
  * API-Client. Dünne fetch-Wrapper. Der Server pullt vor jedem Lesen selbst —
  * der Client muss sich um Git nicht kümmern.
@@ -1071,4 +1101,32 @@ export const api = {
       credentials: "include",
     }).then(json<LogsResult>);
   },
+
+  /* ──── Workspace sidebar menu (Epic 11 / Story 11.1) ──── */
+
+  /**
+   * Read the merged sidebar menu config — System-Items (Home, Skills) merged
+   * in front of the user's custom items. The server degrades to System-Defaults
+   * internally on a missing/invalid `00_meta/sidebar-menu.yaml`, so this resolves
+   * with a usable `{ version, items }` whenever the endpoint is reachable.
+   */
+  getMenu: (): Promise<MenuConfig> =>
+    fetch(`${BASE}/workspace/menu`, { credentials: "include" }).then(
+      json<MenuConfig>,
+    ),
+
+  /**
+   * Persist the user's custom menu items. The server rejects every incoming
+   * `kind:"system"` item before persistence (System-Items are code constants,
+   * never written), then commits the custom-only config via gitService. Returns
+   * the freshly merged config (System + persisted custom). Throws `ApiError`
+   * (400) on schema-invalid items.
+   */
+  putMenu: (items: MenuItem[]): Promise<MenuConfig> =>
+    fetch(`${BASE}/workspace/menu`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
+      credentials: "include",
+    }).then(json<MenuConfig>),
 };

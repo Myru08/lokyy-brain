@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy:sidebar-menu",
+  "title": "Lokyy Sidebar Menu Config",
+  "description": "Persisted shape of 00_meta/sidebar-menu.yaml. Only kind:\"custom\" items are stored; system items are code constants (SYSTEM_ITEMS).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "items"],
+  "properties": {
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Schema version for future migrations."
+    },
+    "items": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/menuItem" }
+    }
+  },
+  "definitions": {
+    "menuItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "icon", "folder", "viewType", "shortcut", "kind"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ULID for custom items (26 chars); reserved system: constants for system items."
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "icon": {
+          "type": "string",
+          "minLength": 1,
+          "description": "lucide-react icon name (closed list enforced by the UI IconPicker)."
+        },
+        "folder": {
+          "type": "string",
+          "description": "Vault-relative folder path; \"\" = vault root."
+        },
+        "viewType": {
+          "type": "string",
+          "enum": ["tree", "skills", "dashboard"]
+        },
+        "shortcut": {
+          "type": ["string", "null"],
+          "description": "v1 is always null (deferred)."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["system", "custom"]
+        }
+      }
+    }
+  }
+}

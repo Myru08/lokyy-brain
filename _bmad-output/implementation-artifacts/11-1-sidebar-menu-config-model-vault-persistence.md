@@ -45,6 +45,18 @@ gleich aussieht.
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle1` (2026-05-30).
+
 ### Completion Notes List
+- Core `menuConfig.ts` (§1/§3): `read()` pull→parse YAML→ajv→merge `[SYSTEM_ITEMS, ...custom]`; ENOENT = leerer Vault → Defaults; invalid → Defaults + `console.error`, nie Crash. `write()` filtert auf `kind:"custom"`, ajv-validiert, persistiert via `gitService.save()` (Prefix `workspace:`), nie direkter fs-Write.
+- Server `workspace.ts`: `GET/PUT /menu`, verwirft `kind:"system"` serverseitig vor Persistenz (defense-in-depth), flach/camelCase, 400/500-Fehler. Mounting = Wireup (index.ts nicht editiert).
+- O-1 bestätigt: `.yaml` ok (Präzedenz `00_meta/mcp-scopes.yaml`, gleiche `yaml`-lib wie `mcp/src/scopes.ts`). `.json`-Fallback isoliert auf 2 Helper.
+- Dep-Hinweis: `yaml@^2.5.0` zu `packages/core/package.json` (gray-matter-Typen ungeeignet); selbe lib wie mcp-scopes, keine neue Lockfile-Auflösung.
+
 ### File List
+- NEU `packages/core/src/workspace/menuConfig.ts`, `…/menuConfig.test.ts` (8/8 grün), `…/sidebar-menu.schema.json`
+- NEU `server/src/routes/workspace.ts`
+- EDIT `packages/core/src/index.ts` (Barrel), `packages/core/package.json` (yaml-Dep)
+
 ### Change Log
+- 2026-05-30 — Welle 1. Core-Suite 250 passed/3 skipped; server `tsc --noEmit` 0 Fehler; `pnpm -r build` grün (Orchestrator-verifiziert). Status → review.

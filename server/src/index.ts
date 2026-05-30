@@ -65,6 +65,7 @@ import { voiceSettingsRoutes } from "./routes/voice-settings.js";
 import { systemRoutes } from "./routes/system.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { logsRoutes } from "./routes/logs.js";
+import { workspaceRoutes } from "./routes/workspace.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -315,6 +316,17 @@ app.route("/api/voice/suggest-title", voiceTitleRoutes);
 // notes, future scheduling tokens). Same auth posture as voice-settings.
 app.use("/api/system/*", setupGate);
 app.route("/api/system", systemRoutes);
+
+// Epic 11 / Story 11.1 — Lokyy-Workspace sidebar menu config.
+//   GET /api/workspace/menu → System + Custom merged { version, items }
+//   PUT /api/workspace/menu ← { items }  (System-Items rejected server-side;
+//                                          only custom items persisted via
+//                                          gitService → 00_meta/sidebar-menu.yaml)
+// Flat, single-vault route (no :vaultId), camelCase JSON. Gated by setup state
+// consistent with the other data routes.
+app.use("/api/workspace/*", setupGate);
+app.route("/api/workspace", workspaceRoutes);
+
 app.route("/api", searchRoutes);
 app.route("/api/dataview", dataviewRoutes);
 app.route("/api/templates", templatesRoutes);

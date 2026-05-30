@@ -211,10 +211,10 @@ development_status:
   # Wellen: 1 (11.1,11.4) → 2 (11.3,11.2) → 3 (11.5,11.6,11.7) → 4 (11.8).
   # Stories geschnitten 30.05 (Scrum Master). Architektur-Sign-off: epic-11-architecture-addendum.md (Winston).
   epic-11: in-progress
-  11-1-sidebar-menu-config-model-vault-persistence: ready-for-dev
+  11-1-sidebar-menu-config-model-vault-persistence: review   # Welle 1 done, build+tests grün
   11-2-sidebar-menu-editor-ui-gear: ready-for-dev
   11-3-sidebar-menu-rendering-system-vs-custom: ready-for-dev
-  11-4-view-type-registry-tree-skills: ready-for-dev
+  11-4-view-type-registry-tree-skills: review   # Welle 1 done, build+tests grün
   11-5-skill-library-view-cards-markdown: ready-for-dev
   11-6-skill-creator-skill-seed: ready-for-dev
   11-7-open-skill-format-mcp-exposure-docs: ready-for-dev
