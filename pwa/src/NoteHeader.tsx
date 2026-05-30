@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ChevronRight,
+  Folder,
   Loader2,
   Save,
   RefreshCw,
@@ -382,11 +383,16 @@ function buildBreadcrumbSegments(
 }
 
 /**
- * Folder-path breadcrumb. Renders a faint single-line strip above the
- * title row so the user can see WHERE the active note lives (high-value
- * for auto-opened voice captures that drop into deep folders). Each
- * segment is a button when `onFolderJump` is wired; otherwise a plain
- * span. Hidden entirely for vault-root notes.
+ * Folder-path breadcrumb. Renders a clearly-visible single-line strip
+ * above the title row so the user can see WHERE the active note lives and
+ * — crucially — JUMP to that folder in the FileTree (high-value for
+ * auto-opened voice captures that drop into deep folders). A leading
+ * folder icon labels the strip as "here is where this note lives"; each
+ * segment is a tappable pill-style button when `onFolderJump` is wired
+ * (hover lifts the background + accent-tints the text + underlines, so the
+ * click affordance is unmistakable). When `onFolderJump` is omitted the
+ * segments render as plain — still clearly legible — text. Hidden entirely
+ * for vault-root notes.
  */
 function Breadcrumb({
   segments,
@@ -409,17 +415,23 @@ function Breadcrumb({
         alignItems: "center",
         flexWrap: "wrap",
         gap: 4,
-        fontSize: 11,
+        fontSize: 12,
         fontFamily: FONT.ui,
-        color: C.textDim,
-        marginBottom: 4,
-        lineHeight: 1.2,
+        fontWeight: 500,
+        color: C.text,
+        marginBottom: 6,
+        lineHeight: 1.3,
       }}
-      aria-label="Folder path"
+      aria-label="Folder path — click a segment to jump there in the tree"
     >
+      <Folder
+        size={13}
+        aria-hidden="true"
+        style={{ color: C.accent, flexShrink: 0, marginRight: 2 }}
+      />
       {segments.map((seg, idx) => {
         const isHover = hover === idx;
-        const color = isHover ? C.text : C.textDim;
+        const isLast = idx === segments.length - 1;
         const content = clickable ? (
           <button
             type="button"
@@ -427,32 +439,45 @@ function Breadcrumb({
             onMouseEnter={() => setHover(idx)}
             onMouseLeave={() => setHover((h) => (h === idx ? null : h))}
             style={{
-              background: "transparent",
-              border: "none",
-              padding: 0,
+              display: "inline-flex",
+              alignItems: "center",
+              background: isHover ? C.elevated : "transparent",
+              border: `1px solid ${isHover ? C.accent : "transparent"}`,
+              borderRadius: 4,
+              padding: "2px 7px",
               margin: 0,
               cursor: "pointer",
-              color,
-              fontSize: 11,
+              color: isHover ? C.accent : isLast ? C.text : C.textDim,
+              fontSize: 12,
+              fontWeight: isLast ? 600 : 500,
               fontFamily: FONT.ui,
               textDecoration: isHover ? "underline" : "none",
+              transition: "background 0.12s ease, color 0.12s ease",
             }}
-            title={`Jump to ${seg.path}`}
+            title={`Im Tree zu „${seg.path}" springen`}
           >
             {seg.name}
           </button>
         ) : (
-          <span style={{ color }}>{seg.name}</span>
+          <span
+            style={{
+              padding: "2px 7px",
+              color: isLast ? C.text : C.textDim,
+              fontWeight: isLast ? 600 : 500,
+            }}
+          >
+            {seg.name}
+          </span>
         );
         return (
           <span
             key={seg.path}
-            style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 2 }}
           >
             {content}
-            {idx < segments.length - 1 && (
+            {!isLast && (
               <ChevronRight
-                size={10}
+                size={12}
                 aria-hidden="true"
                 style={{ color: C.textFaint }}
               />
