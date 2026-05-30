@@ -1,11 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { CSSProperties } from "react";
-import { Plus } from "lucide-react";
+import { ChevronRight, FileText, FolderTree, Plus } from "lucide-react";
 import type { Note, TreeNode } from "@lokyy/shared";
 import { api } from "../../api.js";
 import { C, FONT } from "../../theme.js";
 import type { ViewProps } from "./registry.js";
 import { NewSkillDialog } from "./NewSkillDialog.js";
+import {
+  deriveSkillStructures,
+  type CompanionFile,
+  type SkillStructure,
+} from "./skillStructure.js";
 
 /**
  * SkillsView — echter Renderer für `viewType: "skills"` (Story 11.5).
@@ -28,7 +33,16 @@ import { NewSkillDialog } from "./NewSkillDialog.js";
  * Kein eigener Routing-/Editor-State: Klick auf eine Karte delegiert über
  * `onOpenNote` in `App.open()`.
  *
- * [Source: epic-11-architecture-addendum.md §2; Story 11.5; Epic 9]
+ * Story 12.2 — Strukturansicht: Ein Skill kann ein ORDNER
+ * `70_pai/skills/<name>/` mit `SKILL.md` (`type: skill`) + `references/*.md` +
+ * `templates/*` sein (Anthropic-Format). Solche Ordner-Skills werden als EINE
+ * Karte mit aufklappbarer Struktur (references/templates als kleiner Baum)
+ * gezeigt; Einzel-Note-Skills (`<name>.md`) bleiben einfache Karten. Die
+ * Struktur-Ableitung (Tree → Skill-Liste, keine Doppelung) liegt rein und
+ * testbar in `skillStructure.ts`.
+ *
+ * [Source: epic-11-architecture-addendum.md §2; Story 11.5; Epic 9;
+ *  epic-12-ordner-skills.md — Story 12.2]
  */
 
 /** Default-Ordner, falls der Menüpunkt keinen Ordner trägt (System-Item-Fallback). */
@@ -90,10 +104,14 @@ const NOTICE_STYLE: CSSProperties = {
   lineHeight: 1.4,
 };
 
-/** Aus dem Frontmatter extrahierte Skill-Metadaten + Vorschau. */
+/** Aus Frontmatter + Tree-Struktur zusammengesetzte Skill-Karte. */
 interface SkillCard {
-  /** Note-id (Pfad ohne ".md") — an `onOpenNote` weitergereicht. */
+  /** Note-id der Haupt-Note (SKILL.md bzw. Einzel-Note) — an `onOpenNote`. */
   id: string;
+  /** "folder-skill" = Ordner mit SKILL.md + Begleitern; "single-note" = lose `.md`. */
+  kind: "folder-skill" | "single-note";
+  /** Ordner-/Skill-Name (Sortier-/Dedup-Schlüssel aus der Struktur). */
+  name: string;
   /** Anzeigetitel (Frontmatter `title` → H1 → Dateiname). */
   title: string;
   /** Frontmatter `description` (oder leerer String). */
@@ -102,11 +120,10 @@ interface SkillCard {
   allowedTools: string[];
   /** Plaintext-Markdown-Vorschau (Body ohne Frontmatter, geklammert). */
   preview: string;
-  /**
-   * Gruppe = Unterordner relativ zum Skills-Root, "" = direkt im Root.
-   * Macht die Vault-Verschachtelung als Gruppierung sichtbar.
-   */
-  group: string;
+  /** Begleit-`.md` unter `references/` (nur folder-skill). */
+  references: CompanionFile[];
+  /** Begleit-Dateien unter `templates/` (nur folder-skill). */
+  templates: CompanionFile[];
 }
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/;
@@ -231,28 +248,6 @@ function buildPreview(bodyAfter: string): string {
   return text.length > 280 ? `${text.slice(0, 280).trimEnd()}…` : text;
 }
 
-/** Sammelt alle Note-Knoten unter `root`, mit ihrem Unterordner als Gruppe. */
-function collectNoteNodes(
-  nodes: TreeNode[],
-  rootPath: string,
-): { id: string; group: string }[] {
-  const out: { id: string; group: string }[] = [];
-  const walk = (list: TreeNode[]) => {
-    for (const node of list) {
-      if (node.type === "note") {
-        // Gruppe = Pfadanteil zwischen Root und Notiz, "" = direkt im Root.
-        const rel = rootPath ? node.path.slice(rootPath.length + 1) : node.path;
-        const slash = rel.lastIndexOf("/");
-        out.push({ id: node.path, group: slash === -1 ? "" : rel.slice(0, slash) });
-      } else if (node.children.length > 0) {
-        walk(node.children);
-      }
-    }
-  };
-  walk(nodes);
-  return out;
-}
-
 /** Findet den Teilbaum-Knoten zu einem Ordnerpfad und liefert dessen Kinder. */
 function scopeToFolder(tree: TreeNode[], folder: string): TreeNode[] | null {
   if (!folder) return tree;
@@ -286,23 +281,30 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
         setLoading(false);
         return;
       }
-      const refs = collectNoteNodes(scoped, folder);
-      // Frontmatter braucht den Body → jede Note einzeln laden. Skill-Ordner
-      // sind klein; parallel über Promise.all. Einzelne Fehler verwerfen wir
-      // still (defensiv — eine kaputte Note darf die Bibliothek nicht killen).
+      // Struktur rein aus dem Tree ableiten (folder-skill vs single-note,
+      // references/templates gruppiert, keine Doppelung) — synchron, testbar.
+      const structures = deriveSkillStructures(scoped);
+      // Nur die Haupt-Note (SKILL.md bzw. Einzel-Note) je Kandidat laden, um
+      // `type: skill` zu bestätigen und Titel/Beschreibung zu ziehen. Begleit-
+      // Files werden NICHT geladen (Anthropic-Pattern: SKILL.md ist die Tür).
+      // Parallel über Promise.all; einzelne Fehler verwerfen wir still
+      // (eine kaputte Note darf die Bibliothek nicht killen).
       const loaded = await Promise.all(
-        refs.map(async (ref) => {
+        structures.map(async (s: SkillStructure) => {
           try {
-            const note: Note = await api.getNote(ref.id);
+            const note: Note = await api.getNote(s.mainPath);
             const fm = parseSkillFrontmatter(note.body);
             if (fm.type !== "skill") return null;
             const card: SkillCard = {
               id: note.id,
-              title: fm.title || firstHeading(fm.bodyAfter) || note.title || note.id,
+              kind: s.kind,
+              name: s.name,
+              title: fm.title || firstHeading(fm.bodyAfter) || note.title || s.name,
               description: fm.description ?? "",
               allowedTools: fm.allowedTools,
               preview: buildPreview(fm.bodyAfter),
-              group: ref.group,
+              references: s.references,
+              templates: s.templates,
             };
             return card;
           } catch {
@@ -311,10 +313,7 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
         }),
       );
       const valid = loaded.filter((c): c is SkillCard => c !== null);
-      valid.sort(
-        (a, b) =>
-          a.group.localeCompare(b.group) || a.title.localeCompare(b.title),
-      );
+      valid.sort((a, b) => a.name.localeCompare(b.name));
       setCards(valid);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Skills konnten nicht geladen werden");
@@ -327,21 +326,10 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
     void load();
   }, [load]);
 
-  // Gruppierung nach Unterordner (Verschachtelung sichtbar machen).
-  const groups = useMemo(() => {
-    const byGroup = new Map<string, SkillCard[]>();
-    for (const card of cards) {
-      const arr = byGroup.get(card.group);
-      if (arr) arr.push(card);
-      else byGroup.set(card.group, [card]);
-    }
-    return [...byGroup.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [cards]);
-
-  // Bekannte skill_name (= letztes Pfadsegment der card.id) für die
-  // Duplikat-Prüfung im Dialog. Beispiel-id: "70_pai/skills/weekly-review".
+  // Bekannte skill_name (Ordner- bzw. Dateiname) für die Duplikat-Prüfung im
+  // Dialog. `card.name` ist der stabile Struktur-Schlüssel aus der Ableitung.
   const existingSkillNames = useMemo(
-    () => cards.map((c) => c.id.split("/").pop() ?? c.id),
+    () => cards.map((c) => c.name),
     [cards],
   );
 
@@ -441,29 +429,11 @@ export function SkillsView({ item, onOpenNote }: ViewProps) {
           boxSizing: "border-box",
         }}
       >
-        {groups.map(([group, list]) => (
-        <section key={group || "_root"} style={{ marginBottom: 18 }}>
-          {group && (
-            <div
-              style={{
-                color: C.textDim,
-                fontFamily: FONT.mono,
-                fontSize: 11,
-                letterSpacing: "0.04em",
-                textTransform: "uppercase",
-                margin: "4px 4px 8px",
-              }}
-            >
-              {group}
-            </div>
-          )}
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            {list.map((card) => (
-              <SkillCardItem key={card.id} card={card} onOpen={onOpenNote} />
-            ))}
-          </div>
-          </section>
-        ))}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {cards.map((card) => (
+            <SkillCardItem key={card.id} card={card} onOpen={onOpenNote} />
+          ))}
+        </div>
       </div>
       {dialog}
     </div>
@@ -478,51 +448,70 @@ function SkillCardItem({
   onOpen: (id: string) => void;
 }) {
   const [hover, setHover] = useState(false);
+  // Ordner-Skills tragen eine aufklappbare Struktur (references/templates).
+  // Default eingeklappt — wie die Claude-Desktop-Skill-Karte.
+  const [expanded, setExpanded] = useState(false);
+  const hasStructure =
+    card.kind === "folder-skill" &&
+    (card.references.length > 0 || card.templates.length > 0);
+
   return (
     <div
-      role="button"
-      tabIndex={0}
-      onClick={() => onOpen(card.id)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onOpen(card.id);
-        }
-      }}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        cursor: "pointer",
         background: hover ? C.elevated : C.panel,
         border: `1px solid ${hover ? C.borderStrong : C.border}`,
         borderRadius: 8,
         padding: "12px 14px",
         transition: "background 120ms ease, border-color 120ms ease",
-        outline: "none",
       }}
     >
+      {/* Titelzeile = öffnet die Haupt-Note (SKILL.md bzw. Einzel-Note). */}
       <div
-        style={{
-          color: C.text,
-          fontWeight: 600,
-          fontSize: 14,
-          marginBottom: card.description ? 4 : 8,
+        role="button"
+        tabIndex={0}
+        onClick={() => onOpen(card.id)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpen(card.id);
+          }
         }}
+        style={{ cursor: "pointer", outline: "none" }}
       >
-        {card.title}
-      </div>
-      {card.description && (
         <div
           style={{
-            color: C.textDim,
-            fontSize: 12.5,
-            lineHeight: 1.5,
-            marginBottom: 8,
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            color: C.text,
+            fontWeight: 600,
+            fontSize: 14,
+            marginBottom: card.description ? 4 : 8,
           }}
         >
-          {card.description}
+          {card.kind === "folder-skill" ? (
+            <FolderTree size={14} style={{ color: C.gold, flexShrink: 0 }} />
+          ) : (
+            <FileText size={14} style={{ color: C.textDim, flexShrink: 0 }} />
+          )}
+          <span>{card.title}</span>
         </div>
-      )}
+        {card.description && (
+          <div
+            style={{
+              color: C.textDim,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+              marginBottom: 8,
+            }}
+          >
+            {card.description}
+          </div>
+        )}
+      </div>
+
       {card.allowedTools.length > 0 && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
           {card.allowedTools.map((tool) => (
@@ -544,6 +533,7 @@ function SkillCardItem({
           ))}
         </div>
       )}
+
       {card.preview && (
         <div
           style={{
@@ -555,11 +545,165 @@ function SkillCardItem({
             WebkitLineClamp: 3,
             WebkitBoxOrient: "vertical",
             overflow: "hidden",
+            marginBottom: hasStructure ? 8 : 0,
           }}
         >
           {card.preview}
         </div>
       )}
+
+      {/* Aufklappbare Struktur — nur Ordner-Skills mit Begleit-Files. */}
+      {hasStructure && (
+        <SkillStructureSection
+          references={card.references}
+          templates={card.templates}
+          expanded={expanded}
+          onToggle={() => setExpanded((v) => !v)}
+          onOpen={onOpen}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Aufklappbarer Struktur-Block einer Ordner-Skill-Karte: ein „Struktur"-
+ * Toggle, darunter `references/` und `templates/` als kleiner Baum. Klick auf
+ * ein `.md`-Begleit-File öffnet es via `onOpen`; non-`.md` (z.B.
+ * `dashboard.jsx`) werden nur gelistet (nicht im Markdown-Editor öffenbar).
+ */
+function SkillStructureSection({
+  references,
+  templates,
+  expanded,
+  onToggle,
+  onOpen,
+}: {
+  references: CompanionFile[];
+  templates: CompanionFile[];
+  expanded: boolean;
+  onToggle: () => void;
+  onOpen: (id: string) => void;
+}) {
+  const total = references.length + templates.length;
+  return (
+    <div style={{ borderTop: `1px solid ${C.border}`, paddingTop: 8 }}>
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          background: "transparent",
+          border: "none",
+          padding: "2px 0",
+          cursor: "pointer",
+          color: C.textDim,
+          fontFamily: FONT.mono,
+          fontSize: 11,
+          letterSpacing: "0.03em",
+          textTransform: "uppercase",
+        }}
+        aria-expanded={expanded}
+      >
+        <ChevronRight
+          size={13}
+          style={{
+            transform: expanded ? "rotate(90deg)" : "none",
+            transition: "transform 120ms ease",
+            flexShrink: 0,
+          }}
+        />
+        Struktur · {total} {total === 1 ? "Datei" : "Dateien"}
+      </button>
+
+      {expanded && (
+        <div style={{ marginTop: 6, paddingLeft: 4 }}>
+          {references.length > 0 && (
+            <CompanionGroup label="references/" files={references} onOpen={onOpen} />
+          )}
+          {templates.length > 0 && (
+            <CompanionGroup label="templates/" files={templates} onOpen={onOpen} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Eine benannte Begleit-Gruppe (references/ oder templates/) als Liste. */
+function CompanionGroup({
+  label,
+  files,
+  onOpen,
+}: {
+  label: string;
+  files: CompanionFile[];
+  onOpen: (id: string) => void;
+}) {
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div
+        style={{
+          color: C.textFaint,
+          fontFamily: FONT.mono,
+          fontSize: 11,
+          margin: "4px 0 2px",
+        }}
+      >
+        {label}
+      </div>
+      {files.map((file) => (
+        <CompanionRow key={file.path} file={file} onOpen={onOpen} />
+      ))}
+    </div>
+  );
+}
+
+/** Eine Begleit-Datei-Zeile. `.md` öffnet via onOpen; non-`.md` nur Anzeige. */
+function CompanionRow({
+  file,
+  onOpen,
+}: {
+  file: CompanionFile;
+  onOpen: (id: string) => void;
+}) {
+  const [hover, setHover] = useState(false);
+  const openable = file.isMarkdown;
+  const handleOpen = () => {
+    if (openable) onOpen(file.id);
+  };
+  return (
+    <div
+      role={openable ? "button" : undefined}
+      tabIndex={openable ? 0 : undefined}
+      onClick={handleOpen}
+      onKeyDown={(e) => {
+        if (openable && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          handleOpen();
+        }
+      }}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 6px 3px 14px",
+        borderRadius: 5,
+        cursor: openable ? "pointer" : "default",
+        background: openable && hover ? C.accentSoft : "transparent",
+        color: openable ? C.text : C.textDim,
+        fontFamily: FONT.mono,
+        fontSize: 11.5,
+        outline: "none",
+      }}
+      title={openable ? `Öffnen: ${file.path}` : file.path}
+    >
+      <FileText size={12} style={{ color: C.textFaint, flexShrink: 0 }} />
+      <span>{file.name}</span>
     </div>
   );
 }

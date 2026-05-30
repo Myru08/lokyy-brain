@@ -235,6 +235,6 @@ development_status:
   # Skill = Ordner mit SKILL.md + references/ + templates/; Einzel-Note-Skills bleiben.
   epic-12: in-progress
   12-1-core-ordner-skill-discovery: review   # done, build+261 Tests grün, Einzel-Note-Regression ok
-  12-2-skillsview-strukturansicht: backlog
+  12-2-skillsview-strukturansicht: review   # done, build+97 Tests grün (skillStructure-Ableitung)
   12-3-import-anthropic-skills: backlog
   epic-12-retrospective: optional
