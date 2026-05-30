@@ -89,8 +89,13 @@ function comingSoonStub(label: string): ViewRenderer {
   return lazy(() => Promise.resolve({ default: ComingSoon }));
 }
 
-const SkillsView: ViewRenderer = /* TODO(11.5): import("./SkillsView.js") */ comingSoonStub(
-  "Skill-Bibliothek",
+/**
+ * Echter Renderer (Story 11.5) — Skill-Bibliothek. Lazy geladen (gleiche
+ * `lazy()`-Praxis wie `TreeView`/`GraphView`), damit der Skills-Chunk nicht
+ * synchron auf den Boot-Pfad gezogen wird.
+ */
+const SkillsView = lazy(() =>
+  import("./SkillsView.js").then((m) => ({ default: m.SkillsView })),
 );
 const DashboardView: ViewRenderer = /* TODO(11.11): import("./DashboardView.js") */ comingSoonStub(
   "Dashboard",

@@ -30,6 +30,15 @@ Karten mit Markdown-Vorschau und Verschachtelung, ähnlich der Claude Desktop Ap
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle3` (2026-05-30).
+
 ### Completion Notes List
+- `SkillsView.tsx`: ViewRenderer, lädt `api.tree()` scoped auf `item.folder` (Default `70_pai/skills`), parst Frontmatter via dependency-freien Flat-Parser (kein gray-matter im Bundle), filtert `type:skill`, Karten mit Titel/Beschreibung/`allowed_tools`-Chips/Markdown-Vorschau, Gruppierung nach Unterordner. Klick → `onOpenNote`.
+- `registry.ts`: nur den `skills`-Stub durch `React.lazy(()=>import("./SkillsView.js"))` ersetzt; `dashboard` bleibt Stub (11.11).
+- Perf-Hinweis: liest Frontmatter per `getNote` je Note (N Calls) — unkritisch bei erwarteter Skill-Anzahl.
+
 ### File List
+- NEU `pwa/src/sidebar/views/SkillsView.tsx` · EDIT `pwa/src/sidebar/views/registry.ts`
+
 ### Change Log
+- 2026-05-30 — Welle 3. tsc + `pnpm -r build` grün (Orchestrator-verifiziert). Interceptor-Check Teil der finalen UI-Verifikation. Status → review.

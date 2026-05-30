@@ -215,9 +215,9 @@ development_status:
   11-2-sidebar-menu-editor-ui-gear: review   # Welle 2 done, build grün
   11-3-sidebar-menu-rendering-system-vs-custom: review   # Welle 2 done, build grün
   11-4-view-type-registry-tree-skills: review   # Welle 1 done, build+tests grün
-  11-5-skill-library-view-cards-markdown: ready-for-dev
-  11-6-skill-creator-skill-seed: ready-for-dev
-  11-7-open-skill-format-mcp-exposure-docs: ready-for-dev
+  11-5-skill-library-view-cards-markdown: review   # Welle 3 done, build grün
+  11-6-skill-creator-skill-seed: review   # Welle 3 done, MCP-verifiziert
+  11-7-open-skill-format-mcp-exposure-docs: review   # Welle 3 done, Doku + Verifikation
   11-8-pwa-share-target-front-door: ready-for-dev   # K-4: nur Frontend, Server existiert
   # Welle 5 — Workspace-Shell UX (Quelle: 90_ideas/workspace-shell-ux 01KSW8DAN19ZDFNSW5ZR44ZSBG)
   11-9-collapsible-panel-faehnchen-pattern: ready-for-dev   # K-2: localStorage-State

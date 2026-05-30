@@ -31,6 +31,15 @@ Als Nutzer möchte ich einen „Skill-Creator"-Skill, der mich durch das Anlegen
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle3` (2026-05-30).
+
 ### Completion Notes List
+- Vault-Note `70_pai/skills/skill-creator` (ULID 01KSWE9R2Y6AJPV23HRGQJBWXG) per einem `create_note` type:skill (kein Workaround). SPEC-valides Frontmatter: `skill_name`, `title`, `execution:client`, `allowed_tools` (get_skill_schema/create_note/list_skills/run_skill), `input_schema` (skill_title, skill_name [kebab], run_command, prompt_body [required], optional allowed_tools/input_fields).
+- Prompt leitet an: erst `get_skill_schema`, dann SPEC-valide Skill-Note in EINEM create_note type:skill nach `70_pai/skills/<skill_name>`, danach `list_skills`/`run_skill`-Selbsttest.
+- **Verifikation PASSED:** `list_skills` zeigt skill-creator; `run_skill` `ok:true`, {{Variablen}} korrekt substituiert, innere Tokens des erzeugten Skills erhalten.
+
 ### File List
+- NEU (Vault) `70_pai/skills/skill-creator`
+
 ### Change Log
+- 2026-05-30 — Welle 3. AC 1–5 erfüllt, MCP-verifiziert. Status → review.

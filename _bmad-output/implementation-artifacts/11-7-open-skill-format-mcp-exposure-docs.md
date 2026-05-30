@@ -32,6 +32,15 @@ ausführbar sind, damit Lokyy ein offener, zentraler Skill-Store ist — kein pr
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle3` (2026-05-30).
+
 ### Completion Notes List
+- Exposition bestätigt: `list_skills`/`run_skill`/`get_skill_schema` über BEIDE Transporte (stdio + HTTP/StreamableHTTP mit Bearer/OAuth); ein gemeinsamer ListTools/CallTool → kein Drift. `{{var}}`-Rendering + `input_schema`-Validierung verifiziert; strukturierte Fehler (skill-not-found/invalid-input/ScopeViolation). Format offen (JSON-Schema draft-07, Markdown-Note, kein proprietäres Schema). `run_skill` ruft kein LLM → modell-agnostisch.
+- Doku `open-skill-format.md` geschrieben. Tests grün (17 core-skill + 63 mcp). Kein mcp/-Code geändert.
+- Findings (nicht-blockierend, eigene Story): F-1 fehlende Transport-E2E-Tests für list_skills/run_skill; F-2/F-3 allowed_tools + privacy:local-only Phase-1-advisory (bewusst, PRD Q3).
+
 ### File List
+- NEU `_bmad-output/planning-artifacts/open-skill-format.md`
+
 ### Change Log
+- 2026-05-30 — Welle 3. Verifikation grün. Status → review.
