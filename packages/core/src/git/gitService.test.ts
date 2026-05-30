@@ -6,7 +6,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { initCore } from "../util/coreConfig.js";
-import { save, pull, move, noteHistory, noteDiff } from "./gitService.js";
+import { save, pull, move, noteHistory, noteDiff, vaultActivity } from "./gitService.js";
 import { MergeConflictError, GitBackendError } from "../errors/GitError.js";
 
 const exec = promisify(execFile);
@@ -499,5 +499,52 @@ describe("gitService — read-only history/diff (Story 10.17)", () => {
     await expect(noteDiff(rel, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")).rejects.toBeInstanceOf(
       GitBackendError,
     );
+  });
+});
+
+describe("gitService — vault-wide activity / streak (Story 11.11 / K-3)", () => {
+  let v: Awaited<ReturnType<typeof setupVaultWithRemote>>;
+
+  beforeEach(async () => {
+    v = await setupVaultWithRemote();
+    useVault(v.workdir, v.remote);
+  });
+  afterEach(async () => {
+    if (v) await v.cleanup();
+  });
+
+  it("buckets commits by day and gap-fills the full window", async () => {
+    await save("20_notes/a.md", "a\n", "act: a");
+    await save("20_notes/b.md", "b\n", "act: b");
+
+    const activity = await vaultActivity(7);
+
+    // Window is gap-filled to exactly `days` cells, oldest→newest.
+    expect(activity.days).toHaveLength(7);
+    const today = new Date().toISOString().slice(0, 10);
+    const last = activity.days[activity.days.length - 1];
+    expect(last.date).toBe(today);
+    // All our commits land on today's bucket.
+    expect(last.commits).toBeGreaterThanOrEqual(2);
+    // Earlier days have no commits (gap-filled with 0).
+    expect(activity.days[0].commits).toBe(0);
+  });
+
+  it("derives a current streak from today's commits", async () => {
+    await save("20_notes/streak.md", "x\n", "act: streak");
+
+    const activity = await vaultActivity(30);
+    // Committed today → current streak at least 1; longest at least 1.
+    expect(activity.currentStreak).toBeGreaterThanOrEqual(1);
+    expect(activity.longestStreak).toBeGreaterThanOrEqual(1);
+  });
+
+  it("returns an all-zero window with no streaks for a history-less window", async () => {
+    // A vault with at least one commit, but a tiny window that still includes
+    // today: a single commit today keeps streak ≥ 1; clamps a bogus window.
+    await save("20_notes/seed.md", "seed\n", "act: seed");
+    const activity = await vaultActivity(1);
+    expect(activity.days).toHaveLength(1);
+    expect(activity.days[0].date).toBe(new Date().toISOString().slice(0, 10));
   });
 });

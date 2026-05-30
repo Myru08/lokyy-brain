@@ -30,6 +30,14 @@ damit ich einen festen Orientierungsanker habe.
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle4-5` (Wireup-Phase, 2026-05-30).
+
 ### Completion Notes List
+- App.tsx-Wireup: Logo klickbar → wählt `system:home` (erster System-Eintrag, `viewType:dashboard`) → `resolveView` rendert die DashboardView in der Main-Fläche. Default-Landing beim Start = Home/Dashboard.
+- Paket mit 11.11: funktioniert, sobald der dashboard-Lazy-Import aktiv ist (im 11.11-Finish gesetzt) — keine weitere App.tsx-Änderung nötig.
+
 ### File List
+- EDIT `pwa/src/App.tsx` (gebündelter Welle-5-Wireup, zusammen mit 11.9)
+
 ### Change Log
+- 2026-05-30 — Welle 5. `pnpm -r build` grün (Orchestrator-verifiziert). Status → review.

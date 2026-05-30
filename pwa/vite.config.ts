@@ -39,24 +39,30 @@ export default defineConfig({
           { src: "/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
           { src: "/icon-maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
         ],
+        // Story 11.8 (Addendum §6): das `share_target` zielt auf die
+        // PWA-Route `/share` (NICHT direkt aufs API) — dort fängt
+        // ShareTarget.tsx den Share ab, postet via `api.share()` an das
+        // bestehende `POST /api/pipes/share` und zeigt eine Quittung statt
+        // roher JSON-Antwort (YouTube-JSON-Bugfix).
         share_target: {
-          action: "/api/pipes/share",
+          action: "/share",
           method: "POST",
           enctype: "multipart/form-data",
           params: {
             title: "title",
             text: "text",
             url: "url",
-            files: [
-              {
-                name: "file",
-                accept: ["audio/*", "text/*"],
-              },
-            ],
+            files: [{ name: "file", accept: ["image/*", "application/pdf"] }],
           },
         },
       },
       workbox: {
+        // Story 11.8: der Browser POSTet den Web-Share an `/share`. Eine reine
+        // SPA kann einen POST-Body nicht lesen — der Service Worker fängt den
+        // POST ab, parkt die FormData (inkl. Datei) kurz im Cache und
+        // redirectet auf GET `/share`, das die SPA als ShareTarget rendert.
+        // Der GET-Handler liest die geparkte FormData wieder aus.
+        importScripts: ["/share-sw.js"],
         // API-Calls nicht aggressiv cachen — Forgejo ist die Wahrheit.
         // Top-level navigations to /api/** (e.g. OAuth start redirects) must
         // bypass the SPA's navigateFallback so the browser hits the network

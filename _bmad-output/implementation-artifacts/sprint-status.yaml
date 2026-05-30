@@ -218,9 +218,9 @@ development_status:
   11-5-skill-library-view-cards-markdown: review   # Welle 3 done, build grün
   11-6-skill-creator-skill-seed: review   # Welle 3 done, MCP-verifiziert
   11-7-open-skill-format-mcp-exposure-docs: review   # Welle 3 done, Doku + Verifikation
-  11-8-pwa-share-target-front-door: ready-for-dev   # K-4: nur Frontend, Server existiert
+  11-8-pwa-share-target-front-door: review   # Welle 4 done, build grün (SW share-target + Quittung)
   # Welle 5 — Workspace-Shell UX (Quelle: 90_ideas/workspace-shell-ux 01KSW8DAN19ZDFNSW5ZR44ZSBG)
-  11-9-collapsible-panel-faehnchen-pattern: ready-for-dev   # K-2: localStorage-State
-  11-10-clickable-logo-home-menu-point: ready-for-dev   # Paket mit 11.11
-  11-11-dashboard-home-view-type: ready-for-dev   # K-3: vaultActivity-Helper; Lose Enden = Checkbox + #todo
+  11-9-collapsible-panel-faehnchen-pattern: review   # Welle 5 done, build grün
+  11-10-clickable-logo-home-menu-point: review   # Welle 5 done, Logo→Home gewired
+  11-11-dashboard-home-view-type: review   # Welle 5 done (Backend-Batch + PWA-Finish), build grün
   epic-11-retrospective: optional

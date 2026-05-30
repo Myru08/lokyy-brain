@@ -66,6 +66,7 @@ import { systemRoutes } from "./routes/system.js";
 import { diagnosticsRoutes } from "./routes/diagnostics.js";
 import { logsRoutes } from "./routes/logs.js";
 import { workspaceRoutes } from "./routes/workspace.js";
+import { dashboardRoutes } from "./routes/dashboard.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -326,6 +327,16 @@ app.route("/api/system", systemRoutes);
 // consistent with the other data routes.
 app.use("/api/workspace/*", setupGate);
 app.route("/api/workspace", workspaceRoutes);
+
+// Epic 11 / Story 11.11 — Dashboard (Home) data.
+//   GET /api/dashboard               → cheap tiles (DashboardSummary), synchronous
+//   GET /api/dashboard/activity?days → git-log streak/heatmap (DashboardActivity), lazy
+//   GET /api/dashboard/loose-ends    → vault-wide #todo/checkbox scan, lazy
+// Flat, single-vault, camelCase JSON. Gated by setup state like the other
+// data routes. All data from existing core surfaces + read-only vaultActivity/
+// looseEnds helpers (no MCP, no new git write path).
+app.use("/api/dashboard/*", setupGate);
+app.route("/api/dashboard", dashboardRoutes);
 
 app.route("/api", searchRoutes);
 app.route("/api/dataview", dataviewRoutes);

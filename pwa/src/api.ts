@@ -5,6 +5,7 @@ import type {
   Note,
   NoteSummary,
   PipeJob,
+  SharePayload,
   TreeNode,
 } from "@lokyy/shared";
 
@@ -309,6 +310,60 @@ export interface LogsQuery {
   limit?: number;
   level?: LogLevel;
   service?: string;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Dashboard-Home (Epic 11 / Story 11.11).
+ *
+ * Inline-Spiegel der Response-Shapes aus `server/src/routes/dashboard.ts`
+ * (selbst 1:1 mit `epic-11-architecture-addendum.md §5`). @lokyy/core ist
+ * node-only und im PWA-Bundle verboten (§0), darum leben die Typen hier —
+ * Feldnamen + Form strikt deckungsgleich mit der Server-Route halten.
+ *
+ * Zwei Latenz-Klassen (Addendum §5):
+ *   getDashboard()         → billige Kacheln, synchron (`DashboardSummary`).
+ *   getDashboardActivity() → teure git-log Heatmap/Streak, lazy.
+ *   getDashboardLooseEnds()→ teurer vault-weiter #todo/Checkbox-Scan, lazy.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export interface DashboardSummary {
+  counts: { notes: number; byType: Record<string, number>; tags: number };
+  health: {
+    brokenLinks: number;
+    brokenTop: { sourceId: string; target: string }[];
+  };
+  /** `updated` = ISO-8601. */
+  recent: { id: string; title: string; updated: string }[];
+  today: { id: string; title: string } | null;
+  serendipity: { id: string; title: string } | null;
+  system: { syncState: string; vaultId: string };
+}
+
+export interface DashboardActivityDay {
+  /** `YYYY-MM-DD` (committer-date UTC day-bucket). */
+  date: string;
+  commits: number;
+}
+
+export interface DashboardActivity {
+  /** Lückenlos gap-gefüllt über das Fenster (`commits: 0` für ruhige Tage). */
+  days: DashboardActivityDay[];
+  currentStreak: number;
+  longestStreak: number;
+}
+
+export interface DashboardLooseEnd {
+  noteId: string;
+  title: string;
+  /** 1-basierte Zeilennummer im Body (Frontmatter ausgenommen). */
+  line: number;
+  text: string;
+}
+
+export interface DashboardLooseEnds {
+  items: DashboardLooseEnd[];
+  /** Echte Gesamtzahl im Vault (kann `> items.length` sein). */
+  total: number;
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -660,6 +715,21 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
+    }).then(json<PipeJob>),
+
+  /**
+   * Web-Share-Target (Story 11.8) — dünner Wrapper auf das bestehende
+   * `POST /api/pipes/share` (Addendum §6 / K-4: KEIN neuer Endpoint). Nimmt
+   * eine `SharePayload` (title/text/url + optionale base64-Datei) und gibt den
+   * erzeugten `PipeJob` zurück. ShareTarget.tsx zeigt daraus eine Quittung —
+   * niemals die rohe JSON-Antwort (YouTube-JSON-Bugfix).
+   */
+  share: (payload: SharePayload) =>
+    fetch(`${BASE}/pipes/share`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      credentials: "include",
     }).then(json<PipeJob>),
 
   /**
@@ -1101,6 +1171,37 @@ export const api = {
       credentials: "include",
     }).then(json<LogsResult>);
   },
+
+  /* ──── Dashboard-Home (Epic 11 / Story 11.11) ──── */
+
+  /**
+   * Billige Dashboard-Kacheln, synchron (`DashboardSummary`). Eine Anfrage
+   * bündelt counts/health/recent/today/serendipity/system — alles aus
+   * vorhandenen Core-Surfaces server-seitig zusammengesetzt.
+   */
+  getDashboard: (): Promise<DashboardSummary> =>
+    fetch(`${BASE}/dashboard`, { credentials: "include" }).then(
+      json<DashboardSummary>,
+    ),
+
+  /**
+   * Git-Activity-Heatmap + Streaks (`DashboardActivity`), lazy. Teurer
+   * vault-weiter `git log` — server-seitig 60s-memoisiert. Default 365 Tage.
+   */
+  getDashboardActivity: (days = 365): Promise<DashboardActivity> =>
+    fetch(`${BASE}/dashboard/activity?days=${days}`, {
+      credentials: "include",
+    }).then(json<DashboardActivity>),
+
+  /**
+   * Offene Punkte (offene Checkboxen + `#todo`) vault-weit (`DashboardLooseEnds`),
+   * lazy. Teurer Volltext-Scan — server-seitig 60s-memoisiert. `total` kann
+   * größer als `items.length` sein (per-Stream-Cap `limit`).
+   */
+  getDashboardLooseEnds: (limit = 50): Promise<DashboardLooseEnds> =>
+    fetch(`${BASE}/dashboard/loose-ends?limit=${limit}`, {
+      credentials: "include",
+    }).then(json<DashboardLooseEnds>),
 
   /* ──── Workspace sidebar menu (Epic 11 / Story 11.1) ──── */
 

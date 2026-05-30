@@ -41,10 +41,16 @@ export {
   // get_history / get_note_diff tools (Epic 10 Wave 4).
   noteHistory,
   noteDiff,
+  // Story 11.11 — read-only vault-wide commit activity (streak / heatmap).
+  // Consumed by the GET /api/dashboard/activity route. K-3: only Story 11.11
+  // touches gitService (R-4).
+  vaultActivity,
   type GitConfig,
   type NoteHistoryEntry,
   type NoteDiff,
   type SyncResult,
+  type VaultActivity,
+  type VaultActivityDay,
 } from "./git/gitService.js";
 
 // ─── graphService (Story 1.4 + backlinks) ──────────────────────────────
@@ -606,3 +612,13 @@ export {
   type MenuItem,
   type MenuConfig,
 } from "./workspace/menuConfig.js";
+
+// ─── Loose-ends scan (Epic 11 / Story 11.11) ────────────────────────────
+// Vault-wide body scan for open Markdown checkboxes (`- [ ]`) AND inline
+// `#todo` tags (O-4: both). Read-only, limit + 60s memo. Consumed by the
+// GET /api/dashboard/loose-ends route.
+export {
+  looseEnds,
+  type LooseEnd,
+  type LooseEndsResult,
+} from "./workspace/looseEnds.js";

@@ -24,6 +24,7 @@ import { prefetchTags } from "./editor/tagAutocomplete.js";
 import { FileTree, type FileTreeHandle } from "./FileTree.js";
 import { ImportPanel } from "./ImportPanel.js";
 import { TagPane } from "./TagPane.js";
+import { CollapsiblePanel } from "./panels/CollapsiblePanel.js";
 import { PropertiesPanel } from "./PropertiesPanel.js";
 import { NoteHeader } from "./NoteHeader.js";
 import { QuickSwitcher } from "./QuickSwitcher.js";
@@ -393,6 +394,35 @@ export function App() {
   function openAndCloseDrawer(id: string) {
     void open(id);
     if (isMobile) setSidebarOpen(false);
+  }
+
+  /**
+   * Story 11.10 — Logo → Home. Klick auf das "Lokyy Brain"-Logo wählt den
+   * System-Menüpunkt `system:home` (viewType "dashboard") aus, sodass die
+   * DashboardView via `resolveView` in der Main-Fläche erscheint. App ist die
+   * Quelle der Wahrheit; das Setzen von `activeMenuItem` wird von der Sidebar
+   * gespiegelt und in `lokyy:sidebar:active` persistiert.
+   *
+   * Wir lesen das gemergte Menü (System-Items immer enthalten) und greifen
+   * den `system:home`-Punkt — fällt defensiv auf den ersten System-/ersten
+   * Punkt zurück, falls die ID je umbenannt würde. Auf Mobile schließt der
+   * Klick zusätzlich den Sidebar-Drawer. Fire-and-forget; ein Fehler lässt
+   * die aktuelle Auswahl unverändert.
+   */
+  function goHome() {
+    if (isMobile) setSidebarOpen(false);
+    void api
+      .getMenu()
+      .then((cfg) => {
+        const items = cfg.items;
+        if (items.length === 0) return;
+        const home =
+          items.find((i) => i.id === "system:home") ??
+          items.find((i) => i.kind === "system") ??
+          items[0];
+        if (home) setActiveMenuItem(home);
+      })
+      .catch(() => {});
   }
 
   const saveTimer = useRef<number | null>(null);
@@ -1937,16 +1967,34 @@ export function App() {
             <MenuIcon size={22} style={{ color: C.accent }} />
           </button>
         )}
-        <img
-          src="/logo-header.png"
-          alt="Lokyy Brain"
+        {/* Story 11.10 — Logo ist Home-Button: wählt `system:home`
+            (viewType "dashboard"), DashboardView erscheint via resolveView. */}
+        <button
+          type="button"
+          onClick={goHome}
+          title="Home"
+          aria-label="Home"
           style={{
-            height: isMobile ? 36 : 44,
-            width: "auto",
-            verticalAlign: "middle",
+            display: "flex",
+            alignItems: "center",
+            padding: 0,
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
             flexShrink: 0,
           }}
-        />
+        >
+          <img
+            src="/logo-header.png"
+            alt="Lokyy Brain"
+            style={{
+              height: isMobile ? 36 : 44,
+              width: "auto",
+              verticalAlign: "middle",
+              flexShrink: 0,
+            }}
+          />
+        </button>
         <span style={{ flex: 1 }} />
         {/* Daily-note + the full Voice-Quick-Capture recorder stay on desktop.
             On mobile the BottomNav "Voice" tab opens the new editable Voice
@@ -2290,21 +2338,28 @@ export function App() {
               />
             )}
           </div>
+          {/* Story 11.9 — Tags hinter dem einheitlichen Aufklapp-Fähnchen
+              (default geschlossen). Das bestehende TagPane bleibt unverändert;
+              CollapsiblePanel liefert Header + Scroll + Toggle. */}
           <div
             style={{
               flexShrink: 0,
               maxHeight: "40%",
-              overflowY: "auto",
+              minHeight: 0,
+              display: "flex",
               borderTop: `1px solid ${C.border}`,
-              padding: "8px",
             }}
           >
-            <TagPane
-              activeTag={tagFilter}
-              onSelectTag={setTagFilter}
-              refreshKey={backlinksRefresh}
-              compact={isMobile}
-            />
+            <CollapsiblePanel id="tags" title="Tags" side="left">
+              <div style={{ padding: "8px" }}>
+                <TagPane
+                  activeTag={tagFilter}
+                  onSelectTag={setTagFilter}
+                  refreshKey={backlinksRefresh}
+                  compact={isMobile}
+                />
+              </div>
+            </CollapsiblePanel>
           </div>
         </aside>
         {/* Resizable drag handle: desktop only — touch dragging a thin
@@ -2389,11 +2444,27 @@ export function App() {
                     primaryEditorRef={editorRef}
                   />
                 </div>
-                <BacklinksPanel
-                  noteId={active.id}
-                  onOpenNote={openNoteById}
-                  refreshSignal={backlinksRefresh}
-                />
+                {/* Story 11.9 — Backlinks hinter dem Aufklapp-Fähnchen
+                    (default geschlossen). Geschlossen erscheint nur ein
+                    schmales Fähnchen an der rechten Kante; offen die volle,
+                    scrollbare Backlinks-Liste. BacklinksPanel selbst bleibt
+                    unverändert. */}
+                <div
+                  style={{
+                    flexShrink: 0,
+                    maxHeight: "40%",
+                    minHeight: 0,
+                    display: "flex",
+                  }}
+                >
+                  <CollapsiblePanel id="backlinks" title="Backlinks" side="right">
+                    <BacklinksPanel
+                      noteId={active.id}
+                      onOpenNote={openNoteById}
+                      refreshSignal={backlinksRefresh}
+                    />
+                  </CollapsiblePanel>
+                </div>
               </div>
               {/* Outline + drag handle — desktop only. The outline is a
                   navigation aid that's redundant with full-screen scroll on
@@ -2406,8 +2477,14 @@ export function App() {
                     setWidth={setOutlineWidth}
                     onReset={() => setOutlineWidth(220)}
                   />
+                  {/* Story 11.9 — Outline hinter dem Aufklapp-Fähnchen
+                      (default geschlossen). Bestehende Resizable-Breite
+                      (outlineWidth) + DragHandle bleiben für den offenen
+                      Zustand erhalten; Outline selbst ist unverändert. */}
                   <div style={{ width: outlineWidth, flexShrink: 0, display: "flex" }}>
-                    <Outline body={active.body} onJump={(line) => setScrollToLine(line)} />
+                    <CollapsiblePanel id="outline" title="Gliederung" side="right">
+                      <Outline body={active.body} onJump={(line) => setScrollToLine(line)} />
+                    </CollapsiblePanel>
                   </div>
                 </>
               )}

@@ -44,6 +44,15 @@ meine Aktivität und offene Punkte auf einen Blick zeigt und von dem aus ich dir
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflows `epic11-welle4-5` (Backend) + `epic11-1111-pwa-finish` (PWA). Backend-Agent brach an einer StructuredOutput-Hürde ab (kein Code-Defekt); PWA-Teil im Folge-Workflow nachgezogen.
+
 ### Completion Notes List
+- **Core/Server (Welle-5-Batch):** `vaultActivity(sinceDays)` in gitService (ein `git log --format=%cI` über HEAD, Tagesbuckets, currentStreak/longestStreak, 60s-Memo). `looseEnds.ts` (vault-Walk `- [ ]` UND `#todo`, O-4, limit + Memo). `dashboard.ts`: `GET /api/dashboard` (counts/health/recent/today/serendipity/system), `/activity?days`, `/loose-ends?limit`. Mount in server/index.ts. Barrel-Exports.
+- **PWA (Finish-Workflow):** `DashboardView.tsx` (Bento-Grid; billige Kacheln sync, activity+loose-ends+agent-review lazy mit Skeleton + still-degradierend; Hero-Zahlen, Gesundheit, Heatmap+Streak, Zuletzt, Sync, Heutiges Journal, Serendipität, Lose Enden, Quick-Capture→/api/pipes, Konsolidierung→agent-review/queue graceful-empty). KEINE Projekte/Tasks/Ziele (O-5). `api.getDashboard/Activity/LooseEnds` + `registry.ts` dashboard-Lazy.
+
 ### File List
+- EDIT `packages/core/src/git/gitService.ts`, `packages/core/src/index.ts`, `server/src/index.ts`, `pwa/src/api.ts`, `pwa/src/sidebar/views/registry.ts`
+- NEU `packages/core/src/workspace/looseEnds.ts`, `server/src/routes/dashboard.ts`, `pwa/src/sidebar/views/DashboardView.tsx`
+
 ### Change Log
+- 2026-05-30 — Welle 5. `pnpm -r build` grün (Orchestrator-verifiziert). DashboardView eigener Lazy-Chunk. Status → review. Offen: kosmetische UTC-Heatmap-Ausrichtung; verwaister `comingSoonStub` in registry.ts (Cleanup-Kandidat).

@@ -97,8 +97,13 @@ function comingSoonStub(label: string): ViewRenderer {
 const SkillsView = lazy(() =>
   import("./SkillsView.js").then((m) => ({ default: m.SkillsView })),
 );
-const DashboardView: ViewRenderer = /* TODO(11.11): import("./DashboardView.js") */ comingSoonStub(
-  "Dashboard",
+/**
+ * Echter Renderer (Story 11.11) — Dashboard-Home. Lazy geladen (gleiche
+ * `lazy()`-Praxis wie `TreeView`/`SkillsView`), damit der Dashboard-Chunk
+ * nicht synchron auf den Boot-Pfad gezogen wird.
+ */
+const DashboardView = lazy(() =>
+  import("./DashboardView.js").then((m) => ({ default: m.DashboardView })),
 );
 
 /**

@@ -781,3 +781,150 @@ export async function noteDiff(relPath: string, sha?: string): Promise<NoteDiff>
     return { sha: null, diff };
   });
 }
+
+// ─── Story 11.11: READ-ONLY vault-wide activity (Streak / Heatmap) ─────────
+//
+// K-3: `noteHistory` is per-NOTE (`git log -- <path>`); the dashboard needs a
+// VAULT-WIDE commit timeline to draw a GitHub-style activity heatmap and derive
+// the current/longest commit streaks. This helper runs EXACTLY ONE `git log`
+// over HEAD (no path filter) inside the same `serialize()` FIFO lock as every
+// write op, aggregates committer dates into per-day buckets in memory, and
+// computes both streaks. It is purely additive + READ-ONLY: no add/commit/push,
+// no working-tree mutation. A 60s in-process memo cache keeps a frequently
+// re-opened dashboard cheap. (R-4: only Story 11.11 touches gitService.)
+
+/** One calendar day with its commit count, oldest→newest. */
+export interface VaultActivityDay {
+  /** Local-less ISO date `YYYY-MM-DD` (committer date, UTC day-bucket). */
+  date: string;
+  /** Number of commits whose committer date falls on this day. */
+  commits: number;
+}
+
+/** Vault-wide activity over a window + the derived streaks. */
+export interface VaultActivity {
+  /** Every day in `[today-sinceDays+1 … today]`, gap-filled with 0-commit days. */
+  days: VaultActivityDay[];
+  /** Consecutive days ending today (or yesterday) with ≥1 commit. */
+  currentStreak: number;
+  /** Longest run of consecutive ≥1-commit days within the window. */
+  longestStreak: number;
+}
+
+/** Default activity window (one year — drives the heatmap). */
+const DEFAULT_ACTIVITY_DAYS = 365;
+/** Memo-cache TTL for `vaultActivity` (Story 11.11 — frequent dashboard opens). */
+const ACTIVITY_CACHE_TTL_MS = 60_000;
+
+interface ActivityCacheEntry {
+  expires: number;
+  value: VaultActivity;
+}
+/** Memo keyed by `vaultDir::windowDays` — vault-path keying avoids a stale
+ * cross-vault read after a hot-swap (and keeps tests isolated). */
+const activityCache = new Map<string, ActivityCacheEntry>();
+
+/** `YYYY-MM-DD` of an ISO timestamp's UTC day. */
+function utcDayKey(iso: string): string | null {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/** Add `n` whole days to a `YYYY-MM-DD` key, returning a new key. */
+function addDays(dayKey: string, n: number): string {
+  const ms = Date.parse(`${dayKey}T00:00:00.000Z`) + n * 86_400_000;
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+/**
+ * READ-ONLY vault-wide commit activity (Story 11.11 / K-3).
+ *
+ * Aggregates the committer dates of every commit reachable from HEAD into
+ * per-day buckets over the last `sinceDays` days, gap-fills missing days with
+ * `0`, and derives the current + longest streaks. `currentStreak` counts back
+ * from today; a vault committed-to yesterday but not yet today still keeps its
+ * streak (today's 0 does not break it until tomorrow).
+ *
+ * One `git log --format=%cI` call, no path filter, inside the serialize lock.
+ * An empty / history-less repo yields all-zero days and zero streaks (never an
+ * error). Results are memoized for 60s keyed by the window size.
+ */
+export async function vaultActivity(
+  sinceDays = DEFAULT_ACTIVITY_DAYS,
+): Promise<VaultActivity> {
+  const windowDays =
+    Number.isFinite(sinceDays) && sinceDays > 0
+      ? Math.floor(sinceDays)
+      : DEFAULT_ACTIVITY_DAYS;
+
+  const now = Date.now();
+  const cacheKey = `${config().vaultDir}::${windowDays}`;
+  const cached = activityCache.get(cacheKey);
+  if (cached && cached.expires > now) {
+    return cached.value;
+  }
+
+  // Single vault-wide log over HEAD. `--since` prunes server-side so the buffer
+  // stays small even on a 10k-commit repo. An empty repo (no HEAD) throws →
+  // treat as no activity.
+  let out = "";
+  try {
+    out = await serialize(() =>
+      git(["log", "--format=%cI", `--since=${windowDays} days ago`]),
+    );
+  } catch {
+    out = "";
+  }
+
+  // Bucket committer dates by UTC day.
+  const counts = new Map<string, number>();
+  if (out !== "") {
+    for (const line of out.split("\n")) {
+      const key = utcDayKey(line.trim());
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+
+  // Gap-fill the full window oldest→newest so the heatmap has a cell per day.
+  const today = new Date(now).toISOString().slice(0, 10);
+  const start = addDays(today, -(windowDays - 1));
+  const days: VaultActivityDay[] = [];
+  for (let i = 0; i < windowDays; i++) {
+    const date = addDays(start, i);
+    days.push({ date, commits: counts.get(date) ?? 0 });
+  }
+
+  // Longest streak: longest run of consecutive ≥1 days anywhere in the window.
+  let longestStreak = 0;
+  let run = 0;
+  for (const d of days) {
+    if (d.commits > 0) {
+      run += 1;
+      if (run > longestStreak) longestStreak = run;
+    } else {
+      run = 0;
+    }
+  }
+
+  // Current streak: count back from today. A 0-commit TODAY does not break the
+  // streak (the day isn't over) — we start counting at the most recent active
+  // day if that day is today or yesterday.
+  let currentStreak = 0;
+  for (let i = days.length - 1; i >= 0; i--) {
+    const d = days[i] as VaultActivityDay;
+    if (d.commits > 0) {
+      currentStreak += 1;
+    } else if (d.date === today) {
+      // Today not yet committed — skip without breaking the back-count.
+      continue;
+    } else {
+      break;
+    }
+  }
+
+  const value: VaultActivity = { days, currentStreak, longestStreak };
+  activityCache.set(cacheKey, { expires: now + ACTIVITY_CACHE_TTL_MS, value });
+  return value;
+}

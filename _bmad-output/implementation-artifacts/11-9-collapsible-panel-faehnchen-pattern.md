@@ -32,6 +32,14 @@ aufklappbar sind — und dann die volle Fläche nutzen —, damit immer das Wich
 
 ## Dev Agent Record
 ### Agent Model Used
+Engineer (Claude Opus 4.8) via Workflow `epic11-welle4-5` (2026-05-30).
+
 ### Completion Notes List
+- `CollapsiblePanel.tsx`: Props `{id,title,icon?,side,defaultOpen?,children}` (§4 verbatim), default geschlossen. State in `localStorage["lokyy:panel:<id>"]` ("1"/"0", try/catch wie `useResizableWidth`) — K-2, nicht Vault. Geschlossen → 32px-Fähnchen an der `side`-Kante; offen → volle scroll-/suchbare Fläche, Children unverändert. aria-expanded/-label.
+- App.tsx-Umhüllung der bestehenden Panels = Wireup-Schritt (R-3).
+
 ### File List
+- NEU `pwa/src/panels/CollapsiblePanel.tsx`
+
 ### Change Log
+- 2026-05-30 — Welle 5. tsc + `pnpm -r build` grün; via Wireup in App.tsx verdrahtet. Status → review.
