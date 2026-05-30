@@ -1,9 +1,8 @@
+import { type EditorState, StateField } from "@codemirror/state";
 import {
   Decoration,
   type DecorationSet,
   EditorView,
-  ViewPlugin,
-  type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
 
@@ -65,8 +64,7 @@ const frontmatterWidget = new FrontmatterWidget();
  * schließenden `---` (inkl. des darauffolgenden Newline, falls vorhanden), so
  * dass der Body direkt mit der ersten echten Inhaltszeile losgeht.
  */
-function findFrontmatterEnd(view: EditorView): number | null {
-  const { state } = view;
+function findFrontmatterEnd(state: EditorState): number | null {
   if (state.doc.lines < 2) return null;
 
   const first = state.doc.line(1);
@@ -87,8 +85,8 @@ function findFrontmatterEnd(view: EditorView): number | null {
   return null;
 }
 
-function buildDecorations(view: EditorView): DecorationSet {
-  const end = findFrontmatterEnd(view);
+function buildDecorations(state: EditorState): DecorationSet {
+  const end = findFrontmatterEnd(state);
   if (end == null) return Decoration.none;
 
   return Decoration.set([
@@ -105,34 +103,34 @@ function buildDecorations(view: EditorView): DecorationSet {
  * den Inhalts-Previews (livePreview, mermaid, …) greift. Block-Decorations
  * kollidieren nicht mit den Inline-Mark-Decorations der anderen Extensions,
  * weil der Frontmatter-Range vor dem Body liegt.
+ *
+ * WICHTIG (CM6-Invariante): Block-Decorations (`block: true`) MÜSSEN aus einem
+ * `StateField` stammen — CodeMirror 6 verbietet sie aus einem `ViewPlugin`
+ * (`RangeError: Block decorations may not be specified via plugins`). Deshalb
+ * ist diese Extension ein StateField, das die Decorations über `provide`
+ * sowohl als `EditorView.decorations` als auch als `EditorView.atomicRanges`
+ * bereitstellt.
  */
-export const frontmatterHideExtension = ViewPlugin.fromClass(
-  class {
-    decorations: DecorationSet;
-    constructor(view: EditorView) {
-      this.decorations = buildDecorations(view);
-    }
-    update(u: ViewUpdate) {
-      // Bei Doc-Änderung neu bauen (Frontmatter könnte sich verschieben oder
-      // entstehen/verschwinden). viewportChanged ist irrelevant — der Block
-      // sitzt immer am Doc-Anfang. selectionSet ebenfalls irrelevant: wir
-      // blenden IMMER aus, unabhängig von der Cursor-Position.
-      if (u.docChanged) {
-        this.decorations = buildDecorations(u.view);
-      }
-    }
+export const frontmatterHideExtension = StateField.define<DecorationSet>({
+  create(state) {
+    return buildDecorations(state);
   },
-  {
-    decorations: (v) => v.decorations,
+  update(deco, tr) {
+    // Bei Doc-Änderung neu bauen (Frontmatter könnte sich verschieben oder
+    // entstehen/verschwinden). Sonst die bestehende Decoration über die
+    // Changes mappen (hier praktisch ein No-op, da nur bei docChanged etwas
+    // passiert — aber korrekt für Positions-Invarianz).
+    return tr.docChanged ? buildDecorations(tr.state) : deco.map(tr.changes);
+  },
+  provide: (f) => [
+    EditorView.decorations.from(f),
     // Atomic-Range: der Cursor kann nicht IN den ausgeblendeten Block
     // navigieren — Pfeiltasten / Klick überspringen ihn. Verhindert, dass
-    // man "blind" im versteckten YAML landet.
-    provide: (plugin) =>
-      EditorView.atomicRanges.of((view) => {
-        return view.plugin(plugin)?.decorations ?? Decoration.none;
-      }),
-  },
-);
+    // man "blind" im versteckten YAML landet. `atomicRanges` erwartet eine
+    // `(view) => RangeSet`-Funktion, daher lesen wir das Feld pro View aus.
+    EditorView.atomicRanges.of((view) => view.state.field(f)),
+  ],
+});
 
 /**
  * Theme für das Frontmatter-Widget. Höhe 0, keine Margins — der ausgeblendete

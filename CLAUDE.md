@@ -25,9 +25,9 @@ pnpm -r build
 pnpm --filter server dev      # tsx watch
 pnpm --filter pwa dev         # Vite
 
-# Type-check without building
-pnpm --filter server tsc --noEmit
-pnpm --filter pwa tsc --noEmit
+# Type-check without building (tsc is a binary, not an npm script → use `exec`)
+pnpm --filter server exec tsc --noEmit
+pnpm --filter pwa exec tsc --noEmit
 
 # Run server in production
 pnpm --filter server start
