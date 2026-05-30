@@ -100,6 +100,60 @@ const PEER_EXTRA_KEYS = new Set([
 const READ_ONLY_KEYS = new Set(["id", "created", "updated"]);
 
 /**
+ * Core frontmatter keys that are part of the SPEC contract and therefore
+ * NOT removable from the panel. `id`/`created` are immutable (and read-only
+ * via READ_ONLY_KEYS); `type`/`title`/`updated` are editable elsewhere but
+ * must never be deleted. `privacy` has its own dedicated row. Any key NOT in
+ * this set is treated as an optional / custom field and gets a remove icon.
+ */
+const CORE_KEYS = new Set([
+  "id",
+  "created",
+  "updated",
+  "type",
+  "title",
+  "privacy",
+]);
+
+/**
+ * Schema-known optional fields per doc type, derived from the JSON schemas
+ * in `packages/core/src/frontmatter/schemas/*.json` (every doc allows
+ * `additionalProperties: true`, so these are the *suggested* — not the only
+ * — extra keys). `tags` is universal. The "+ Property" menu offers these
+ * first, then a free custom key/value form. Kept in sync manually because
+ * the PWA is a browser bundle and `@lokyy/core` ships node-only code.
+ */
+const TYPE_OPTIONAL_FIELDS: Record<string, string[]> = {
+  note: ["tags", "status"],
+  capture: ["tags", "source", "url", "status"],
+  project: ["tags", "status"],
+  task: ["tags", "status", "due"],
+  decision: ["tags", "status"],
+  meeting: ["tags", "date", "attendees", "status"],
+  customer: ["tags", "email", "company", "status"],
+  workflow: ["tags", "status"],
+  intervention: [
+    "tags",
+    "status",
+    "intervention_kind",
+    "target_note_id",
+    "confidence",
+  ],
+  content: ["tags", "status"],
+  peer: ["tags", "status"],
+};
+
+/** Universal fallback when the doc type is unknown / unset. */
+const FALLBACK_OPTIONAL_FIELDS = ["tags", "status"];
+
+/**
+ * Editor hint per known optional field, so a freshly-added field gets a
+ * sensible initial value + the right widget. Arrays → ChipInput; everything
+ * else → text input. Keys not listed default to an empty string.
+ */
+const ARRAY_VALUED_FIELDS = new Set(["tags", "attendees"]);
+
+/**
  * Keys whose top-level entry is hidden from the field grid because we
  * render them in a dedicated section (privacy row, encoded-context
  * details panel). Without this, the panel would show `encoded:` as a
@@ -363,6 +417,47 @@ const CHIP_CLOSE_STYLE: CSSProperties = {
   lineHeight: 1,
 };
 
+// ─── Add-property + remove-icon styles ────────────────────────────────────
+
+const REMOVE_ICON_STYLE: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: C.textDim,
+  cursor: "pointer",
+  fontSize: 16,
+  lineHeight: 1,
+  padding: "0 4px",
+  flexShrink: 0,
+};
+
+const ADD_PROPERTY_WRAP_STYLE: CSSProperties = {
+  marginTop: 12,
+  paddingTop: 12,
+  borderTop: `1px dashed ${C.border}`,
+};
+
+const ADD_BUTTON_STYLE: CSSProperties = {
+  background: "transparent",
+  border: `1px dashed ${C.border}`,
+  borderRadius: 5,
+  color: C.textDim,
+  cursor: "pointer",
+  fontFamily: FONT.ui,
+  fontSize: 13,
+  padding: "5px 10px",
+};
+
+const SUGGEST_CHIP_STYLE: CSSProperties = {
+  background: "rgba(255,255,255,0.03)",
+  border: `1px solid ${C.border}`,
+  borderRadius: 5,
+  color: C.text,
+  cursor: "pointer",
+  fontFamily: FONT.ui,
+  fontSize: 12,
+  padding: "3px 9px",
+};
+
 // ─── Privacy-row styles ──────────────────────────────────────────────────
 
 /**
@@ -575,6 +670,48 @@ export function PropertiesPanel({
     update(PRIVACY_KEY, next);
   }
 
+  /**
+   * Remove an optional / custom key entirely from the frontmatter. Core
+   * SPEC keys (CORE_KEYS) can never be removed — the caller already gates
+   * this via the remove-icon visibility, but we guard here too so a stray
+   * call can't corrupt the contract.
+   */
+  function remove(key: string) {
+    if (CORE_KEYS.has(key)) return;
+    const keys = parsed.keys.filter((k) => k !== key);
+    const newValues: Record<string, FieldValue> = { ...parsed.values };
+    delete newValues[key];
+    const newBody = serializeFrontmatter(keys, newValues, parsed.bodyAfter);
+    onUpdateBody(newBody);
+  }
+
+  /**
+   * Add a brand-new key to the frontmatter with a type-appropriate empty
+   * value. Routes through the same serialize/onUpdateBody path as edits, so
+   * the new key survives a save→reload roundtrip (the key is appended to the
+   * ordered `keys` list by `serializeFrontmatter`). No-ops if the key already
+   * exists or is blank.
+   */
+  function addProperty(rawKey: string) {
+    const key = rawKey.trim();
+    if (key === "") return;
+    if (parsed.keys.includes(key)) return;
+    const initial: FieldValue = ARRAY_VALUED_FIELDS.has(key) ? [] : "";
+    const keys = [...parsed.keys, key];
+    const newValues: Record<string, FieldValue> = {
+      ...parsed.values,
+      [key]: initial,
+    };
+    const newBody = serializeFrontmatter(keys, newValues, parsed.bodyAfter);
+    onUpdateBody(newBody);
+  }
+
+  // Schema-known optional fields for this doc type that are NOT already
+  // present — these populate the quick-add menu.
+  const optionalCandidates = (
+    TYPE_OPTIONAL_FIELDS[docType] ?? FALLBACK_OPTIONAL_FIELDS
+  ).filter((k) => !parsed.keys.includes(k));
+
   // Subtle Brand-accent tint when privacy is local-only — visible at a
   // glance without being shouty. RGBA over the existing panel background.
   const panelStyle: CSSProperties = isLocalOnly
@@ -652,10 +789,17 @@ export function PropertiesPanel({
                   fieldKey={key}
                   value={value as FieldValue}
                   onChange={(v) => update(key, v)}
+                  onRemove={CORE_KEYS.has(key) ? undefined : () => remove(key)}
                 />
               );
             })}
           </div>
+
+          <AddProperty
+            candidates={optionalCandidates}
+            existingKeys={parsed.keys}
+            onAdd={addProperty}
+          />
 
           {isPeer && (
             <PeerSection
@@ -718,15 +862,30 @@ function Row(props: {
   fieldKey: string;
   value: FieldValue;
   onChange: (v: FieldValue) => void;
+  /** When provided, a remove icon is shown next to the field. */
+  onRemove?: () => void;
 }) {
-  const { fieldKey, value, onChange } = props;
+  const { fieldKey, value, onChange, onRemove } = props;
   const readOnly = READ_ONLY_KEYS.has(fieldKey);
 
   return (
     <>
       <label style={LABEL_STYLE}>{fieldKey}</label>
-      <div>
-        {renderField(fieldKey, value, onChange, readOnly)}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {renderField(fieldKey, value, onChange, readOnly)}
+        </div>
+        {onRemove && (
+          <button
+            type="button"
+            aria-label={`Remove ${fieldKey}`}
+            title={`Remove ${fieldKey}`}
+            onClick={onRemove}
+            style={REMOVE_ICON_STYLE}
+          >
+            ×
+          </button>
+        )}
       </div>
     </>
   );
@@ -799,6 +958,138 @@ function renderField(
   }
 
   return <FocusableInput value={value} onChange={(v) => onChange(v)} />;
+}
+
+// ─── Add-property control ─────────────────────────────────────────────────
+//
+// Sits below the field grid. Collapsed by default ("+ Property"). Expanding
+// reveals (a) one-click chips for schema-known optional fields not yet
+// present (e.g. `tags`, `status`), and (b) a free custom key/value form for
+// arbitrary keys (schemas allow `additionalProperties: true`). Both paths
+// call `onAdd(key)`, which appends the key to the frontmatter via the normal
+// serialize→onUpdateBody save path so it survives a reload roundtrip.
+
+function AddProperty(props: {
+  candidates: string[];
+  existingKeys: string[];
+  onAdd: (key: string) => void;
+}) {
+  const { candidates, existingKeys, onAdd } = props;
+  const [open, setOpen] = useState(false);
+  const [customKey, setCustomKey] = useState("");
+
+  // A valid YAML-ish key: starts with a letter/underscore, then word chars /
+  // hyphens. Matches the parser's own key regex so a saved field round-trips.
+  const trimmed = customKey.trim();
+  const keyValid = /^[A-Za-z_][A-Za-z0-9_\-]*$/.test(trimmed);
+  const keyDuplicate = existingKeys.includes(trimmed);
+  const canAddCustom = keyValid && !keyDuplicate;
+
+  function addCustom() {
+    if (!canAddCustom) return;
+    onAdd(trimmed);
+    setCustomKey("");
+    setOpen(false);
+  }
+
+  if (!open) {
+    return (
+      <div style={ADD_PROPERTY_WRAP_STYLE}>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          style={ADD_BUTTON_STYLE}
+        >
+          + Property
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={ADD_PROPERTY_WRAP_STYLE}>
+      {candidates.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>Suggested fields</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {candidates.map((c) => (
+              <button
+                key={c}
+                type="button"
+                style={SUGGEST_CHIP_STYLE}
+                onClick={() => {
+                  onAdd(c);
+                  setOpen(false);
+                }}
+              >
+                + {c}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div>
+        <div style={{ ...LABEL_STYLE, marginBottom: 6 }}>Weitere Felder</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input
+            type="text"
+            value={customKey}
+            placeholder="key"
+            aria-label="Custom property key"
+            onChange={(e) => setCustomKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addCustom();
+              }
+            }}
+            style={{
+              ...INPUT_BASE,
+              flex: 1,
+              minWidth: 0,
+              borderColor:
+                trimmed !== "" && !canAddCustom ? "#F97316" : C.border,
+            }}
+          />
+          <button
+            type="button"
+            onClick={addCustom}
+            disabled={!canAddCustom}
+            style={{
+              ...ADD_BUTTON_STYLE,
+              opacity: canAddCustom ? 1 : 0.4,
+              cursor: canAddCustom ? "pointer" : "not-allowed",
+            }}
+          >
+            Add
+          </button>
+          <button
+            type="button"
+            aria-label="Cancel add property"
+            onClick={() => {
+              setCustomKey("");
+              setOpen(false);
+            }}
+            style={REMOVE_ICON_STYLE}
+          >
+            ×
+          </button>
+        </div>
+        {trimmed !== "" && keyDuplicate && (
+          <div style={{ color: "#F97316", fontSize: 11, marginTop: 4 }}>
+            Field "{trimmed}" already exists.
+          </div>
+        )}
+        {trimmed !== "" && !keyValid && (
+          <div style={{ color: "#F97316", fontSize: 11, marginTop: 4 }}>
+            Key must start with a letter and contain only letters, digits,
+            "_" or "-".
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 // ─── Peer-Section (Phase C Wave C2 / Story 3) ────────────────────────────
