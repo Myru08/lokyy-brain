@@ -381,6 +381,20 @@ export function App() {
     min: 140,
     max: 420,
   });
+  // Gliederung (Outline) gleitet von rechts ein/aus: geschlossen reserviert
+  // der Wrapper NUR die Fähnchen-Breite (kein Resize-Handle, kein
+  // outlineWidth-Block), offen die volle outlineWidth + DragHandle. Den
+  // Open-Zustand spiegeln wir aus dem CollapsiblePanel (localStorage
+  // `lokyy:panel:outline`) via onOpenChange — so bleibt der Slide-Effekt mit
+  // dem bestehenden Resize sauber kombiniert. Initialwert aus localStorage,
+  // damit beim ersten Render keine Breite springt.
+  const [outlineOpen, setOutlineOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("lokyy:panel:outline") === "1";
+    } catch {
+      return false;
+    }
+  });
 
   // Phase D Wave D1 — Mobile drawer state. On viewports < 640px the sidebar
   // (FileTree + TagPane) collapses behind a hamburger to give the editor the
@@ -2479,20 +2493,21 @@ export function App() {
                     primaryEditorRef={editorRef}
                   />
                 </div>
-                {/* Story 11.9 — Backlinks hinter dem Aufklapp-Fähnchen
-                    (default geschlossen). Geschlossen erscheint nur ein
-                    schmales Fähnchen an der rechten Kante; offen die volle,
-                    scrollbare Backlinks-Liste. BacklinksPanel selbst bleibt
-                    unverändert. */}
+                {/* Backlinks-Panel — wie die Tags von UNTEN aufklappend
+                    (side="bottom"). Geschlossen sitzt nur ein horizontales
+                    Fähnchen an der Unterkante des Editors; offen klappt die
+                    volle, scrollbare Backlinks-Liste nach OBEN auf (volle
+                    Breite). BacklinksPanel selbst bleibt unverändert. */}
                 <div
                   style={{
                     flexShrink: 0,
                     maxHeight: "40%",
                     minHeight: 0,
                     display: "flex",
+                    flexDirection: "column",
                   }}
                 >
-                  <CollapsiblePanel id="backlinks" title="Backlinks" side="right">
+                  <CollapsiblePanel id="backlinks" title="Backlinks" side="bottom">
                     <BacklinksPanel
                       noteId={active.id}
                       onOpenNote={openNoteById}
@@ -2506,18 +2521,36 @@ export function App() {
                   mobile and would otherwise eat ~200px of editor width. */}
               {!isMobile && (
                 <>
-                  <DragHandle
-                    side="right"
-                    getWidth={() => outlineWidth}
-                    setWidth={setOutlineWidth}
-                    onReset={() => setOutlineWidth(220)}
-                  />
-                  {/* Story 11.9 — Outline hinter dem Aufklapp-Fähnchen
-                      (default geschlossen). Bestehende Resizable-Breite
-                      (outlineWidth) + DragHandle bleiben für den offenen
-                      Zustand erhalten; Outline selbst ist unverändert. */}
-                  <div style={{ width: outlineWidth, flexShrink: 0, display: "flex" }}>
-                    <CollapsiblePanel id="outline" title="Gliederung" side="right">
+                  {/* DragHandle nur im OFFENEN Zustand — geschlossen gibt es
+                      keine Breite zu ziehen (das Panel ist auf das Fähnchen
+                      eingeklappt). */}
+                  {outlineOpen && (
+                    <DragHandle
+                      side="right"
+                      getWidth={() => outlineWidth}
+                      setWidth={setOutlineWidth}
+                      onReset={() => setOutlineWidth(220)}
+                    />
+                  )}
+                  {/* Gliederung gleitet von rechts ein/aus. Geschlossen
+                      reserviert der Wrapper nur die Fähnchen-Breite (~32px),
+                      sodass das Fähnchen an der rechten Kante sitzt und der
+                      Editor die freigewordene Breite zurückbekommt; offen
+                      schiebt sich das Panel auf die volle outlineWidth nach
+                      links auf. Outline selbst ist unverändert. */}
+                  <div
+                    style={{
+                      width: outlineOpen ? outlineWidth : undefined,
+                      flexShrink: 0,
+                      display: "flex",
+                    }}
+                  >
+                    <CollapsiblePanel
+                      id="outline"
+                      title="Gliederung"
+                      side="right"
+                      onOpenChange={setOutlineOpen}
+                    >
                       <Outline body={active.body} onJump={(line) => setScrollToLine(line)} />
                     </CollapsiblePanel>
                   </div>

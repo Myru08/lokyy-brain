@@ -39,10 +39,17 @@ export function CollapsiblePanel(props: {
   side: PanelSide;
   /** Default false ("alle Panels default geschlossen") */
   defaultOpen?: boolean;
+  /**
+   * Optionaler Callback, der bei jedem Open/zu-Wechsel (und beim Mount mit
+   * dem initialen Zustand) gefeuert wird. Erlaubt dem Parent, das Layout an
+   * den Panel-Zustand zu koppeln (z. B. die Outline von rechts ein-/
+   * ausgleiten zu lassen, statt nur ein Fähnchen voller Breite zu zeigen).
+   */
+  onOpenChange?: (open: boolean) => void;
   /** das bestehende Panel (TagPane/Outline/BacklinksPanel) UNVERÄNDERT */
   children: ReactNode;
 }): JSX.Element {
-  const { id, title, icon, side, defaultOpen = false, children } = props;
+  const { id, title, icon, side, defaultOpen = false, onOpenChange, children } = props;
 
   const [open, setOpen] = useState<boolean>(() => {
     try {
@@ -57,6 +64,11 @@ export function CollapsiblePanel(props: {
     try {
       localStorage.setItem(`lokyy:panel:${id}`, open ? "1" : "0");
     } catch {}
+    onOpenChange?.(open);
+    // onOpenChange ist absichtlich nicht in den Deps — der Parent gibt i. d. R.
+    // eine inline-Funktion durch; wir feuern bewusst nur auf echte open-Wechsel
+    // (plus initialer Mount), nicht auf jede Re-render-Identität des Callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, open]);
 
   // Orientierung: bottom/top sind horizontal (Fähnchen quer, klappt vertikal

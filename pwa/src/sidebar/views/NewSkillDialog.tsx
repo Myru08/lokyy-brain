@@ -159,6 +159,12 @@ export function NewSkillDialog({
         </header>
 
         <div style={BODY_STYLE}>
+          <p style={HINT_NOTE_STYLE}>
+            Für komplexere Skills ist es einfacher, den Skill per KI
+            (Skill-Creator) erstellen zu lassen. Dieser manuelle Dialog ist für
+            einfache Skills &amp; Prompts gedacht.
+          </p>
+
           <Field label="Titel" error={fieldErrors.title}>
             <input
               ref={titleInputRef}
@@ -356,6 +362,17 @@ const BODY_STYLE: CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 14,
+};
+
+const HINT_NOTE_STYLE: CSSProperties = {
+  margin: 0,
+  padding: "9px 11px",
+  borderRadius: 8,
+  background: C.elevated,
+  border: `1px solid ${C.borderSoft}`,
+  color: C.textDim,
+  fontSize: 12,
+  lineHeight: 1.5,
 };
 
 const FIELD_STYLE: CSSProperties = {
