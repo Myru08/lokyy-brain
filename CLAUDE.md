@@ -6,6 +6,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This project was renamed from **"sternwarte"** → **"lokyy-brain"** in Story 1.1 (Epic 1). All package names use the `@lokyy/*` scope (`@lokyy/shared`, future `@lokyy/core`, `@lokyy/mcp`). Active code, configs, and the PWA manifest no longer reference the old name; the only remaining references are documentation history paragraphs (this section, the README rename note, and the BMAD planning artifacts under `_bmad-output/`).
 
+## Single Source of Truth (SSOT) — Verbindlich, überschreibt alles andere
+
+> **Lokyy Brain ist die Single Source of Truth für das gesamte Lokyy-Programm (Brain + Lokyy OS).** Dies ist ein „million dollar project": **keine Entscheidung, kein Kontext, kein Task, kein Meilenstein, kein Problem und keine Lösung darf je verloren gehen.** Mein flüchtiger Session-Kontext ist NICHT der Speicher — der Vault (git-versioniert) ist es.
+
+**Programm-Architektur (verbindlich, siehe ADR [[50_decisions/2026-05-31-lokyy-brain-os-schichtung]]):**
+- **Brain = Daten + Speicher + API (SSOT).** Speichert Notizen mit Frontmatter; bleibt schlank; PWA als Eingriffs-Fallback. **Alle persistenten Daten — auch Formular-/Schema-Definitionen — leben in Brain** (damit jede angeschlossene KI sie kennt). Brain rendert keine Formulare und hat keine Formular-Logik.
+- **Lokyy OS = die gesamte Logik- & Erlebnisschicht** (Formulare, Dashboards, Visualisierung, Hermes-Agent). OS konsumiert Brains API + Deep-Links. **Alles API-first**, damit der Agent jede Aktion als Link/Button ausliefern kann.
+
+**Pflicht-Disziplin bei JEDER Aufgabe (Brain UND OS):**
+1. **VORHER konsultieren:** `search_vault` / lies die relevanten Notizen, bevor du arbeitest oder entscheidest. **Nie raten** — wenn es im Vault steht, ist das die Wahrheit; fehlt es, frag den User.
+2. **NACHHER dokumentieren:** Jede Entscheidung (als ADR in `50_decisions/`, Titel `YYYY-MM-DD-lokyy-…`), jeder Meilenstein/Task, jedes Problem + Lösung, jede Architektur-Änderung wird sofort als Notiz in Brain abgelegt und vom Programm-Dach [[10_projects/lokyy/README]] verlinkt.
+3. **Beide Systeme im Blick:** Brain ↔ OS-Grenze + API-Verträge sind dokumentiert; Änderungen an einem System, die das andere betreffen, werden an der Grenze festgehalten.
+4. **Session-Ende:** Stand in `70_pai/sessions/{YYYY-MM-DD}-…` festhalten (TL;DR, Entscheidungen, offene Punkte, Wikilinks).
+
+Verstoß gegen diese Disziplin = Risiko für das Gesamtprojekt. Diese Regeln gelten vor den Workflow-Regeln unten.
+
 ## Workflow — Verbindlich
 
 - **BMAD-only.** No ad-hoc coding. Every piece of implementation work must originate from a Story with defined acceptance criteria. BMAD is installed under `_bmad/`.
