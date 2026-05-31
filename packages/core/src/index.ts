@@ -173,6 +173,24 @@ export {
 
 export { TypeFolderMismatchError } from "./errors/TypeFolderMismatchError.js";
 
+// ─── createManaged (Story 13.1 / ADR-004) ──────────────────────────────
+// THE single sanctioned write path for new notes — one shared core source
+// consumed by BOTH the MCP `notes.create_managed` tool AND the HTTP
+// `POST /api/notes/create-managed` route (no parallel write surface, ISC-59).
+// `resolveManagedCreate`/`slugifyTitle` are the pure resolver (so MCP can
+// scope-gate the derived path); `createManaged` resolves THEN writes via
+// createNote.
+export {
+  createManaged,
+  resolveManagedCreate,
+  slugifyTitle,
+  type NoteCreateIntent,
+  type ManagedCreateInput,
+  type ManagedCreateInputError,
+  type ManagedCreateError,
+  type ManagedCreateResult,
+} from "./notes/createManaged.js";
+
 // ─── Vault conventions (Story 10.4) ─────────────────────────────────────
 // Machine-readable folders/types/path-patterns + frontmatter summary, derived
 // from folderMap + DOC_TYPES (no drift). Served by the MCP get_vault_conventions

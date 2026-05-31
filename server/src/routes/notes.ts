@@ -1,8 +1,10 @@
 import { Hono } from "hono";
 import { getCookie } from "hono/cookie";
 import {
+  createManaged,
   findByUlid,
   FrontmatterValidationError,
+  getMemoryProvider,
   GitBackendError,
   getNote,
   isUlid,
@@ -14,11 +16,16 @@ import {
   PolishKeyMissingError,
   PolishLlmError,
   PreCommitHookError,
+  queryNotes,
   saveNote,
   serializeFrontmatter,
   type FrontmatterMap,
+  type NoteCreateIntent,
   type PolishProviderName,
 } from "@lokyy/core";
+
+/** Single-active-vault id (mirrors searchRoutes / notesService). */
+const DEFAULT_VAULT = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 
 /**
  * Maps a save-pipeline error to a Hono JSON response (Story 10.6 AC#4).
@@ -81,8 +88,52 @@ function mapSaveError(err: unknown): SaveErrorResponse | null {
 export const notesRoutes = new Hono();
 
 // GET /api/notes -> NoteSummary[]
+//
+// ADR-004 `notes.list_by_type`: an optional `?type=` query filters by doc type.
+// Without it, the full unfiltered summary list is returned (existing behavior,
+// unchanged). The `type` filter delegates to the SAME core `queryNotes` the
+// /api/dataview route uses (frontmatter-level filter) — no parallel listing
+// logic. Projection is mapped to a NoteSummary-shaped row { id, path, title,
+// type }; `limit` is honored via the query engine's own clamp.
 notesRoutes.get("/", async (c) => {
-  return c.json(await listNotes());
+  const type = c.req.query("type");
+  if (!type) {
+    return c.json(await listNotes());
+  }
+  const limit = Number(c.req.query("limit") ?? "50");
+  const rows = await queryNotes({
+    where: { type },
+    select: ["id", "title", "type"],
+    ...(Number.isFinite(limit) ? { limit } : {}),
+  });
+  // queryNotes rows carry the projected frontmatter; surface id/title/type as a
+  // summary. The dataview engine always includes the note id in its rows.
+  const items = rows.map((r) => ({
+    id: String(r.id ?? ""),
+    path: `${String(r.id ?? "")}.md`,
+    title: r.title != null ? String(r.title) : String(r.id ?? ""),
+    type: r.type != null ? String(r.type) : type,
+  }));
+  return c.json(items);
+});
+
+// GET /api/notes/search?q=...&limit=... -> scored hits
+//
+// ADR-004 `notes.search` HTTP pendant. Delegates to the SAME memory provider
+// (Tier1 full-text + Tier2 semantic) the MCP `search_vault` tool and the
+// POST /api/search route use — no parallel search logic. Registered BEFORE the
+// wildcard `:id{.+}` so the literal `search` segment is not swallowed as a note
+// path.
+notesRoutes.get("/search", async (c) => {
+  const q = c.req.query("q") ?? c.req.query("query") ?? "";
+  if (!q.trim()) {
+    return c.json({ results: [] });
+  }
+  const limit = Number(c.req.query("limit") ?? "10");
+  const hits = await getMemoryProvider(DEFAULT_VAULT).search(q, {
+    limit: Number.isFinite(limit) ? limit : 10,
+  });
+  return c.json({ results: hits });
 });
 
 // GET /api/notes/by-id/:ulid — resolve via stable frontmatter ULID.
@@ -106,6 +157,60 @@ notesRoutes.get("/by-id/:ulid", async (c) => {
     sessionId: sessionId,
   });
   return c.json(note);
+});
+
+// POST /api/notes/create-managed — THE sanctioned write path for new notes
+// (OS-contract, ADR-004 / ISC-59; the HTTP pendant of the MCP
+// `notes.create_managed` tool). Takes a `NoteCreateIntent`
+// ({ title, body?, type, tags?, folder_hint? }) and delegates to the SHARED
+// core `createManaged`, which derives the path from `type` (the client never
+// dictates a path or frontmatter), generates the ULID/created/updated, assembles
+// SPEC-valid frontmatter, and writes via gitService.
+//
+// Registered BEFORE the wildcard `:id{.+}` so the literal `create-managed`
+// segment is never swallowed as a note path (Hono dispatches in registration
+// order). The wildcards are GET/PUT, so a POST here would not collide anyway —
+// belt-and-suspenders for any future method overlap.
+//
+// Structured errors mirror the MCP tool + the existing save-error mapping:
+//   - invalid-type        → 422 (unknown `type`, with the allowed list)
+//   - missing-title       → 422 (title required)
+//   - type-folder-mismatch→ 422 (derived/hinted path contradicts the type)
+//   - frontmatter / merge / git-backend → 422 / 409 / 503 (via mapSaveError)
+notesRoutes.post("/create-managed", async (c) => {
+  let intent: Partial<NoteCreateIntent>;
+  try {
+    intent = await c.req.json<Partial<NoteCreateIntent>>();
+  } catch {
+    return c.json(
+      { error: "invalid-body", message: "request body must be valid JSON" },
+      400,
+    );
+  }
+  if (!intent || typeof intent !== "object") {
+    return c.json(
+      { error: "invalid-body", message: "request body must be a JSON object" },
+      400,
+    );
+  }
+
+  try {
+    const result = await createManaged(intent as NoteCreateIntent);
+    if (result.ok) {
+      return c.json(result.note, 201);
+    }
+    // Expected, structured validation failures → 422 (the caller's to fix).
+    return c.json(result.error, 422);
+  } catch (err) {
+    // Unexpected git/frontmatter failure → reuse the shared save-error mapping
+    // (422 frontmatter / 409 merge / 503 git-backend), consistent with PUT.
+    const mapped = mapSaveError(err);
+    if (mapped) return c.json(mapped.body, mapped.status);
+    return c.json(
+      { error: err instanceof Error ? err.message : "create-managed failed" },
+      409,
+    );
+  }
 });
 
 // GET /api/notes/:id  (id darf "/" enthalten -> Wildcard)

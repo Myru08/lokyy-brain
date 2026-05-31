@@ -26,8 +26,11 @@ import {
   DOC_TYPES,
   derivePathForType,
   folderForType,
-  isDatedType,
   TypeFolderMismatchError,
+  // Story 13.1 — managed-create intent resolver lives in @lokyy/core so the
+  // MCP `notes.create_managed` tool and the HTTP POST /api/notes/create-managed
+  // route share DIESELBE Quelle (ISC-59 — no parallel write/path logic).
+  resolveManagedCreate,
   // Story 10.3 — delete_note (soft via trashEntry, hard via deleteEntry).
   trashEntry,
   deleteEntry,
@@ -1744,104 +1747,18 @@ const DOTTED_ALIASES: Readonly<Record<string, string>> = {
 } as const;
 
 /**
- * Slugify a free-form title into a kebab-case slug for the derived note path.
- * Diacritics folded, non-alphanumerics collapsed to single hyphens, trimmed.
- * Empty result (e.g. an all-symbol title) falls back to "note" so a path is
- * always derivable. Pure → unit-testable.
+ * Story 13.1 — `resolveManagedCreate` + `slugifyTitle` (+ the input/result
+ * types) now live in @lokyy/core (`notes/createManaged.ts`) so the MCP tool and
+ * the HTTP POST /api/notes/create-managed route share ONE source (ISC-59). The
+ * `notes.create_managed` handler imports `resolveManagedCreate` directly from
+ * core; re-export it here so existing `./server.js` test imports keep resolving.
  */
-export function slugifyTitle(title: string): string {
-  const slug = title
-    .normalize("NFKD")
-    .replace(/[̀-ͯ]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return slug.length > 0 ? slug : "note";
-}
-
-/** Structured error payloads `notes.create_managed` returns before any write. */
-export type ManagedCreateInputError =
-  | { error: "invalid-type"; got: unknown; allowed: string[] }
-  | { error: "missing-title"; message: string };
-
-/** Resolved intent for a valid `notes.create_managed` request. */
-export type ManagedCreateInput =
-  | { ok: true; type: DocType; path: string; title: string; tags: string[] }
-  | { ok: false; error: ManagedCreateInputError };
-
-/**
- * Resolve a `notes.create_managed` INTENT into { type, derived path, title,
- * tags } (Story 13.1, ADR-004). The client supplies NO path and NO frontmatter:
- *
- *   - `type` is strict (a present-but-unknown value is rejected, never coerced;
- *     absent → "note"). Brain accepts its FULL DOC_TYPES superset — every
- *     ADR-004 NoteType is a subset, so this is backward-compatible.
- *   - The path is ALWAYS derived from `type` (canonical folder + dated pattern
- *     for captures/tasks), with the slug taken from `title`. A client-supplied
- *     path is structurally impossible (no `path` field on the intent).
- *   - `folder_hint` is honored ONLY when it is the type's canonical folder or a
- *     sub-folder of it; otherwise it is ignored and the canonical path wins
- *     (the hint can never escape the type's folder). This keeps `type` the
- *     single source of truth for placement while letting captures land in a
- *     sub-folder like `30_captures/youtube/`.
- *
- * Pure + side-effect-free so it is unit-testable without a live DB/git server.
- */
-export function resolveManagedCreate(
-  args: Record<string, unknown>,
-): ManagedCreateInput {
-  const rawType = args.type;
-  let type: DocType;
-  if (rawType === undefined || rawType === null) {
-    type = "note";
-  } else if (isDocType(rawType)) {
-    type = rawType;
-  } else {
-    return {
-      ok: false,
-      error: { error: "invalid-type", got: rawType, allowed: [...DOC_TYPES] },
-    };
-  }
-
-  const title = typeof args.title === "string" ? args.title.trim() : "";
-  if (title.length === 0) {
-    return {
-      ok: false,
-      error: { error: "missing-title", message: "`title` is required and must be non-empty." },
-    };
-  }
-
-  const slug = slugifyTitle(title);
-  // Canonical, type-derived path (dated for captures/tasks). This is the
-  // default and the security boundary — the client never dictates placement.
-  let path = derivePathForType(type, slug);
-
-  // Optional folder_hint: honored ONLY when it sits under the type's canonical
-  // folder (so it can refine the sub-folder, never escape the type's home).
-  const hint =
-    typeof args.folder_hint === "string" && args.folder_hint.trim().length > 0
-      ? args.folder_hint.trim().replace(/^\/+|\/+$/g, "")
-      : undefined;
-  if (hint) {
-    const canonical = folderForType(type);
-    const underCanonical = hint === canonical || hint.startsWith(`${canonical}/`);
-    if (underCanonical) {
-      // Re-derive with the hint as the folder, preserving the dated prefix for
-      // dated types (mirror derivePathForType's dated convention).
-      const leaf = isDatedType(type)
-        ? `${new Date().toISOString().slice(0, 10)}-${slug}`
-        : slug;
-      path = `${hint}/${leaf}`;
-    }
-    // else: hint ignored — canonical path stands.
-  }
-
-  const tags = Array.isArray(args.tags)
-    ? args.tags.filter((t): t is string => typeof t === "string")
-    : [];
-
-  return { ok: true, type, path, title, tags };
-}
+export {
+  resolveManagedCreate,
+  slugifyTitle,
+  type ManagedCreateInput,
+  type ManagedCreateInputError,
+} from "@lokyy/core";
 
 function text(payload: unknown) {
   return {
