@@ -245,5 +245,5 @@ development_status:
   epic-13: in-progress
   13-1-mcp-contract-surface: review   # done: create_managed + graph/pipes-Wrapper + dotted-Aliase; 87 MCP-Tests, build grün, 25 Bestands-Tools unverändert
   13-2-scope-enum-auth-abgleich: backlog
-  13-3-contract-adr-final: backlog
+  13-3-contract-adr-final: review   # Contract-ADR v1 im Vault (50_decisions/2026-05-31-brain-mcp-contract-final)
   epic-13-retrospective: optional
