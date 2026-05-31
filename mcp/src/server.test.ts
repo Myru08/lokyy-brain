@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DOC_TYPES, getVaultConventions, getSkillSchema, getHealth } from "@lokyy/core";
-import { resolveCreateNoteInput, classifyToolError } from "./server.js";
+import {
+  resolveCreateNoteInput,
+  classifyToolError,
+  resolveManagedCreate,
+  slugifyTitle,
+} from "./server.js";
 
 /**
  * Story 10.2 — MCP `create_note` input resolution.
@@ -91,6 +96,95 @@ describe("resolveCreateNoteInput — path derivation (AC#4)", () => {
         expect(res.error.expectedFolder).toBe("50_decisions");
       }
     }
+  });
+});
+
+/**
+ * Story 13.1 — OS-MCP-contract `notes.create_managed` intent resolution.
+ *
+ * The single load-bearing guarantee (ADR-004 / ISC-59): the client gives an
+ * INTENT, Brain DERIVES the path from `type` — the client never dictates the
+ * path or frontmatter. These pure-function tests prove the derivation, the
+ * full-enum acceptance (superset of ADR-004's NoteType), and the folder_hint
+ * containment rule.
+ */
+describe("resolveManagedCreate — type-derived path, no client path (Story 13.1)", () => {
+  it("derives a plain canonical path from type+title (slug from title)", () => {
+    const res = resolveManagedCreate({ title: "My Big Insight", type: "note", body: "x" });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.type).toBe("note");
+      expect(res.path).toBe("20_notes/my-big-insight");
+      expect(res.title).toBe("My Big Insight");
+    }
+  });
+
+  it("derives a DATED path for captures (30_captures/{YYYY-MM-DD}-slug)", () => {
+    const res = resolveManagedCreate({ title: "Cool Video", type: "capture" });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.path).toMatch(/^30_captures\/\d{4}-\d{2}-\d{2}-cool-video$/);
+    }
+  });
+
+  it("accepts EVERY DOC_TYPE 1:1 (full enum is a superset of ADR-004 NoteType)", () => {
+    for (const type of DOC_TYPES) {
+      const res = resolveManagedCreate({ title: "T", type });
+      expect(res.ok, `type "${type}" accepted`).toBe(true);
+      if (res.ok) expect(res.type).toBe(type);
+    }
+  });
+
+  it("rejects an unknown type (never coerces to note)", () => {
+    const res = resolveManagedCreate({ title: "T", type: "wizard" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.error).toBe("invalid-type");
+  });
+
+  it("requires a non-empty title", () => {
+    const res = resolveManagedCreate({ type: "note", title: "   " });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.error).toBe("missing-title");
+  });
+
+  it("honors folder_hint ONLY when it sits under the type's canonical folder", () => {
+    const ok = resolveManagedCreate({
+      title: "YT Clip",
+      type: "capture",
+      folder_hint: "30_captures/youtube",
+    });
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect(ok.path).toMatch(/^30_captures\/youtube\/\d{4}-\d{2}-\d{2}-yt-clip$/);
+  });
+
+  it("IGNORES a folder_hint that escapes the type's canonical folder", () => {
+    const res = resolveManagedCreate({
+      title: "Sneaky",
+      type: "note",
+      folder_hint: "99_archive/_trash",
+    });
+    expect(res.ok).toBe(true);
+    // The hint is dropped; the canonical 20_notes path stands.
+    if (res.ok) expect(res.path).toBe("20_notes/sneaky");
+  });
+
+  it("collects string tags and drops non-string entries", () => {
+    const res = resolveManagedCreate({
+      title: "Tagged",
+      type: "note",
+      tags: ["ai", 42, "pkm", null],
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.tags).toEqual(["ai", "pkm"]);
+  });
+});
+
+describe("slugifyTitle (Story 13.1)", () => {
+  it("kebab-cases and folds diacritics", () => {
+    expect(slugifyTitle("Über Café Notizen!")).toBe("uber-cafe-notizen");
+  });
+  it("falls back to 'note' for an all-symbol title", () => {
+    expect(slugifyTitle("!!! ???")).toBe("note");
   });
 });
 
@@ -206,6 +300,10 @@ const findBrokenLinksMock = vi.fn(async () => [] as unknown[]);
 const listTagsMock = vi.fn(async () => [] as unknown[]);
 const noteHistoryMock = vi.fn(async () => [] as unknown[]);
 const noteDiffMock = vi.fn(async () => ({ sha: null, diff: "" }));
+// Story 13.1 — OS-MCP-contract graph.get / pipes.* core-call mocks.
+const buildGraphMock = vi.fn(async () => ({ nodes: [] as unknown[], edges: [] as unknown[] }));
+const enqueueMock = vi.fn();
+const listJobsMock = vi.fn(() => [] as unknown[]);
 // Story 10.13 — resolveVaultResolution drives get_health.vault_warning at boot.
 const resolveVaultResolutionMock = vi.fn();
 
@@ -288,6 +386,10 @@ vi.mock("@lokyy/core", async (importActual) => {
     listTags: (...a: unknown[]) => listTagsMock(...a),
     noteHistory: (...a: unknown[]) => noteHistoryMock(...a),
     noteDiff: (...a: unknown[]) => noteDiffMock(...a),
+    // Story 13.1 — OS-MCP-contract thin wrappers.
+    buildGraph: (...a: unknown[]) => buildGraphMock(...(a as [])),
+    enqueue: (...a: unknown[]) => enqueueMock(...a),
+    listJobs: (...a: unknown[]) => listJobsMock(...(a as [])),
     // Story 12.3 — import_skill ↔ list_skills round-trip (shared in-memory store).
     importSkill: (...a: unknown[]) =>
       importSkillMock(...(a as Parameters<typeof importSkillMock>)),
@@ -905,6 +1007,185 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     });
     const out = payload(res);
     expect(out.error).toBe("invalid-files");
+  });
+
+  /* ============================================================== *
+   *  Story 13.1 — OS-MCP-contract dotted tools (e2e).
+   * ============================================================== */
+
+  it("lists the dotted OS-contract tools ALONGSIDE the 25 snake_case tools", async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((t: { name: string }) => t.name);
+    // New + alias dotted tools present.
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "notes.create_managed",
+        "graph.get",
+        "pipes.import",
+        "pipes.status",
+        "notes.read",
+        "notes.list_by_type",
+        "notes.search",
+        "notes.update_content",
+        "vault.tree",
+      ]),
+    );
+    // Regression: the snake_case originals still exist (NOT renamed/removed).
+    expect(names).toEqual(
+      expect.arrayContaining([
+        "read_note",
+        "search_vault",
+        "list_tree",
+        "create_note",
+        "update_note",
+        "list_notes",
+      ]),
+    );
+  });
+
+  it("notes.create_managed derives the path from type (note → 20_notes), client gives NO path", async () => {
+    createNoteMock.mockResolvedValueOnce({
+      id: "20_notes/session-recap",
+      type: "note",
+      path: "20_notes/session-recap.md",
+    });
+    const res = await client.callTool({
+      name: "notes.create_managed",
+      arguments: { title: "Session Recap", type: "note", body: "# Recap\n\nstuff", tags: ["ai"] },
+    });
+    const out = payload(res);
+    expect(out.created.id).toBe("20_notes/session-recap");
+    expect(out.commitPrefix).toBeDefined();
+    // Brain derived the path under 20_notes — NO client path was involved.
+    const [derivedPath, body, opts] = createNoteMock.mock.calls.at(-1) as [
+      string,
+      string | undefined,
+      { type?: string; title?: string; extra?: { tags?: string[] }; validatePlacement?: boolean },
+    ];
+    expect(derivedPath).toBe("20_notes/session-recap");
+    expect(body).toBe("# Recap\n\nstuff");
+    expect(opts.type).toBe("note");
+    expect(opts.title).toBe("Session Recap");
+    expect(opts.validatePlacement).toBe(true);
+    expect(opts.extra?.tags).toEqual(["ai"]);
+  });
+
+  it("notes.create_managed type:capture → dated 30_captures path (slug from title)", async () => {
+    createNoteMock.mockResolvedValueOnce({ id: "30_captures/2026-05-31-yt-clip", type: "capture" });
+    const res = await client.callTool({
+      name: "notes.create_managed",
+      arguments: { title: "YT Clip", type: "capture" },
+    });
+    const out = payload(res);
+    expect(out.created.type).toBe("capture");
+    const [derivedPath] = createNoteMock.mock.calls.at(-1) as [string];
+    expect(derivedPath).toMatch(/^30_captures\/\d{4}-\d{2}-\d{2}-yt-clip$/);
+  });
+
+  it("notes.create_managed rejects an unknown type without writing", async () => {
+    createNoteMock.mockClear();
+    const res = await client.callTool({
+      name: "notes.create_managed",
+      arguments: { title: "X", type: "wizard" },
+    });
+    const out = payload(res);
+    expect(out.error).toBe("invalid-type");
+    expect(createNoteMock).not.toHaveBeenCalled();
+  });
+
+  it("graph.get returns { nodes, edges } via core buildGraph", async () => {
+    buildGraphMock.mockResolvedValueOnce({
+      nodes: [{ id: "20_notes/a", title: "A" }],
+      edges: [{ source: "20_notes/a", target: "20_notes/b" }],
+    });
+    const res = await client.callTool({ name: "graph.get", arguments: {} });
+    const out = payload(res);
+    expect(out.nodes).toHaveLength(1);
+    expect(out.edges).toHaveLength(1);
+    expect(buildGraphMock).toHaveBeenCalled();
+  });
+
+  it("pipes.import enqueues the URL and returns the PipeJob", async () => {
+    enqueueMock.mockReturnValueOnce({
+      id: "job-1",
+      type: "youtube",
+      status: "queued",
+      payload: { url: "https://youtu.be/x" },
+      createdAt: "2026-05-31T00:00:00Z",
+    });
+    const res = await client.callTool({
+      name: "pipes.import",
+      arguments: { url: "https://youtu.be/x", type: "youtube" },
+    });
+    const out = payload(res);
+    expect(out.id).toBe("job-1");
+    expect(out.status).toBe("queued");
+    // Core enqueue called with a SharePayload + the explicit type override.
+    expect(enqueueMock).toHaveBeenCalledWith({ url: "https://youtu.be/x" }, "youtube");
+  });
+
+  it("pipes.status finds a job by id (and not-found for unknown id)", async () => {
+    listJobsMock.mockReturnValue([
+      { id: "job-1", type: "url", status: "done", payload: { url: "u" }, resultNoteId: "30_captures/c", createdAt: "t" },
+    ]);
+    const ok = payload(await client.callTool({ name: "pipes.status", arguments: { job_id: "job-1" } }));
+    expect(ok.status).toBe("done");
+    expect(ok.resultNoteId).toBe("30_captures/c");
+
+    const miss = payload(await client.callTool({ name: "pipes.status", arguments: { job_id: "nope" } }));
+    expect(miss.error).toBe("not-found");
+    expect(miss.job_id).toBe("nope");
+  });
+
+  /* ---- Dotted ALIASES dispatch through the SAME handler as the original ---- */
+
+  it("notes.read alias returns the SAME result as read_note", async () => {
+    const note = { id: "20_notes/topic", path: "20_notes/topic.md", title: "Topic", body: "# Topic" };
+    getNoteMock.mockResolvedValue(note);
+    const viaAlias = payload(await client.callTool({ name: "notes.read", arguments: { path: "20_notes/topic" } }));
+    const viaOriginal = payload(await client.callTool({ name: "read_note", arguments: { path: "20_notes/topic" } }));
+    expect(viaAlias).toEqual(viaOriginal);
+    expect(viaAlias.id).toBe("20_notes/topic");
+    getNoteMock.mockReset();
+  });
+
+  it("notes.update_content alias routes to update_note (preserves saveNote semantics)", async () => {
+    // saveNote is REAL (not mocked) but write goes through gitService → would
+    // throw without a repo; assert the alias reaches the update path by the
+    // error shape, identical to calling update_note directly.
+    const viaAlias = payload(
+      await client.callTool({ name: "notes.update_content", arguments: { path: "20_notes/x", body: "b" } }),
+    );
+    const viaOriginal = payload(
+      await client.callTool({ name: "update_note", arguments: { path: "20_notes/x", body: "b" } }),
+    );
+    // Both hit the same code path → same classified error shape (no repo here).
+    expect(viaAlias.error).toBe(viaOriginal.error);
+  });
+
+  it("notes.list_by_type alias maps to list_notes (same filter behavior)", async () => {
+    queryNotesMock.mockResolvedValueOnce([
+      { id: "50_decisions/d1", title: "D1", type: "decision", status: "open", updated: "2026-05-20" },
+    ]);
+    const out = payload(
+      await client.callTool({ name: "notes.list_by_type", arguments: { filter: { type: "decision" } } }),
+    );
+    expect(out.notes[0].noteId).toBe("50_decisions/d1");
+    expect(out.notes[0].type).toBe("decision");
+  });
+
+  it("vault.tree alias routes to list_tree (same getTree code path)", async () => {
+    // getTree is REAL (not mocked) → it pulls via gitService and, with no repo
+    // in this harness, both names land on the identical classified error. That
+    // identical shape IS the proof the alias dispatches through list_tree.
+    const viaAlias = payload(await client.callTool({ name: "vault.tree", arguments: {} }));
+    const viaOriginal = payload(await client.callTool({ name: "list_tree", arguments: {} }));
+    expect(viaAlias.error).toBe(viaOriginal.error);
+    // And the error surfaces the name the caller actually invoked (alias-aware).
+    if (viaAlias.error === "tool-execution-failed") {
+      expect(viaAlias.tool).toBe("vault.tree");
+      expect(viaOriginal.tool).toBe("list_tree");
+    }
   });
 });
 

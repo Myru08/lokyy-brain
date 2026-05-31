@@ -26,6 +26,7 @@ import {
   DOC_TYPES,
   derivePathForType,
   folderForType,
+  isDatedType,
   TypeFolderMismatchError,
   // Story 10.3 — delete_note (soft via trashEntry, hard via deleteEntry).
   trashEntry,
@@ -55,6 +56,12 @@ import {
   noteDiff,
   validateFrontmatter,
   parseFrontmatter,
+  // Story 13.1 — OS-MCP-contract (Epic 13): graph.get + pipes.* thin wrappers
+  // over the SAME core entry points the HTTP routes use (/api/graph,
+  // /api/pipes/import, GET /api/pipes).
+  buildGraph,
+  enqueue,
+  listJobs,
   type CoreConfig,
   type DocType,
   type BulkCreateItem,
@@ -64,6 +71,7 @@ import {
   type FrontmatterMap,
   type ValidationErrorDetail,
 } from "@lokyy/core";
+import type { PipeType, SharePayload } from "@lokyy/shared";
 import { canRead, canWrite, activeScope, loadScopes, ScopeViolation } from "./scopes.js";
 // Story 10.13 — multi-vault detection API (consumed by get_health.vault_warning).
 import { resolveVaultResolution } from "./resolveVaultId.js";
@@ -603,11 +611,169 @@ export function createServer(): Server {
           },
         },
       },
+
+      /* ============================================================== *
+       *  Story 13.1 (Epic 13) — OS-MCP-Contract: dotted Contract-Tools.
+       *
+       *  ADDITIVE. The 25 snake_case tools above are UNCHANGED. These
+       *  dotted tools are the stable surface ADR-004 freezes for the
+       *  Lokyy-OS / Hermes subagents. They split into two kinds:
+       *
+       *    1. New tools with no snake_case equivalent
+       *       (notes.create_managed, graph.get, pipes.import, pipes.status).
+       *    2. Dotted ALIASES — identical args + behavior, registered under
+       *       a second name and dispatched through the SAME handler via the
+       *       `DOTTED_ALIASES` table (notes.read→read_note,
+       *       notes.list_by_type→list_notes, notes.search→search_vault,
+       *       notes.update_content→update_note, vault.tree→list_tree).
+       * ============================================================== */
+      {
+        name: "notes.create_managed",
+        description:
+          "THE sanctioned write path for new notes (OS-contract, ADR-004). Pass an INTENT — { title, body, type, tags?, folder_hint? } — and Lokyy-Brain owns everything else: it DERIVES the target path from `type` (canonical type→folder map; dated '{folder}/{YYYY-MM-DD}-{slug}' for captures/tasks, slug from title), generates the ULID, sets created/updated, assembles SPEC-valid frontmatter, and writes via the git path. The client NEVER supplies a path or frontmatter. `folder_hint` is an OPTIONAL hint only — it is honored solely when it sits under the type's canonical folder, otherwise it is ignored and the canonical path wins. Returns the created note. Write-scope is enforced on the derived path.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            title: { type: "string", description: "Human title; also the source for the derived slug." },
+            body: { type: "string", description: "Markdown body (optional — defaults to '# {title}')." },
+            type: {
+              type: "string",
+              // Brain's FULL enum (superset of ADR-004's NoteType subset —
+              // backward-compatible: every ADR type is accepted, plus the
+              // extended ones skill/peer/tool/resource/reference).
+              enum: [...DOC_TYPES],
+              default: "note",
+            },
+            tags: {
+              type: "array",
+              items: { type: "string" },
+              description: "Optional frontmatter tags.",
+            },
+            folder_hint: {
+              type: "string",
+              description:
+                "Optional location hint. Honored only when it is the type's canonical folder or a sub-folder of it; otherwise ignored.",
+            },
+          },
+          required: ["title", "type"],
+        },
+      },
+      {
+        name: "graph.get",
+        description:
+          "Get the whole Lokyy-Brain knowledge graph derived from the vault's wikilinks — { nodes, edges }. OS-contract (ADR-004) equivalent of HTTP GET /api/graph. Takes no arguments.",
+        inputSchema: { type: "object", properties: {} },
+      },
+      {
+        name: "pipes.import",
+        description:
+          "Enqueue an active import of an external URL into the vault (OS-contract, ADR-004; equivalent of HTTP POST /api/pipes/import). The pipe queue detects the source kind from the URL, or you may force it with `type` (youtube | voice | url | crawl). Returns the queued PipeJob (with its `id` and `status`); poll completion with pipes.status. Captured sources land under 30_captures/ with type:capture frontmatter.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            url: { type: "string", description: "The URL to import." },
+            type: {
+              type: "string",
+              enum: ["youtube", "voice", "url", "crawl"],
+              description: "Optional explicit pipe type; omit to let the queue detect it.",
+            },
+          },
+          required: ["url"],
+        },
+      },
+      {
+        name: "pipes.status",
+        description:
+          "Get the current status of a previously-enqueued pipe job by its id (OS-contract, ADR-004; equivalent of GET /api/pipes filtered by id). Returns the PipeJob (status: queued | processing | done | error; `resultNoteId` once done). An unknown id returns { error: 'not-found', job_id }.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            job_id: { type: "string", description: "The PipeJob id returned by pipes.import." },
+          },
+          required: ["job_id"],
+        },
+      },
+
+      /* ---- Dotted ALIASES (same args + behavior as the snake_case tool) ---- */
+      {
+        name: "notes.read",
+        description:
+          "OS-contract alias of `read_note` (ADR-004). Read a single note (markdown body + frontmatter). `path` is the note id without the .md extension.",
+        inputSchema: {
+          type: "object",
+          properties: { path: { type: "string", description: "Note id, e.g. 'pai/hermes'" } },
+          required: ["path"],
+        },
+      },
+      {
+        name: "notes.list_by_type",
+        description:
+          "OS-contract alias of `list_notes` (ADR-004 notes.list_by_type). List notes matching a frontmatter filter — pass { filter: { type: 'decision' } } to list by type. Same args, scope, and pagination as `list_notes`.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            filter: {
+              type: "object",
+              properties: {
+                type: { type: "string", description: "Doc type equality, e.g. 'decision'." },
+                folder: { type: "string", description: "Folder path prefix." },
+                tag: { type: "string", description: "A tag the note must carry." },
+                status: { type: "string", description: "Frontmatter `status` equality." },
+                updated_after: {
+                  type: "string",
+                  description: "ISO date/datetime; keep notes whose `updated` is strictly after this.",
+                },
+              },
+            },
+            limit: { type: "number", description: "Page size (default 50).", default: 50 },
+            offset: { type: "number", description: "Rows to skip (default 0).", default: 0 },
+          },
+        },
+      },
+      {
+        name: "notes.search",
+        description:
+          "OS-contract alias of `search_vault` (ADR-004). Search the vault (Tier 1 full-text + Tier 2 semantic). Same args + scored results as `search_vault`.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            limit: { type: "number", default: 10 },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "notes.update_content",
+        description:
+          "OS-contract alias of `update_note` (ADR-004). Save/upsert a note's body (preserves id + created, bumps updated). Same args + behavior as `update_note`.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string" },
+            body: { type: "string" },
+          },
+          required: ["path", "body"],
+        },
+      },
+      {
+        name: "vault.tree",
+        description:
+          "OS-contract alias of `list_tree` (ADR-004 vault.tree). List the scoped vault folder/note tree. Same behavior as `list_tree`.",
+        inputSchema: { type: "object", properties: {} },
+      },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    const name = req.params.name;
+    // Story 13.1 — dotted ALIASES dispatch through the SAME switch case as
+    // their snake_case original, guaranteeing identical args/behavior with no
+    // duplicated logic. `requestedName` is kept for the error wrapper so a
+    // caller sees the tool name it actually invoked. Genuinely-new dotted
+    // tools (notes.create_managed, graph.get, pipes.*) are NOT aliases — they
+    // have their own cases below and are absent from this map.
+    const requestedName = req.params.name;
+    const name = DOTTED_ALIASES[requestedName] ?? requestedName;
     // Story 10.7 — wrap the WHOLE dispatch. An exception thrown around the
     // switch itself (e.g. DB-pool exhaustion while acquiring a connection)
     // would otherwise escape to the SDK and surface as the useless generic
@@ -968,8 +1134,77 @@ export function createServer(): Server {
           // markdown from `path` (read + scope-gated) OR a raw `body` string.
           return validateNote(args);
         }
+
+        /* ---- Story 13.1 — OS-MCP-contract NEW tools (no snake_case twin) ---- */
+        case "notes.create_managed": {
+          // THE sanctioned write path. The client gives an INTENT only; Brain
+          // derives the path from `type` (NEVER trusts a client path), then
+          // reuses the existing createNote path so ULID/created/updated/
+          // frontmatter assembly + SPEC validation are identical to create_note.
+          const resolved = resolveManagedCreate(args);
+          if (!resolved.ok) return text(resolved.error);
+          const { type, path, title, tags } = resolved;
+
+          if (!canWrite(`${path}.md`)) throw new ScopeViolation("write", path);
+
+          // Tags (when supplied) flow through as extra frontmatter, exactly as
+          // create_note threads its `frontmatter` arg.
+          const extra = tags.length > 0 ? { tags } : undefined;
+
+          try {
+            const note = await createNote(path, args.body as string | undefined, {
+              title,
+              type,
+              ...(extra ? { extra } : {}),
+              // Couple folder to type; a contradictory derived path can never
+              // happen (we derive it), but keep the guard on for the
+              // folder_hint sub-folder case (defensive, mirrors create_note).
+              validatePlacement: true,
+            });
+            return text({ created: note, commitPrefix: activeScope().commitPrefix });
+          } catch (err) {
+            if (err instanceof TypeFolderMismatchError) {
+              return text({
+                error: "type-folder-mismatch",
+                type: err.type,
+                expectedFolder: err.expectedFolder,
+                gotPath: err.gotPath,
+              });
+            }
+            throw err;
+          }
+        }
+        case "graph.get": {
+          // Thin wrapper over core buildGraph — the HTTP /api/graph pendant.
+          // The graph is vault-wide derived metadata (like get_tags); no
+          // per-note scope gate, consistent with that tool's stance.
+          const graph = await buildGraph();
+          return text(graph);
+        }
+        case "pipes.import": {
+          // Thin wrapper over the pipe queue — the HTTP POST /api/pipes/import
+          // pendant. Enqueue + return the PipeJob; the queue drains async.
+          const url = String(args.url ?? "");
+          if (!url) return text({ error: "missing-url", message: "`url` is required." });
+          const typeOverride =
+            typeof args.type === "string" && args.type.length > 0
+              ? (args.type as PipeType)
+              : undefined;
+          const payload: SharePayload = { url };
+          const job = enqueue(payload, typeOverride);
+          return text(job);
+        }
+        case "pipes.status": {
+          // Thin wrapper over listJobs — the GET /api/pipes pendant, filtered
+          // by id. Unknown id → structured not-found.
+          const jobId = String(args.job_id ?? "");
+          const job = listJobs().find((j) => j.id === jobId);
+          if (!job) return text({ error: "not-found", job_id: jobId });
+          return text(job);
+        }
+
           default:
-            return text({ error: "unknown-tool", name });
+            return text({ error: "unknown-tool", name: requestedName });
         }
       } catch (err) {
         // Story 10.7 — per-tool structured errors keep their format, additively
@@ -986,12 +1221,13 @@ export function createServer(): Server {
         // Anything else reaching here is an unclassified handler throw; route it
         // through the classifier so the raw backend message never leaks and a
         // class is always present (replaces the old raw-message fallback).
-        return text(classifyToolError(err, name));
+        // Use the name the caller actually invoked (alias-aware).
+        return text(classifyToolError(err, requestedName));
       }
     } catch (outer) {
       // Infra exception thrown AROUND the switch (pool acquire, etc.) — the SDK
       // would otherwise emit its generic error. Classify + return structured.
-      return text(classifyToolError(outer, name));
+      return text(classifyToolError(outer, requestedName));
     }
   });
 
@@ -1485,6 +1721,126 @@ export function resolveCreateNoteInput(
       expectedFolder: folderForType(type),
     },
   };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Story 13.1 — OS-MCP-contract (Epic 13) helpers.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Dotted-alias → snake_case-original dispatch map. A dotted alias is dispatched
+ * through the SAME switch case as its original (identical args, scope, and
+ * response) — registering the second name in ListTools and routing here is the
+ * whole alias mechanism; there is zero duplicated handler logic. Genuinely-new
+ * dotted tools (notes.create_managed, graph.get, pipes.import, pipes.status)
+ * are intentionally ABSENT — they have their own cases.
+ */
+const DOTTED_ALIASES: Readonly<Record<string, string>> = {
+  "notes.read": "read_note",
+  "notes.list_by_type": "list_notes",
+  "notes.search": "search_vault",
+  "notes.update_content": "update_note",
+  "vault.tree": "list_tree",
+} as const;
+
+/**
+ * Slugify a free-form title into a kebab-case slug for the derived note path.
+ * Diacritics folded, non-alphanumerics collapsed to single hyphens, trimmed.
+ * Empty result (e.g. an all-symbol title) falls back to "note" so a path is
+ * always derivable. Pure → unit-testable.
+ */
+export function slugifyTitle(title: string): string {
+  const slug = title
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "note";
+}
+
+/** Structured error payloads `notes.create_managed` returns before any write. */
+export type ManagedCreateInputError =
+  | { error: "invalid-type"; got: unknown; allowed: string[] }
+  | { error: "missing-title"; message: string };
+
+/** Resolved intent for a valid `notes.create_managed` request. */
+export type ManagedCreateInput =
+  | { ok: true; type: DocType; path: string; title: string; tags: string[] }
+  | { ok: false; error: ManagedCreateInputError };
+
+/**
+ * Resolve a `notes.create_managed` INTENT into { type, derived path, title,
+ * tags } (Story 13.1, ADR-004). The client supplies NO path and NO frontmatter:
+ *
+ *   - `type` is strict (a present-but-unknown value is rejected, never coerced;
+ *     absent → "note"). Brain accepts its FULL DOC_TYPES superset — every
+ *     ADR-004 NoteType is a subset, so this is backward-compatible.
+ *   - The path is ALWAYS derived from `type` (canonical folder + dated pattern
+ *     for captures/tasks), with the slug taken from `title`. A client-supplied
+ *     path is structurally impossible (no `path` field on the intent).
+ *   - `folder_hint` is honored ONLY when it is the type's canonical folder or a
+ *     sub-folder of it; otherwise it is ignored and the canonical path wins
+ *     (the hint can never escape the type's folder). This keeps `type` the
+ *     single source of truth for placement while letting captures land in a
+ *     sub-folder like `30_captures/youtube/`.
+ *
+ * Pure + side-effect-free so it is unit-testable without a live DB/git server.
+ */
+export function resolveManagedCreate(
+  args: Record<string, unknown>,
+): ManagedCreateInput {
+  const rawType = args.type;
+  let type: DocType;
+  if (rawType === undefined || rawType === null) {
+    type = "note";
+  } else if (isDocType(rawType)) {
+    type = rawType;
+  } else {
+    return {
+      ok: false,
+      error: { error: "invalid-type", got: rawType, allowed: [...DOC_TYPES] },
+    };
+  }
+
+  const title = typeof args.title === "string" ? args.title.trim() : "";
+  if (title.length === 0) {
+    return {
+      ok: false,
+      error: { error: "missing-title", message: "`title` is required and must be non-empty." },
+    };
+  }
+
+  const slug = slugifyTitle(title);
+  // Canonical, type-derived path (dated for captures/tasks). This is the
+  // default and the security boundary — the client never dictates placement.
+  let path = derivePathForType(type, slug);
+
+  // Optional folder_hint: honored ONLY when it sits under the type's canonical
+  // folder (so it can refine the sub-folder, never escape the type's home).
+  const hint =
+    typeof args.folder_hint === "string" && args.folder_hint.trim().length > 0
+      ? args.folder_hint.trim().replace(/^\/+|\/+$/g, "")
+      : undefined;
+  if (hint) {
+    const canonical = folderForType(type);
+    const underCanonical = hint === canonical || hint.startsWith(`${canonical}/`);
+    if (underCanonical) {
+      // Re-derive with the hint as the folder, preserving the dated prefix for
+      // dated types (mirror derivePathForType's dated convention).
+      const leaf = isDatedType(type)
+        ? `${new Date().toISOString().slice(0, 10)}-${slug}`
+        : slug;
+      path = `${hint}/${leaf}`;
+    }
+    // else: hint ignored — canonical path stands.
+  }
+
+  const tags = Array.isArray(args.tags)
+    ? args.tags.filter((t): t is string => typeof t === "string")
+    : [];
+
+  return { ok: true, type, path, title, tags };
 }
 
 function text(payload: unknown) {

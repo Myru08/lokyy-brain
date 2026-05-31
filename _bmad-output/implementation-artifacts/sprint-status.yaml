@@ -238,3 +238,12 @@ development_status:
   12-2-skillsview-strukturansicht: review   # done, build+97 Tests grün (skillStructure-Ableitung)
   12-3-import-anthropic-skills: review   # done: core importSkill + Server-Route + MCP-Tool + PWA-Upload; build+Tests grün
   epic-12-retrospective: optional
+
+  # ── Epic 13: Brain MCP-Contract für OS-Integration ─────────────────────────
+  # Quelle: 50_decisions/2026-05-31-brain-os-mcp-grenze + OS-ADR-004. Plan: epic-13-mcp-contract-os.md
+  # Brain = SSOT, definiert den kanonischen Contract; OS (lokyy-mcp) konsumiert.
+  epic-13: in-progress
+  13-1-mcp-contract-surface: review   # done: create_managed + graph/pipes-Wrapper + dotted-Aliase; 87 MCP-Tests, build grün, 25 Bestands-Tools unverändert
+  13-2-scope-enum-auth-abgleich: backlog
+  13-3-contract-adr-final: backlog
+  epic-13-retrospective: optional
