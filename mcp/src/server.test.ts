@@ -300,7 +300,7 @@ const findBrokenLinksMock = vi.fn(async () => [] as unknown[]);
 const listTagsMock = vi.fn(async () => [] as unknown[]);
 const noteHistoryMock = vi.fn(async () => [] as unknown[]);
 const noteDiffMock = vi.fn(async () => ({ sha: null, diff: "" }));
-// Story 13.1 — OS-MCP-contract graph.get / pipes.* core-call mocks.
+// Story 13.1/13.2 — OS-MCP-contract get_graph / pipe core-call mocks.
 const buildGraphMock = vi.fn(async () => ({ nodes: [] as unknown[], edges: [] as unknown[] }));
 const enqueueMock = vi.fn();
 const listJobsMock = vi.fn(() => [] as unknown[]);
@@ -1010,14 +1010,34 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
   });
 
   /* ============================================================== *
-   *  Story 13.1 — OS-MCP-contract dotted tools (e2e).
+   *  Story 13.1/13.2 — OS-MCP-contract tools (e2e), snake_case names.
    * ============================================================== */
 
-  it("lists the dotted OS-contract tools ALONGSIDE the 25 snake_case tools", async () => {
+  it("EVERY ListTools name matches the MCP protocol pattern ^[a-zA-Z0-9_-]{1,64}$ (no dot)", async () => {
+    // Re-regression guard (Story 13.2): a dotted tool name makes Claude reject
+    // the ENTIRE tool list (tools.NN.FrontendRemoteMcpToolDefinition.name).
+    const { tools } = await client.listTools();
+    const pattern = /^[a-zA-Z0-9_-]{1,64}$/;
+    const offenders = tools
+      .map((t: { name: string }) => t.name)
+      .filter((n: string) => !pattern.test(n));
+    expect(offenders).toEqual([]);
+  });
+
+  it("lists the snake_case OS-contract tools ALONGSIDE the 25 snake_case tools", async () => {
     const { tools } = await client.listTools();
     const names = tools.map((t: { name: string }) => t.name);
-    // New + alias dotted tools present.
+    // The four new OS-contract tools are now snake_case (13.2 fix).
     expect(names).toEqual(
+      expect.arrayContaining([
+        "create_managed_note",
+        "get_graph",
+        "import_pipe",
+        "get_pipe_status",
+      ]),
+    );
+    // The removed dotted aliases must NOT be present anymore.
+    expect(names).not.toEqual(
       expect.arrayContaining([
         "notes.create_managed",
         "graph.get",
@@ -1043,14 +1063,14 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     );
   });
 
-  it("notes.create_managed derives the path from type (note → 20_notes), client gives NO path", async () => {
+  it("create_managed_note derives the path from type (note → 20_notes), client gives NO path", async () => {
     createNoteMock.mockResolvedValueOnce({
       id: "20_notes/session-recap",
       type: "note",
       path: "20_notes/session-recap.md",
     });
     const res = await client.callTool({
-      name: "notes.create_managed",
+      name: "create_managed_note",
       arguments: { title: "Session Recap", type: "note", body: "# Recap\n\nstuff", tags: ["ai"] },
     });
     const out = payload(res);
@@ -1070,10 +1090,10 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     expect(opts.extra?.tags).toEqual(["ai"]);
   });
 
-  it("notes.create_managed type:capture → dated 30_captures path (slug from title)", async () => {
+  it("create_managed_note type:capture → dated 30_captures path (slug from title)", async () => {
     createNoteMock.mockResolvedValueOnce({ id: "30_captures/2026-05-31-yt-clip", type: "capture" });
     const res = await client.callTool({
-      name: "notes.create_managed",
+      name: "create_managed_note",
       arguments: { title: "YT Clip", type: "capture" },
     });
     const out = payload(res);
@@ -1082,10 +1102,10 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     expect(derivedPath).toMatch(/^30_captures\/\d{4}-\d{2}-\d{2}-yt-clip$/);
   });
 
-  it("notes.create_managed rejects an unknown type without writing", async () => {
+  it("create_managed_note rejects an unknown type without writing", async () => {
     createNoteMock.mockClear();
     const res = await client.callTool({
-      name: "notes.create_managed",
+      name: "create_managed_note",
       arguments: { title: "X", type: "wizard" },
     });
     const out = payload(res);
@@ -1093,19 +1113,19 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     expect(createNoteMock).not.toHaveBeenCalled();
   });
 
-  it("graph.get returns { nodes, edges } via core buildGraph", async () => {
+  it("get_graph returns { nodes, edges } via core buildGraph", async () => {
     buildGraphMock.mockResolvedValueOnce({
       nodes: [{ id: "20_notes/a", title: "A" }],
       edges: [{ source: "20_notes/a", target: "20_notes/b" }],
     });
-    const res = await client.callTool({ name: "graph.get", arguments: {} });
+    const res = await client.callTool({ name: "get_graph", arguments: {} });
     const out = payload(res);
     expect(out.nodes).toHaveLength(1);
     expect(out.edges).toHaveLength(1);
     expect(buildGraphMock).toHaveBeenCalled();
   });
 
-  it("pipes.import enqueues the URL and returns the PipeJob", async () => {
+  it("import_pipe enqueues the URL and returns the PipeJob", async () => {
     enqueueMock.mockReturnValueOnce({
       id: "job-1",
       type: "youtube",
@@ -1114,7 +1134,7 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
       createdAt: "2026-05-31T00:00:00Z",
     });
     const res = await client.callTool({
-      name: "pipes.import",
+      name: "import_pipe",
       arguments: { url: "https://youtu.be/x", type: "youtube" },
     });
     const out = payload(res);
@@ -1124,68 +1144,17 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     expect(enqueueMock).toHaveBeenCalledWith({ url: "https://youtu.be/x" }, "youtube");
   });
 
-  it("pipes.status finds a job by id (and not-found for unknown id)", async () => {
+  it("get_pipe_status finds a job by id (and not-found for unknown id)", async () => {
     listJobsMock.mockReturnValue([
       { id: "job-1", type: "url", status: "done", payload: { url: "u" }, resultNoteId: "30_captures/c", createdAt: "t" },
     ]);
-    const ok = payload(await client.callTool({ name: "pipes.status", arguments: { job_id: "job-1" } }));
+    const ok = payload(await client.callTool({ name: "get_pipe_status", arguments: { job_id: "job-1" } }));
     expect(ok.status).toBe("done");
     expect(ok.resultNoteId).toBe("30_captures/c");
 
-    const miss = payload(await client.callTool({ name: "pipes.status", arguments: { job_id: "nope" } }));
+    const miss = payload(await client.callTool({ name: "get_pipe_status", arguments: { job_id: "nope" } }));
     expect(miss.error).toBe("not-found");
     expect(miss.job_id).toBe("nope");
-  });
-
-  /* ---- Dotted ALIASES dispatch through the SAME handler as the original ---- */
-
-  it("notes.read alias returns the SAME result as read_note", async () => {
-    const note = { id: "20_notes/topic", path: "20_notes/topic.md", title: "Topic", body: "# Topic" };
-    getNoteMock.mockResolvedValue(note);
-    const viaAlias = payload(await client.callTool({ name: "notes.read", arguments: { path: "20_notes/topic" } }));
-    const viaOriginal = payload(await client.callTool({ name: "read_note", arguments: { path: "20_notes/topic" } }));
-    expect(viaAlias).toEqual(viaOriginal);
-    expect(viaAlias.id).toBe("20_notes/topic");
-    getNoteMock.mockReset();
-  });
-
-  it("notes.update_content alias routes to update_note (preserves saveNote semantics)", async () => {
-    // saveNote is REAL (not mocked) but write goes through gitService → would
-    // throw without a repo; assert the alias reaches the update path by the
-    // error shape, identical to calling update_note directly.
-    const viaAlias = payload(
-      await client.callTool({ name: "notes.update_content", arguments: { path: "20_notes/x", body: "b" } }),
-    );
-    const viaOriginal = payload(
-      await client.callTool({ name: "update_note", arguments: { path: "20_notes/x", body: "b" } }),
-    );
-    // Both hit the same code path → same classified error shape (no repo here).
-    expect(viaAlias.error).toBe(viaOriginal.error);
-  });
-
-  it("notes.list_by_type alias maps to list_notes (same filter behavior)", async () => {
-    queryNotesMock.mockResolvedValueOnce([
-      { id: "50_decisions/d1", title: "D1", type: "decision", status: "open", updated: "2026-05-20" },
-    ]);
-    const out = payload(
-      await client.callTool({ name: "notes.list_by_type", arguments: { filter: { type: "decision" } } }),
-    );
-    expect(out.notes[0].noteId).toBe("50_decisions/d1");
-    expect(out.notes[0].type).toBe("decision");
-  });
-
-  it("vault.tree alias routes to list_tree (same getTree code path)", async () => {
-    // getTree is REAL (not mocked) → it pulls via gitService and, with no repo
-    // in this harness, both names land on the identical classified error. That
-    // identical shape IS the proof the alias dispatches through list_tree.
-    const viaAlias = payload(await client.callTool({ name: "vault.tree", arguments: {} }));
-    const viaOriginal = payload(await client.callTool({ name: "list_tree", arguments: {} }));
-    expect(viaAlias.error).toBe(viaOriginal.error);
-    // And the error surfaces the name the caller actually invoked (alias-aware).
-    if (viaAlias.error === "tool-execution-failed") {
-      expect(viaAlias.tool).toBe("vault.tree");
-      expect(viaOriginal.tool).toBe("list_tree");
-    }
   });
 });
 

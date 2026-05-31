@@ -616,22 +616,23 @@ export function createServer(): Server {
       },
 
       /* ============================================================== *
-       *  Story 13.1 (Epic 13) — OS-MCP-Contract: dotted Contract-Tools.
+       *  Story 13.1 (Epic 13) — OS-MCP-Contract tools.
        *
-       *  ADDITIVE. The 25 snake_case tools above are UNCHANGED. These
-       *  dotted tools are the stable surface ADR-004 freezes for the
-       *  Lokyy-OS / Hermes subagents. They split into two kinds:
+       *  ADDITIVE. The 25 snake_case tools above are UNCHANGED. These are
+       *  the four NEW OS-contract tools that have no snake_case twin:
+       *  create_managed_note, get_graph, import_pipe, get_pipe_status.
        *
-       *    1. New tools with no snake_case equivalent
-       *       (notes.create_managed, graph.get, pipes.import, pipes.status).
-       *    2. Dotted ALIASES — identical args + behavior, registered under
-       *       a second name and dispatched through the SAME handler via the
-       *       `DOTTED_ALIASES` table (notes.read→read_note,
-       *       notes.list_by_type→list_notes, notes.search→search_vault,
-       *       notes.update_content→update_note, vault.tree→list_tree).
+       *  Story 13.2 (FIX) — the MCP protocol restricts tool names to
+       *  ^[a-zA-Z0-9_-]{1,64}$ (NO dot). The original dotted names
+       *  (notes.create_managed, graph.get, pipes.import, pipes.status)
+       *  caused Claude to reject the ENTIRE tool list. They are renamed to
+       *  snake_case here. The five redundant dotted ALIASES (notes.read,
+       *  notes.list_by_type, notes.search, notes.update_content, vault.tree)
+       *  are REMOVED — their snake_case originals (read_note, list_notes,
+       *  search_vault, update_note, list_tree) already exist above.
        * ============================================================== */
       {
-        name: "notes.create_managed",
+        name: "create_managed_note",
         description:
           "THE sanctioned write path for new notes (OS-contract, ADR-004). Pass an INTENT — { title, body, type, tags?, folder_hint? } — and Lokyy-Brain owns everything else: it DERIVES the target path from `type` (canonical type→folder map; dated '{folder}/{YYYY-MM-DD}-{slug}' for captures/tasks, slug from title), generates the ULID, sets created/updated, assembles SPEC-valid frontmatter, and writes via the git path. The client NEVER supplies a path or frontmatter. `folder_hint` is an OPTIONAL hint only — it is honored solely when it sits under the type's canonical folder, otherwise it is ignored and the canonical path wins. Returns the created note. Write-scope is enforced on the derived path.",
         inputSchema: {
@@ -662,15 +663,15 @@ export function createServer(): Server {
         },
       },
       {
-        name: "graph.get",
+        name: "get_graph",
         description:
           "Get the whole Lokyy-Brain knowledge graph derived from the vault's wikilinks — { nodes, edges }. OS-contract (ADR-004) equivalent of HTTP GET /api/graph. Takes no arguments.",
         inputSchema: { type: "object", properties: {} },
       },
       {
-        name: "pipes.import",
+        name: "import_pipe",
         description:
-          "Enqueue an active import of an external URL into the vault (OS-contract, ADR-004; equivalent of HTTP POST /api/pipes/import). The pipe queue detects the source kind from the URL, or you may force it with `type` (youtube | voice | url | crawl). Returns the queued PipeJob (with its `id` and `status`); poll completion with pipes.status. Captured sources land under 30_captures/ with type:capture frontmatter.",
+          "Enqueue an active import of an external URL into the vault (OS-contract, ADR-004; equivalent of HTTP POST /api/pipes/import). The pipe queue detects the source kind from the URL, or you may force it with `type` (youtube | voice | url | crawl). Returns the queued PipeJob (with its `id` and `status`); poll completion with get_pipe_status. Captured sources land under 30_captures/ with type:capture frontmatter.",
         inputSchema: {
           type: "object",
           properties: {
@@ -685,98 +686,27 @@ export function createServer(): Server {
         },
       },
       {
-        name: "pipes.status",
+        name: "get_pipe_status",
         description:
           "Get the current status of a previously-enqueued pipe job by its id (OS-contract, ADR-004; equivalent of GET /api/pipes filtered by id). Returns the PipeJob (status: queued | processing | done | error; `resultNoteId` once done). An unknown id returns { error: 'not-found', job_id }.",
         inputSchema: {
           type: "object",
           properties: {
-            job_id: { type: "string", description: "The PipeJob id returned by pipes.import." },
+            job_id: { type: "string", description: "The PipeJob id returned by import_pipe." },
           },
           required: ["job_id"],
         },
-      },
-
-      /* ---- Dotted ALIASES (same args + behavior as the snake_case tool) ---- */
-      {
-        name: "notes.read",
-        description:
-          "OS-contract alias of `read_note` (ADR-004). Read a single note (markdown body + frontmatter). `path` is the note id without the .md extension.",
-        inputSchema: {
-          type: "object",
-          properties: { path: { type: "string", description: "Note id, e.g. 'pai/hermes'" } },
-          required: ["path"],
-        },
-      },
-      {
-        name: "notes.list_by_type",
-        description:
-          "OS-contract alias of `list_notes` (ADR-004 notes.list_by_type). List notes matching a frontmatter filter — pass { filter: { type: 'decision' } } to list by type. Same args, scope, and pagination as `list_notes`.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            filter: {
-              type: "object",
-              properties: {
-                type: { type: "string", description: "Doc type equality, e.g. 'decision'." },
-                folder: { type: "string", description: "Folder path prefix." },
-                tag: { type: "string", description: "A tag the note must carry." },
-                status: { type: "string", description: "Frontmatter `status` equality." },
-                updated_after: {
-                  type: "string",
-                  description: "ISO date/datetime; keep notes whose `updated` is strictly after this.",
-                },
-              },
-            },
-            limit: { type: "number", description: "Page size (default 50).", default: 50 },
-            offset: { type: "number", description: "Rows to skip (default 0).", default: 0 },
-          },
-        },
-      },
-      {
-        name: "notes.search",
-        description:
-          "OS-contract alias of `search_vault` (ADR-004). Search the vault (Tier 1 full-text + Tier 2 semantic). Same args + scored results as `search_vault`.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            limit: { type: "number", default: 10 },
-          },
-          required: ["query"],
-        },
-      },
-      {
-        name: "notes.update_content",
-        description:
-          "OS-contract alias of `update_note` (ADR-004). Save/upsert a note's body (preserves id + created, bumps updated). Same args + behavior as `update_note`.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string" },
-            body: { type: "string" },
-          },
-          required: ["path", "body"],
-        },
-      },
-      {
-        name: "vault.tree",
-        description:
-          "OS-contract alias of `list_tree` (ADR-004 vault.tree). List the scoped vault folder/note tree. Same behavior as `list_tree`.",
-        inputSchema: { type: "object", properties: {} },
       },
     ],
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
-    // Story 13.1 — dotted ALIASES dispatch through the SAME switch case as
-    // their snake_case original, guaranteeing identical args/behavior with no
-    // duplicated logic. `requestedName` is kept for the error wrapper so a
-    // caller sees the tool name it actually invoked. Genuinely-new dotted
-    // tools (notes.create_managed, graph.get, pipes.*) are NOT aliases — they
-    // have their own cases below and are absent from this map.
+    // Story 13.2 (FIX) — all tools are now snake_case (the MCP protocol forbids
+    // dots in tool names). The dotted-alias indirection was removed; `name` is
+    // simply the requested name. `requestedName` is retained for the error
+    // wrapper so a caller always sees the tool name it actually invoked.
     const requestedName = req.params.name;
-    const name = DOTTED_ALIASES[requestedName] ?? requestedName;
+    const name = requestedName;
     // Story 10.7 — wrap the WHOLE dispatch. An exception thrown around the
     // switch itself (e.g. DB-pool exhaustion while acquiring a connection)
     // would otherwise escape to the SDK and surface as the useless generic
@@ -1138,8 +1068,8 @@ export function createServer(): Server {
           return validateNote(args);
         }
 
-        /* ---- Story 13.1 — OS-MCP-contract NEW tools (no snake_case twin) ---- */
-        case "notes.create_managed": {
+        /* ---- Story 13.1 — OS-MCP-contract NEW tools (snake_case, 13.2 fix) ---- */
+        case "create_managed_note": {
           // THE sanctioned write path. The client gives an INTENT only; Brain
           // derives the path from `type` (NEVER trusts a client path), then
           // reuses the existing createNote path so ULID/created/updated/
@@ -1177,14 +1107,14 @@ export function createServer(): Server {
             throw err;
           }
         }
-        case "graph.get": {
+        case "get_graph": {
           // Thin wrapper over core buildGraph — the HTTP /api/graph pendant.
           // The graph is vault-wide derived metadata (like get_tags); no
           // per-note scope gate, consistent with that tool's stance.
           const graph = await buildGraph();
           return text(graph);
         }
-        case "pipes.import": {
+        case "import_pipe": {
           // Thin wrapper over the pipe queue — the HTTP POST /api/pipes/import
           // pendant. Enqueue + return the PipeJob; the queue drains async.
           const url = String(args.url ?? "");
@@ -1197,7 +1127,7 @@ export function createServer(): Server {
           const job = enqueue(payload, typeOverride);
           return text(job);
         }
-        case "pipes.status": {
+        case "get_pipe_status": {
           // Thin wrapper over listJobs — the GET /api/pipes pendant, filtered
           // by id. Unknown id → structured not-found.
           const jobId = String(args.job_id ?? "");
@@ -1729,22 +1659,6 @@ export function resolveCreateNoteInput(
 /* ------------------------------------------------------------------ *
  *  Story 13.1 — OS-MCP-contract (Epic 13) helpers.
  * ------------------------------------------------------------------ */
-
-/**
- * Dotted-alias → snake_case-original dispatch map. A dotted alias is dispatched
- * through the SAME switch case as its original (identical args, scope, and
- * response) — registering the second name in ListTools and routing here is the
- * whole alias mechanism; there is zero duplicated handler logic. Genuinely-new
- * dotted tools (notes.create_managed, graph.get, pipes.import, pipes.status)
- * are intentionally ABSENT — they have their own cases.
- */
-const DOTTED_ALIASES: Readonly<Record<string, string>> = {
-  "notes.read": "read_note",
-  "notes.list_by_type": "list_notes",
-  "notes.search": "search_vault",
-  "notes.update_content": "update_note",
-  "vault.tree": "list_tree",
-} as const;
 
 /**
  * Story 13.1 — `resolveManagedCreate` + `slugifyTitle` (+ the input/result
