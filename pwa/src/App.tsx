@@ -742,6 +742,14 @@ export function App() {
         setDirty(false);
         setErrorMsg(null);
         setPendingServerBody(null);
+        // Eine erfolgreich geöffnete Notiz gehört in die Hauptfläche. Ohne dieses
+        // Switch öffnet z. B. der Header-"Today"-Button (DailyNoteButton) die
+        // Daily-Note unsichtbar HINTER dem Dashboard (mainView="menu") — der Tab
+        // erscheint, aber die Eingabefläche bleibt das Menü. Analog zu open();
+        // gilt für ALLE openNoteById-Aufrufer (Today, Breadcrumb, Tabs, Palette).
+        // Das Zurückkehren zum Dashboard (Logo→Home / Menü) setzt mainView weiter
+        // explizit auf "menu" und wird hiervon nicht berührt.
+        setMainView("editor");
         setOpenTabs((prev) => {
           if (prev.some((t) => t.id === note.id)) return prev;
           return [...prev, { id: note.id, title: note.title || note.id }];
