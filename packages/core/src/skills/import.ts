@@ -87,9 +87,26 @@ export function slugifySkillName(name: string): string {
   return slug.length > 0 ? slug : "skill";
 }
 
-/** Normalize a relPath to POSIX forward slashes and strip any leading slash. */
+/**
+ * Normalize a relPath to POSIX forward slashes and strip any leading slash.
+ *
+ * Path-traversal guard: the normalized rel is later joined as
+ * `${SKILLS_ROOT}/${slug}/${rel}` and written via `save()` → `path.join`, which
+ * collapses `..` — so a rel like `../../../50_decisions/evil.md` would escape
+ * the skills dir (and, with enough `..`, the vault root). Any `..`/`.`/empty
+ * segment is rejected here, in core, so BOTH the HTTP route and the MCP
+ * `import_skill` handler are protected (the HTTP `sanitizeRelPath` stays in
+ * place as belt-and-suspenders).
+ */
 function normalizeRel(relPath: string): string {
-  return relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const norm = relPath.replace(/\\/g, "/").replace(/^\/+/, "");
+  const segments = norm.split("/");
+  if (segments.some((seg) => seg === ".." || seg === "." || seg === "")) {
+    throw new Error(
+      `importSkill: illegal relPath "${relPath}" — segments must not be "..", "." or empty (path traversal rejected).`,
+    );
+  }
+  return norm;
 }
 
 /** The basename of a relPath (last segment), used for filename fallbacks. */

@@ -232,4 +232,37 @@ Preset body.
       }),
     ).rejects.toThrow(/SKILL\.md is required/);
   });
+
+  // SECURITY (path traversal): a rel_path is later joined as
+  // `${SKILLS_ROOT}/${slug}/${rel}` and written via save() → path.join, which
+  // collapses `..`. A `../`-bearing rel must be REJECTED before any write so it
+  // cannot escape the skills dir (e.g. into 50_decisions) or the vault root.
+  it("throws on a `../`-bearing rel_path (path traversal rejected)", async () => {
+    await expect(
+      importSkill({
+        skillName: "Evil Skill",
+        files: [
+          { relPath: "SKILL.md", content: SKILL_MD_NO_FM },
+          {
+            relPath: "../../../50_decisions/evil.md",
+            content: "# Evil\nshould never be written",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/path traversal|illegal relPath/i);
+
+    // The traversal target must NOT have been written.
+    await expect(
+      readFile(join(vault.workdir, "50_decisions/evil.md"), "utf8"),
+    ).rejects.toThrow();
+  });
+
+  it("throws when the SKILL.md manifest itself carries a `..` segment", async () => {
+    await expect(
+      importSkill({
+        skillName: "Traversal Manifest",
+        files: [{ relPath: "../SKILL.md", content: SKILL_MD_NO_FM }],
+      }),
+    ).rejects.toThrow(/path traversal|illegal relPath|SKILL\.md is required/i);
+  });
 });

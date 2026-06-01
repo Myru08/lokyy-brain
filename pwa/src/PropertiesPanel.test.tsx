@@ -158,6 +158,72 @@ describe("PropertiesPanel — add property roundtrip", () => {
     ).toBeNull();
   });
 
+  it("preserves block-scalar and nested-mapping frontmatter byte-for-byte across an edit", () => {
+    // Regression for the DATA-LOSS bug: the flat parser dropped indented
+    // children of nested mappings (`encoded:`) and mangled block scalars
+    // (`raw_transcript: |-` → `"|-"`). A single property edit re-serialized
+    // ALL keys, irreversibly destroying both blocks. The fix re-emits
+    // untouched (and opaque) keys verbatim.
+    const lines = [
+      "---",
+      "id: 01HZX9K2QWERTY12345ABCDEF",
+      "type: capture",
+      "title: Voice capture",
+      "created: 2026-05-01T10:00:00.000Z",
+      "updated: 2026-05-01T10:00:00.000Z",
+      "status: inbox",
+      "encoded:",
+      "  device: laptop",
+      "  time_of_day: evening",
+      "  preceding_notes: [a, b]",
+      "  session_duration_min: 12",
+      "raw_transcript: |-",
+      "  Erste Zeile des Originals.",
+      "  Zweite Zeile mit  doppelten  Leerzeichen.",
+      "",
+      "  Vierte Zeile nach Leerzeile.",
+      "---",
+      "",
+      "Polished body content.",
+      "",
+    ];
+    const body = lines.join("\n");
+
+    // Capture the exact source bytes of both opaque blocks for comparison.
+    const encodedBlock = lines
+      .slice(lines.indexOf("encoded:"), lines.indexOf("raw_transcript: |-"))
+      .join("\n");
+    const rawTranscriptBlock = lines
+      .slice(lines.indexOf("raw_transcript: |-"), lines.indexOf("---", 1))
+      .join("\n");
+
+    const { getDoc } = renderControlled(body);
+
+    // Perform a single, unrelated property edit: change `status`.
+    const statusLabel = screen.getByText("status");
+    const valueCell = statusLabel.nextElementSibling as HTMLElement;
+    const valueInput = within(valueCell).getByRole("textbox");
+    fireEvent.change(valueInput, { target: { value: "processed" } });
+
+    const out = getDoc();
+
+    // The edit landed.
+    expect(out).toContain("status: processed");
+    // BOTH opaque blocks survive byte-for-byte.
+    expect(out).toContain(encodedBlock);
+    expect(out).toContain(rawTranscriptBlock);
+    // And the body after the frontmatter is untouched.
+    expect(out).toContain("Polished body content.");
+    // Negative assertions: the old corruption must NOT appear. The flat
+    // serializer used to collapse `encoded:` to `encoded: ` (trailing space,
+    // children dropped) and quote the block-scalar header as a literal string.
+    expect(out).not.toContain("encoded: \n");
+    expect(out).not.toContain('raw_transcript: "|-"');
+    // The indented children of `encoded` must still be present (not dropped).
+    expect(out).toContain("  device: laptop");
+    expect(out).toContain("  session_duration_min: 12");
+  });
+
   it("removes a custom field via its remove icon", () => {
     // Seed with an existing custom field so the remove icon is present.
     const seeded = NOTE_BODY.replace(

@@ -131,7 +131,19 @@ export function resolveManagedCreate(
       : undefined;
   if (hint) {
     const canonical = folderForType(type);
-    const underCanonical = hint === canonical || hint.startsWith(`${canonical}/`);
+    // Path-traversal guard: a hint like `20_notes/../50_decisions` would PASS a
+    // naive `startsWith("20_notes/")` check yet collapse (via path.join) to a
+    // folder OUTSIDE the type's home — or, with enough `..`, escape the vault
+    // root entirely. Reject any `..`/`.`/empty segment up front; such a hint is
+    // ignored and the canonical path stands (same outcome as any other hint
+    // that does not sit under the type's canonical folder).
+    const segments = hint.split("/");
+    const hasTraversal = segments.some(
+      (seg) => seg === ".." || seg === "." || seg === "",
+    );
+    const underCanonical =
+      !hasTraversal &&
+      (hint === canonical || hint.startsWith(`${canonical}/`));
     if (underCanonical) {
       // Re-derive with the hint as the folder, preserving the dated prefix for
       // dated types (mirror derivePathForType's dated convention).

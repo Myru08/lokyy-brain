@@ -467,6 +467,12 @@ export function App() {
   const dirtyBody = useRef<string>("");
   const activeRef = useRef<Note | null>(null);
   activeRef.current = active;
+  // Monotonic open-request token. Every open()/openNoteById() bumps it before
+  // awaiting; after each await the handler bails if a newer open superseded it.
+  // Without this, fast A→B→A note switches let the LAST-RESOLVED (not
+  // last-REQUESTED) getNote response win setActive(), leaving dirtyBody /
+  // savedBodyRef bound to a different note than the one displayed.
+  const openReqRef = useRef<number>(0);
   // Opt-in "generate voice-note title via AI" flag, read live by
   // handleVoiceInsert. A ref (not state) so the callback always sees the
   // latest persisted value without re-binding. Server default is false; we
@@ -728,12 +734,18 @@ export function App() {
   }, [tagFilter, backlinksRefresh]);
 
   async function openNoteById(id: string) {
+    // Claim this open request. Any later open() / openNoteById() bumps the
+    // token; we bail after every await if we were superseded so a slow,
+    // out-of-order getNote response can't clobber the displayed note.
+    const myReq = ++openReqRef.current;
     // Flush any pending edit on the *current* active note before swapping.
     // Without this, hopping notes via Tabs / Quick Switcher would silently
     // drop in-flight typing for the previous note.
     await flushNow();
+    if (openReqRef.current !== myReq) return;
     try {
       const note = await api.getNote(id);
+      if (openReqRef.current !== myReq) return;
       if (note) {
         dirtyBody.current = note.body;
         savedBodyRef.current = note.body;
@@ -761,19 +773,20 @@ export function App() {
   }
 
   function closeTab(id: string) {
-    setOpenTabs((prev) => {
-      const next = prev.filter((t) => t.id !== id);
-      // If we closed the active tab, activate the last remaining one
-      if (active?.id === id) {
-        const fallback = next[next.length - 1];
-        if (fallback) {
-          void openNoteById(fallback.id);
-        } else {
-          setActive(null);
-        }
+    // Compute the next tab list + navigation target OUTSIDE the state updater.
+    // Running side effects (openNoteById / setActive) inside a setState updater
+    // makes them double-fire under StrictMode, which worsens the open-race
+    // (BUG 2). Keep setOpenTabs PURE; navigate afterwards based on current state.
+    const next = openTabs.filter((t) => t.id !== id);
+    setOpenTabs(next);
+    if (active?.id === id) {
+      const fallback = next[next.length - 1];
+      if (fallback) {
+        void openNoteById(fallback.id);
+      } else {
+        setActive(null);
       }
-      return next;
-    });
+    }
   }
 
   // Any active-note change auto-syncs into the tab list (dedup'd)
@@ -910,7 +923,10 @@ export function App() {
   }
 
   async function open(id: string) {
+    // See openNoteById: claim the open token, bail if superseded after awaits.
+    const myReq = ++openReqRef.current;
     await flushNow();
+    if (openReqRef.current !== myReq) return;
     setPendingServerBody(null);
     // Eine Notiz zu öffnen schaltet die Hauptfläche auf den Editor (egal ob aus
     // dem Tree oder aus einer View heraus). Die Menü-Auswahl bleibt erhalten,
@@ -918,6 +934,7 @@ export function App() {
     setMainView("editor");
     try {
       const note = await api.getNote(id);
+      if (openReqRef.current !== myReq) return;
       dirtyBody.current = note.body;
       savedBodyRef.current = note.body;
       setActive(note);

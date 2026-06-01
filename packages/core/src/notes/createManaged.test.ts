@@ -89,6 +89,35 @@ describe("resolveManagedCreate — type-derived path (no client path)", () => {
     if (res.ok) expect(res.path).toBe("20_notes/sneaky");
   });
 
+  // SECURITY (path traversal): a hint like `20_notes/../50_decisions` PASSES a
+  // naive startsWith("20_notes/") check but collapses (via path.join) to a
+  // folder OUTSIDE the type's home. It must NOT resolve into 50_decisions —
+  // the canonical path stands instead.
+  it("REJECTS a folder_hint with a `..` segment that would escape the type folder", () => {
+    const res = resolveManagedCreate(
+      { title: "Evil", type: "note", folder_hint: "20_notes/../50_decisions" },
+      FIXED,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.path).toBe("20_notes/evil"); // canonical — NOT 50_decisions
+      expect(res.path).not.toContain("50_decisions");
+      expect(res.path).not.toContain("..");
+    }
+  });
+
+  it("REJECTS a folder_hint with enough `..` to escape the vault root", () => {
+    const res = resolveManagedCreate(
+      { title: "Escape", type: "note", folder_hint: "20_notes/../../../etc" },
+      FIXED,
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.path).toBe("20_notes/escape"); // canonical — never escapes
+      expect(res.path).not.toContain("..");
+    }
+  });
+
   it("collects string tags and drops non-string entries", () => {
     const res = resolveManagedCreate(
       { title: "Tagged", type: "note", tags: ["ai", 42, "pkm", null] },

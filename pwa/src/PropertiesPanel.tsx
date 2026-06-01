@@ -46,13 +46,35 @@ export interface PropertiesPanelProps {
 type ScalarValue = string | boolean;
 type FieldValue = ScalarValue | string[];
 
+/**
+ * A captured top-level frontmatter entry. `rawLines` holds the verbatim
+ * source bytes of the key's line PLUS any indented children / block-scalar
+ * body that belong to it — so a key we did not touch can be re-emitted
+ * byte-for-byte. `opaque` marks keys we cannot safely re-serialize (block
+ * scalars like `|-`, or an empty top-level value followed by an indented
+ * nested mapping such as `encoded:`). Opaque keys MUST always pass through
+ * `rawLines` unchanged; the panel never edits them via a widget.
+ */
+interface RawEntry {
+  /** Verbatim source line(s) for this key, in order, without trailing \n. */
+  rawLines: string[];
+  /** True when the value is a block-scalar / nested block we must not rewrite. */
+  opaque: boolean;
+}
+
 interface ParsedFrontmatter {
   /** Ordered keys, preserves source order. */
   keys: string[];
   /** Map of key → typed value. */
   values: Record<string, FieldValue>;
+  /** Map of key → captured raw source span (round-trip fidelity). */
+  raw: Record<string, RawEntry>;
+  /** Verbatim lines that precede the first top-level key (blanks/comments). */
+  preamble: string[];
   /** Byte-exact source body (everything after closing `---\n`). */
   bodyAfter: string;
+  /** The newline style used inside the frontmatter block ("\n" | "\r\n"). */
+  eol: string;
   /** True if a frontmatter block was found. */
   found: boolean;
 }
@@ -216,28 +238,86 @@ function parseValue(raw: string): FieldValue {
   return stripQuotes(t);
 }
 
+/** A block-scalar header value: `|`, `>`, optionally with a chomp indicator. */
+const BLOCK_SCALAR_RE = /^[|>][+-]?$/;
+
 function parseFrontmatter(source: string): ParsedFrontmatter {
   const m = FRONTMATTER_RE.exec(source);
   if (!m) {
-    return { keys: [], values: {}, bodyAfter: source, found: false };
+    return {
+      keys: [],
+      values: {},
+      raw: {},
+      preamble: [],
+      bodyAfter: source,
+      eol: "\n",
+      found: false,
+    };
   }
   const block = m[1] ?? "";
   const bodyAfter = source.slice(m[0].length);
+  const eol = block.includes("\r\n") ? "\r\n" : "\n";
   const keys: string[] = [];
   const values: Record<string, FieldValue> = {};
-  for (const lineRaw of block.split(/\r?\n/)) {
-    const line = lineRaw;
-    if (line.trim() === "" || line.trim().startsWith("#")) continue;
-    // Match `key: rest` — only top-level keys (no indentation).
+  const raw: Record<string, RawEntry> = {};
+
+  // Split WITHOUT collapsing — we need every original line to capture spans.
+  const lines = block.split(/\r?\n/);
+
+  // Lines that aren't owned by any top-level key (leading blanks/comments
+  // before the first key). They get re-emitted ahead of everything else.
+  const preamble: string[] = [];
+  let currentKey: string | null = null;
+  let sawFirstKey = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
     const km = /^([A-Za-z_][A-Za-z0-9_\-]*)\s*:\s*(.*)$/.exec(line);
-    if (!km) continue;
-    const key = km[1] as string;
-    const rest = km[2] as string;
-    if (key in values) continue; // duplicate keys: first wins (parser quirk, documented above).
-    keys.push(key);
-    values[key] = parseValue(rest);
+    const isTopLevelKey = km !== null && !/^\s/.test(line);
+
+    if (isTopLevelKey && km) {
+      const key = km[1] as string;
+      const rest = km[2] as string;
+      const restTrim = rest.trim();
+      // Decide opacity: a block scalar (`|`, `>`, with chomp) is opaque, and
+      // so is an empty value followed by an indented child line (a nested
+      // mapping such as `encoded:`).
+      let opaque = BLOCK_SCALAR_RE.test(restTrim);
+      if (!opaque && restTrim === "") {
+        const nextLine = lines[i + 1] ?? "";
+        if (nextLine.trim() !== "" && /^\s/.test(nextLine)) opaque = true;
+      }
+      if (key in raw) {
+        // Duplicate top-level key: first wins (documented parser quirk). Treat
+        // the duplicate's line as preamble-ish trailing content of the prior
+        // key so nothing is lost on re-emit.
+        if (currentKey) raw[currentKey]?.rawLines.push(line);
+        else preamble.push(line);
+        sawFirstKey = true;
+        continue;
+      }
+      keys.push(key);
+      values[key] = parseValue(rest);
+      raw[key] = { rawLines: [line], opaque };
+      currentKey = key;
+      sawFirstKey = true;
+      continue;
+    }
+
+    // Not a top-level key: blank, comment, indented child, or continuation.
+    // Attach it to the current key (so block-scalar bodies / nested mappings
+    // round-trip verbatim). Anything before the first key is preamble.
+    if (!sawFirstKey || currentKey === null) {
+      // Only push real preamble content; trailing blank after last line is
+      // handled by the join below.
+      if (i < lines.length) preamble.push(line);
+      continue;
+    }
+    raw[currentKey].rawLines.push(line);
   }
-  return { keys, values, bodyAfter, found: true };
+
+  return { keys, values, raw, preamble, bodyAfter, eol, found: true };
 }
 
 // ─── Encoded-context sub-block parser ─────────────────────────────────────
@@ -320,27 +400,61 @@ function serializeArray(arr: string[]): string {
   return `[${arr.map((s) => serializeScalar(s)).join(", ")}]`;
 }
 
+/** Emit a single `key: value` line for a scalar/array/boolean value. */
+function emitKeyLine(k: string, v: FieldValue): string {
+  if (Array.isArray(v)) return `${k}: ${serializeArray(v)}`;
+  if (typeof v === "boolean") return `${k}: ${v ? "true" : "false"}`;
+  return `${k}: ${serializeScalar(v)}`;
+}
+
+/**
+ * Round-trip-faithful serializer.
+ *
+ * For each key we re-emit its ORIGINAL captured source bytes (`raw[k].rawLines`)
+ * VERBATIM unless the key was actually changed/added since parse. This is the
+ * data-loss fix: keys carrying block scalars (`raw_transcript: |-`) or nested
+ * mappings (`encoded:` + indented children) are marked `opaque` and ALWAYS pass
+ * through unchanged — the panel never edits them, so we must never rewrite them
+ * via the flat scalar serializer (which would collapse `encoded:` → `encoded: `
+ * and `raw_transcript: |-` → `raw_transcript: "|-"`, destroying the body).
+ *
+ * `changedKeys` are keys whose value the user edited through a widget — those
+ * (and only those) get re-serialized from `values`. New keys (no `raw` entry)
+ * are likewise emitted fresh. Everything else is byte-identical to the source.
+ */
 function serializeFrontmatter(
+  parsed: ParsedFrontmatter,
   keys: string[],
   values: Record<string, FieldValue>,
-  bodyAfter: string,
+  changedKeys: Set<string>,
 ): string {
-  const lines: string[] = ["---"];
+  const eol = parsed.eol || "\n";
+  const out: string[] = ["---", ...parsed.preamble];
+
   for (const k of keys) {
-    const v = values[k];
-    if (Array.isArray(v)) {
-      lines.push(`${k}: ${serializeArray(v)}`);
-    } else if (typeof v === "boolean") {
-      lines.push(`${k}: ${v ? "true" : "false"}`);
-    } else {
-      lines.push(`${k}: ${serializeScalar(v)}`);
+    const entry = parsed.raw[k];
+    const isNew = entry === undefined;
+    const isChanged = changedKeys.has(k);
+    if (!isNew && !isChanged) {
+      // Untouched key — re-emit captured source bytes verbatim. This is the
+      // only path that runs for opaque (block-scalar / nested) keys, so they
+      // can never be corrupted by re-serialization.
+      out.push(...entry.rawLines);
+      continue;
     }
+    // Changed or brand-new key. An opaque key should never reach here (the UI
+    // never edits it), but guard defensively: if somehow flagged changed,
+    // still prefer the raw bytes to avoid destroying the block.
+    if (!isNew && entry.opaque) {
+      out.push(...entry.rawLines);
+      continue;
+    }
+    out.push(emitKeyLine(k, values[k] as FieldValue));
   }
-  lines.push("---");
-  // Re-attach body with a single newline separator, matching the parser's
-  // expectation. If bodyAfter already begins with a newline, no extra one.
-  const sep = bodyAfter.startsWith("\n") ? "" : "\n";
-  return lines.join("\n") + "\n" + sep + bodyAfter;
+
+  out.push("---");
+  const sep = parsed.bodyAfter.startsWith("\n") ? "" : "\n";
+  return out.join(eol) + eol + sep + parsed.bodyAfter;
 }
 
 // ─── Styles ──────────────────────────────────────────────────────────────
@@ -662,7 +776,8 @@ export function PropertiesPanel({
     const newValues: Record<string, FieldValue> = { ...parsed.values, [key]: next };
     // Preserve key order; ensure `privacy` exists in `keys` if newly set.
     const keys = parsed.keys.includes(key) ? parsed.keys : [...parsed.keys, key];
-    const newBody = serializeFrontmatter(keys, newValues, parsed.bodyAfter);
+    // Only `key` changed — every other key is re-emitted byte-for-byte.
+    const newBody = serializeFrontmatter(parsed, keys, newValues, new Set([key]));
     onUpdateBody(newBody);
   }
 
@@ -681,7 +796,8 @@ export function PropertiesPanel({
     const keys = parsed.keys.filter((k) => k !== key);
     const newValues: Record<string, FieldValue> = { ...parsed.values };
     delete newValues[key];
-    const newBody = serializeFrontmatter(keys, newValues, parsed.bodyAfter);
+    // Removing a key only drops it from `keys`; surviving keys re-emit verbatim.
+    const newBody = serializeFrontmatter(parsed, keys, newValues, new Set());
     onUpdateBody(newBody);
   }
 
@@ -702,7 +818,8 @@ export function PropertiesPanel({
       ...parsed.values,
       [key]: initial,
     };
-    const newBody = serializeFrontmatter(keys, newValues, parsed.bodyAfter);
+    // New key has no raw entry — it's emitted fresh; existing keys verbatim.
+    const newBody = serializeFrontmatter(parsed, keys, newValues, new Set([key]));
     onUpdateBody(newBody);
   }
 
