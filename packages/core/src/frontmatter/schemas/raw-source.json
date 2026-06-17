@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/raw-source",
+  "comment": "Story S2 (Option-Y-Korrektur) — Karpathy profile, RAW layer. Verbatim captured source; never rewritten. Lives in the `RAW` folder of the karpathy profile. Felder spiegeln den maßgeblichen Kurs-Vertrag (lokyy-kb-starter/00_meta/KONVENTIONEN.md). Pflichtfelder: id, type, title, created, updated, author, source_url, date_added, date_published, source_type.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "title",
+    "created",
+    "updated",
+    "author",
+    "source_url",
+    "date_added",
+    "date_published",
+    "source_type"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "type": { "const": "raw-source" },
+    "title": { "type": "string", "minLength": 1 },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Urheber der Quelle. \"unbekannt\" ist ein erlaubter Wert, aber das Feld ist Pflicht."
+    },
+    "source_url": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Web-Adresse / Publikation der Quelle. \"unbekannt\" ist ein erlaubter Wert, aber das Feld ist Pflicht."
+    },
+    "date_added": {
+      "type": "string",
+      "format": "date",
+      "description": "Datum YYYY-MM-DD, an dem die Quelle in den Vault aufgenommen wurde. Echtes Datum, Pflicht."
+    },
+    "date_published": {
+      "anyOf": [
+        { "type": "string", "format": "date" },
+        { "const": "unbekannt" }
+      ],
+      "description": "Veröffentlichungsdatum YYYY-MM-DD ODER der Literal-Wert \"unbekannt\". Feld ist Pflicht, Wert darf \"unbekannt\" sein."
+    },
+    "source_type": {
+      "type": "string",
+      "enum": [
+        "article",
+        "note",
+        "video",
+        "podcast",
+        "book",
+        "paper",
+        "thread",
+        "email",
+        "other"
+      ],
+      "description": "Quellen-Art (entspricht dem KONVENTIONEN-`type`-Feld, umbenannt zu `source_type`, um nicht mit dem Doc-Type-`type` zu kollidieren)."
+    },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
+  },
+  "additionalProperties": true
+}

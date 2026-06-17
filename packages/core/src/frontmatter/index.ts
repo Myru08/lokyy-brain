@@ -4,30 +4,20 @@ import Ajv, { type ErrorObject, type ValidateFunction } from "ajv";
 import addFormats from "ajv-formats";
 
 import {
-  DOC_TYPES,
-  type DocType,
+  type AnyDocType,
   type FrontmatterMap,
   type ValidationErrorDetail,
   type ValidationResult,
 } from "./types.js";
 
+import {
+  DEFAULT_VAULT_PROFILE,
+  getProfileSpec,
+  type VaultProfile,
+  type VaultProfileSpec,
+} from "./profiles.js";
+
 import baseSchema from "./schemas/base.json" with { type: "json" };
-import noteSchema from "./schemas/note.json" with { type: "json" };
-import captureSchema from "./schemas/capture.json" with { type: "json" };
-import projectSchema from "./schemas/project.json" with { type: "json" };
-import taskSchema from "./schemas/task.json" with { type: "json" };
-import decisionSchema from "./schemas/decision.json" with { type: "json" };
-import meetingSchema from "./schemas/meeting.json" with { type: "json" };
-import customerSchema from "./schemas/customer.json" with { type: "json" };
-import workflowSchema from "./schemas/workflow.json" with { type: "json" };
-import interventionSchema from "./schemas/intervention.json" with { type: "json" };
-import contentSchema from "./schemas/content.json" with { type: "json" };
-import peerSchema from "./schemas/peer.json" with { type: "json" };
-import skillSchema from "./schemas/skill.json" with { type: "json" };
-// Epic 10 / Story 10.15 — extended type enum (tool / resource / reference).
-import toolSchema from "./schemas/tool.json" with { type: "json" };
-import resourceSchema from "./schemas/resource.json" with { type: "json" };
-import referenceSchema from "./schemas/reference.json" with { type: "json" };
 
 /**
  * Vault frontmatter utility for lokyy-brain.
@@ -42,23 +32,25 @@ import referenceSchema from "./schemas/reference.json" with { type: "json" };
 const ajv = new Ajv({ allErrors: true, strict: false });
 addFormats(ajv);
 
-const validators = new Map<DocType, ValidateFunction>([
-  ["note", ajv.compile(noteSchema as object)],
-  ["capture", ajv.compile(captureSchema as object)],
-  ["project", ajv.compile(projectSchema as object)],
-  ["task", ajv.compile(taskSchema as object)],
-  ["decision", ajv.compile(decisionSchema as object)],
-  ["meeting", ajv.compile(meetingSchema as object)],
-  ["customer", ajv.compile(customerSchema as object)],
-  ["workflow", ajv.compile(workflowSchema as object)],
-  ["intervention", ajv.compile(interventionSchema as object)],
-  ["content", ajv.compile(contentSchema as object)],
-  ["peer", ajv.compile(peerSchema as object)],
-  ["skill", ajv.compile(skillSchema as object)],
-  ["tool", ajv.compile(toolSchema as object)],
-  ["resource", ajv.compile(resourceSchema as object)],
-  ["reference", ajv.compile(referenceSchema as object)],
-]);
+/**
+ * Per-profile compiled-validator maps (Story S2 / B1). Each profile's schema
+ * set is compiled lazily once and memoized. The `para` profile reproduces the
+ * exact validator set that previously lived inline here, so PARA validation is
+ * bit-identical. `karpathy` carries the RAW/Wiki/Outputs validators.
+ */
+const profileValidators = new Map<VaultProfile, Map<string, ValidateFunction>>();
+
+function validatorsFor(spec: VaultProfileSpec): Map<string, ValidateFunction> {
+  let map = profileValidators.get(spec.profile);
+  if (!map) {
+    map = new Map<string, ValidateFunction>();
+    for (const [type, schema] of Object.entries(spec.schemas)) {
+      map.set(type, ajv.compile(schema));
+    }
+    profileValidators.set(spec.profile, map);
+  }
+  return map;
+}
 
 const baseValidator = ajv.compile(baseSchema as object);
 
@@ -138,28 +130,38 @@ export function serializeFrontmatter(
 }
 
 /**
- * Validate a parsed frontmatter map against the schema for `type`. Returns
- * `{ valid, errors }`. Callers that throw on invalid input should use
- * `FrontmatterValidationError`.
+ * Validate a parsed frontmatter map against the schema for `type`, in the
+ * given SPEC-profile. Returns `{ valid, errors }`. Callers that throw on
+ * invalid input should use `FrontmatterValidationError`.
  *
- * If `type` is not a known doc type, falls back to the base schema and
- * adds a synthetic error so the caller still gets a typed signal.
+ * Story S2 / B1 — the optional `profile` argument selects the active SPEC
+ * profile; it defaults to `"para"` so EVERY existing call-site
+ * (`validateFrontmatter(data, type)`) keeps its exact previous behaviour and
+ * server/mcp run without changes. Pass `"karpathy"` to validate against the
+ * RAW/Wiki/Outputs schema set.
+ *
+ * If `type` is not a known doc type IN THE ACTIVE PROFILE, falls back to the
+ * base schema and adds a synthetic error listing the profile's allowed types
+ * so the caller still gets a typed signal.
  */
 export function validateFrontmatter(
   data: FrontmatterMap,
-  type: DocType,
+  type: AnyDocType,
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
 ): ValidationResult {
-  const validator = validators.get(type);
+  const spec = getProfileSpec(profile);
+  const validator = validatorsFor(spec).get(type);
   if (!validator) {
     const baseOk = baseValidator(data);
+    const allowed = spec.docTypes;
     return {
       valid: false,
       errors: [
         {
           instancePath: "/type",
           keyword: "enum",
-          message: `Unknown doc type "${String(type)}". Expected one of: ${DOC_TYPES.join(", ")}.`,
-          params: { allowedValues: [...DOC_TYPES] },
+          message: `Unknown doc type "${String(type)}" for profile "${spec.profile}". Expected one of: ${allowed.join(", ")}.`,
+          params: { allowedValues: [...allowed] },
         },
         ...(baseOk ? [] : toDetails(baseValidator.errors)),
       ],
@@ -182,9 +184,19 @@ function toDetails(errs: ErrorObject[] | null | undefined): ValidationErrorDetai
   }));
 }
 
-export { DOC_TYPES, PEER_TYPES, isPeerType, isForgotten } from "./types.js";
+export {
+  DOC_TYPES,
+  // Story S2 — Karpathy-Profil-Typen (RAW/Wiki/Outputs).
+  KARPATHY_DOC_TYPES,
+  PEER_TYPES,
+  isPeerType,
+  isForgotten,
+} from "./types.js";
 export type {
   DocType,
+  // Story S2 — Karpathy + cross-profile type unions.
+  KarpathyDocType,
+  AnyDocType,
   FrontmatterMap,
   NotePrivacy,
   BaseFrontmatter,
@@ -199,3 +211,15 @@ export type {
   PeerType,
   PeerFrontmatter,
 } from "./types.js";
+
+// Story S2 / B1 — Vault-SPEC-Profil-Registry (para / karpathy).
+export {
+  VAULT_PROFILES,
+  DEFAULT_VAULT_PROFILE,
+  KARPATHY_TYPE_FOLDER,
+  isVaultProfile,
+  getProfileSpec,
+  resolveVaultProfile,
+  type VaultProfile,
+  type VaultProfileSpec,
+} from "./profiles.js";

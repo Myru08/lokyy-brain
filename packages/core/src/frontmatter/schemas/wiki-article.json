@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/wiki-article",
+  "comment": "Story S2 (Option-Y-Korrektur) — Karpathy profile, Wiki layer. Atomarer destillierter Artikel. Lives in the `Wiki` folder of the karpathy profile. Pflichtfelder: id, type, title, created, updated, status, stand. `status`-Enum ist hart. `sources` = Klartext-RAW-Dateinamen (KEINE [[Verweise]] — die Verweis-Doktrin ist Body-Inhalt / S5). `sources` (min 1) ist Pflicht bei status ∈ {gesichert, im Aufbau}; bei status=These optional/leer (persönliche Notiz ohne Beleg).",
+  "type": "object",
+  "required": ["id", "type", "title", "created", "updated", "status", "stand"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "type": { "const": "wiki-article" },
+    "title": { "type": "string", "minLength": 1 },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "status": {
+      "type": "string",
+      "enum": ["gesichert", "im Aufbau", "These"],
+      "description": "Status-Trias: gesichert | im Aufbau | These. Hard ajv-constraint."
+    },
+    "stand": {
+      "type": "string",
+      "format": "date",
+      "description": "Stand-Datum YYYY-MM-DD (entspricht KONVENTIONEN `Stand:`). Pflicht."
+    },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Quellenliste als Klartext-RAW-Dateinamen (KEINE [[Verweise]]). Pflicht (min 1) bei status ∈ {gesichert, im Aufbau}; bei status=These optional/leer erlaubt."
+    },
+    "aliases": { "type": "array", "items": { "type": "string" } },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
+  },
+  "allOf": [
+    {
+      "comment": "Bedingte Quellenpflicht: gesicherte UND im-Aufbau-Artikel müssen >=1 Quelle tragen; Thesen dürfen quellenlos sein.",
+      "if": {
+        "properties": { "status": { "enum": ["gesichert", "im Aufbau"] } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["sources"],
+        "properties": {
+          "sources": { "minItems": 1 }
+        }
+      }
+    }
+  ],
+  "additionalProperties": true
+}

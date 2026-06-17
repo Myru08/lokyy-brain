@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "lokyy://frontmatter/frage-report",
+  "comment": "Story S2 (Option-Y-Korrektur) — Karpathy profile, Outputs layer. Frage-Report (Frage + Quellen + Antwort). Lives in the `Outputs` folder of the karpathy profile. Pflichtfelder: id, type, title, created, updated, question, sources (min 1, Klartext-Referenzen auf RAW/Wiki). `stand` optional.",
+  "type": "object",
+  "required": ["id", "type", "title", "created", "updated", "question", "sources"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[0-9A-HJKMNP-TV-Z]{26}$" },
+    "type": { "const": "frage-report" },
+    "title": { "type": "string", "minLength": 1 },
+    "created": { "type": "string", "format": "date-time" },
+    "updated": { "type": "string", "format": "date-time" },
+    "question": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Die beantwortete Frage."
+    },
+    "sources": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "description": "Quellenliste als Klartext-Referenzen auf RAW/Wiki. Pflicht (min 1)."
+    },
+    "stand": {
+      "type": "string",
+      "format": "date",
+      "description": "Optionales Stand-Datum YYYY-MM-DD."
+    },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "privacy": {
+      "type": "string",
+      "enum": ["default", "local-only"],
+      "default": "default",
+      "description": "Privacy tier for AI operations. 'local-only' forces local LLM provider regardless of user settings; 'default' follows global privacyTier setting."
+    }
+  },
+  "additionalProperties": true
+}

@@ -41,7 +41,32 @@ export const DOC_TYPES = [
   "reference",
 ] as const;
 
+/**
+ * Story S2 — Karpathy-Profil-Doc-Typen (RAW / Wiki / Outputs).
+ *
+ * Diese drei Typen gehören NICHT zum PARA-Default-Profil und werden absichtlich
+ * NICHT in `DOC_TYPES` gemischt (PARA bleibt bit-identisch — Entscheidung B1,
+ * keine bestehende Notiz wird invalide). Das `karpathy`-SPEC-Profil
+ * (`frontmatter/profiles.ts`) registriert sie mit eigener type→Ordner-Map
+ * (`raw-source→RAW`, `wiki-article→Wiki`, `frage-report→Outputs`) und eigenem
+ * Schema-Set. Aktiv nur in Vaults, deren Profil auf `karpathy` aufgelöst wird.
+ */
+export const KARPATHY_DOC_TYPES = [
+  "raw-source",
+  "wiki-article",
+  "frage-report",
+] as const;
+
+export type KarpathyDocType = (typeof KARPATHY_DOC_TYPES)[number];
+
+/**
+ * Union aller bekannten Doc-Typen über alle Profile hinweg. `DocType` bleibt
+ * der PARA-Default-Typ (abwärtskompatibel: bestehende Signaturen, die `DocType`
+ * erwarten, ändern sich nicht). Profil-bewusste Aufrufer akzeptieren
+ * `AnyDocType`.
+ */
 export type DocType = (typeof DOC_TYPES)[number];
+export type AnyDocType = DocType | KarpathyDocType;
 
 /**
  * Phase C Wave C2 / Story 3 — kinds of peer the user interacts with.
