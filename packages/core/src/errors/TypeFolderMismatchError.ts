@@ -1,4 +1,4 @@
-import type { DocType } from "../frontmatter/types.js";
+import type { AnyDocType } from "../frontmatter/types.js";
 
 /**
  * Thrown by `createNote` when a caller supplies a full `path` whose folder
@@ -10,11 +10,15 @@ import type { DocType } from "../frontmatter/types.js";
  * instead of a generic failure.
  */
 export class TypeFolderMismatchError extends Error {
-  readonly type: DocType;
+  readonly type: AnyDocType;
   readonly expectedFolder: string;
   readonly gotPath: string;
 
-  constructor(opts: { type: DocType; expectedFolder: string; gotPath: string }) {
+  constructor(opts: {
+    type: AnyDocType;
+    expectedFolder: string;
+    gotPath: string;
+  }) {
     super(
       `Note type "${opts.type}" belongs under "${opts.expectedFolder}/" but path was "${opts.gotPath}".`,
     );

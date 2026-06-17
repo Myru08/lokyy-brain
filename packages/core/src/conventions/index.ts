@@ -15,9 +15,8 @@
  * Nothing here hand-maintains a second folder map.
  */
 
-import { type AnyDocType, type DocType } from "../frontmatter/types.js";
+import { type AnyDocType } from "../frontmatter/types.js";
 import {
-  TYPE_FOLDER,
   isDatedType,
   derivePathForType,
 } from "../notes/folderMap.js";
@@ -156,18 +155,15 @@ interface ProfileView {
 function pathPatternForFolder(folder: string, view: ProfileView): string {
   // Find a type that maps to this folder so we can ask folderMap whether the
   // canonical placement is dated — this keeps the dated/static decision in
-  // ONE place (no second `DATED_TYPES` copy here). Only PARA types carry a
-  // dated convention today (capture/task); karpathy folders are all static.
+  // ONE place (no second `DATED_TYPES` copy here). PARA dated types
+  // (capture/task) use the `-` separator; karpathy `raw-source` uses `_`
+  // (KONVENTIONEN RAW-Dateinamen-Vertrag) — folderMap owns both rules.
   const owningType = view.docTypes.find((t) => view.typeFolder[t] === folder);
-  if (owningType && isParaType(owningType) && isDatedType(owningType)) {
-    return `${folder}/{YYYY-MM-DD}-slug`;
+  if (owningType && isDatedType(owningType, view.profile)) {
+    const sep = view.profile === "karpathy" ? "_" : "-";
+    return `${folder}/{YYYY-MM-DD}${sep}slug`;
   }
   return `${folder}/slug`;
-}
-
-/** Narrowing helper — `isDatedType` is typed for PARA `DocType` only. */
-function isParaType(type: AnyDocType): type is DocType {
-  return type in TYPE_FOLDER;
 }
 
 /**

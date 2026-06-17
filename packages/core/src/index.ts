@@ -148,6 +148,8 @@ export {
   // Story 10.3 — soft-delete (trash) helper for the MCP delete_note tool.
   trashEntry,
   TRASH_FOLDER,
+  // Story S3 — profile-aware trash folder resolver (para vs karpathy).
+  trashFolderForProfile,
   type CreateNoteOpts,
   type TrashResult,
   // Story 10.10 — bulk-op item + result shapes for the MCP layer.

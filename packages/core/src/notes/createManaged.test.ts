@@ -128,6 +128,98 @@ describe("resolveManagedCreate — type-derived path (no client path)", () => {
   });
 });
 
+/* ------------------------------------------------------------------ *
+ *  Story S3 — profile threading through resolveManagedCreate (karpathy).
+ * ------------------------------------------------------------------ */
+describe("resolveManagedCreate — karpathy profile threading (Story S3)", () => {
+  const FIXED = new Date("2026-05-31T12:00:00.000Z");
+
+  it("routes raw-source into a DATED RAW path (underscore separator)", () => {
+    const res = resolveManagedCreate(
+      { title: "Karpathy Talk", type: "raw-source" },
+      FIXED,
+      "karpathy",
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.type).toBe("raw-source");
+      expect(res.path).toBe("RAW/2026-05-31_karpathy-talk");
+    }
+  });
+
+  it("routes wiki-article FLAT under Wiki (slug filename, no date)", () => {
+    const res = resolveManagedCreate(
+      { title: "Retrieval Augmented Generation", type: "wiki-article" },
+      FIXED,
+      "karpathy",
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.path).toBe("Wiki/retrieval-augmented-generation");
+  });
+
+  it("routes frage-report under Outputs", () => {
+    const res = resolveManagedCreate(
+      { title: "Was ist RAG", type: "frage-report" },
+      FIXED,
+      "karpathy",
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.path).toBe("Outputs/was-ist-rag");
+  });
+
+  it("honors a RAW sub-folder hint (RAW darf Unterordner)", () => {
+    const res = resolveManagedCreate(
+      { title: "Transkript X", type: "raw-source", folder_hint: "RAW/transkripte" },
+      FIXED,
+      "karpathy",
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.path).toBe("RAW/transkripte/2026-05-31_transkript-x");
+  });
+
+  it("IGNORES a Wiki sub-folder hint (flat rule → canonical Wiki path stands)", () => {
+    const res = resolveManagedCreate(
+      { title: "RAG", type: "wiki-article", folder_hint: "Wiki/topics" },
+      FIXED,
+      "karpathy",
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.path).toBe("Wiki/rag"); // NOT Wiki/topics/rag
+  });
+
+  it("REJECTS a PARA type under the karpathy profile (real boundary)", () => {
+    const res = resolveManagedCreate(
+      { title: "T", type: "decision" },
+      FIXED,
+      "karpathy",
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.error).toBe("invalid-type");
+      if (res.error.error === "invalid-type") {
+        expect(res.error.allowed).toEqual([
+          "raw-source",
+          "wiki-article",
+          "frage-report",
+        ]);
+      }
+    }
+  });
+
+  it("PARA routing is unchanged when no profile is passed (regression proof)", () => {
+    const res = resolveManagedCreate({ title: "My Big Insight", type: "note" }, FIXED);
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.path).toBe("20_notes/my-big-insight");
+    // explicit para === default
+    const res2 = resolveManagedCreate(
+      { title: "My Big Insight", type: "note" },
+      FIXED,
+      "para",
+    );
+    expect(res2.ok && res2.path).toBe("20_notes/my-big-insight");
+  });
+});
+
 describe("slugifyTitle", () => {
   it("kebab-cases and folds diacritics", () => {
     expect(slugifyTitle("Über Café Notizen!")).toBe("uber-cafe-notizen");

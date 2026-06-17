@@ -54,6 +54,20 @@ const DOC_TYPE_SET = new Set<string>(DOC_TYPES);
  * an explicit `type:` field. The defaults mirror the convention used by
  * the lokyy-vault folder schema; an unknown prefix falls back to `"note"`
  * (the safe default — passes every schema's base validation).
+ *
+ * Story S3 — PARA-SCOPED ON PURPOSE. This pass is the legacy-PARA ULID
+ * backfill; its prefixes (`30_captures/`, `10_projects/`, …) are PARA folders,
+ * and its return type is the PARA `DocType`. A karpathy vault has NO legacy
+ * untyped notes (it is SPEC-born with explicit `type:`), so this pass never
+ * runs against RAW/Wiki/Outputs and would never reach the fallback in a
+ * meaningful way. The karpathy fallback (`raw-source`/`wiki-article`/
+ * `frage-report`) is therefore intentionally NOT added here — adding it would
+ * be dead code. No karpathy mis-routing results because the karpathy create
+ * path (`createManaged`/`createNote` with `profile: "karpathy"`) always writes
+ * an explicit `type:`, so the `existingType ?? inferTypeFromPath(...)` branch
+ * keeps the explicit type and never falls through. Residual drift: none for
+ * karpathy; if a profile-aware backfill is ever needed it is a follow-up
+ * (sleep-agent profile threading is out of S3 scope).
  */
 function inferTypeFromPath(noteId: string): DocType {
   if (noteId.startsWith("30_captures/")) return "capture";

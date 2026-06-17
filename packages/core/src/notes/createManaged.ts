@@ -23,21 +23,34 @@
  */
 
 import {
+  checkPathMatchesType,
   derivePathForType,
   folderForType,
   isDatedType,
 } from "./folderMap.js";
 import { createNote } from "./notesService.js";
 import { TypeFolderMismatchError } from "../errors/TypeFolderMismatchError.js";
-import { DOC_TYPES, type DocType } from "../frontmatter/types.js";
+import { type AnyDocType } from "../frontmatter/types.js";
+import {
+  DEFAULT_VAULT_PROFILE,
+  getProfileSpec,
+  type VaultProfile,
+} from "../frontmatter/profiles.js";
 import type { Note } from "@lokyy/shared";
 
 /**
- * Runtime type-guard for the closed DOC_TYPES list. A present-but-unknown type
- * is REJECTED (never silently coerced to "note").
+ * Runtime type-guard for a profile's closed doc-type list. A present-but-unknown
+ * type is REJECTED (never silently coerced to "note"). Story S3 — the allowed
+ * set is the ACTIVE profile's `docTypes` (PARA's 15, or karpathy's three), so a
+ * karpathy vault accepts `raw-source`/`wiki-article`/`frage-report` and a PARA
+ * vault keeps rejecting them, exactly as before.
  */
-function isDocType(value: unknown): value is DocType {
-  return typeof value === "string" && (DOC_TYPES as readonly string[]).includes(value);
+function isProfileDocType(
+  value: unknown,
+  profile: VaultProfile,
+): value is AnyDocType {
+  const allowed = getProfileSpec(profile).docTypes as readonly string[];
+  return typeof value === "string" && allowed.includes(value);
 }
 
 /**
@@ -60,7 +73,7 @@ export function slugifyTitle(title: string): string {
 export interface NoteCreateIntent {
   title: string;
   body?: string;
-  type: DocType;
+  type: AnyDocType;
   tags?: string[];
   /** Optional location hint; honored only when under the type's canonical folder. */
   folder_hint?: string;
@@ -73,7 +86,7 @@ export type ManagedCreateInputError =
 
 /** Resolved intent for a valid `createManaged` request. */
 export type ManagedCreateInput =
-  | { ok: true; type: DocType; path: string; title: string; tags: string[] }
+  | { ok: true; type: AnyDocType; path: string; title: string; tags: string[] }
   | { ok: false; error: ManagedCreateInputError };
 
 /**
@@ -96,17 +109,22 @@ export type ManagedCreateInput =
 export function resolveManagedCreate(
   args: Record<string, unknown>,
   now: Date = new Date(),
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
 ): ManagedCreateInput {
+  const allowedTypes = getProfileSpec(profile).docTypes;
   const rawType = args.type;
-  let type: DocType;
+  let type: AnyDocType;
   if (rawType === undefined || rawType === null) {
-    type = "note";
-  } else if (isDocType(rawType)) {
+    // Default home type per profile: PARA → "note"; karpathy has no "note", so
+    // its first type (raw-source) is the safe ingest default.
+    type = (allowedTypes as readonly AnyDocType[])[0] ?? "note";
+    if (profile === "para") type = "note";
+  } else if (isProfileDocType(rawType, profile)) {
     type = rawType;
   } else {
     return {
       ok: false,
-      error: { error: "invalid-type", got: rawType, allowed: [...DOC_TYPES] },
+      error: { error: "invalid-type", got: rawType, allowed: [...allowedTypes] },
     };
   }
 
@@ -119,9 +137,10 @@ export function resolveManagedCreate(
   }
 
   const slug = slugifyTitle(title);
-  // Canonical, type-derived path (dated for captures/tasks). This is the
-  // default and the security boundary — the client never dictates placement.
-  let path = derivePathForType(type, slug, now);
+  // Canonical, type-derived path (dated for captures/tasks under PARA, for
+  // raw-source under karpathy). This is the default and the security boundary
+  // — the client never dictates placement.
+  let path = derivePathForType(type, slug, now, profile);
 
   // Optional folder_hint: honored ONLY when it sits under the type's canonical
   // folder (so it can refine the sub-folder, never escape the type's home).
@@ -130,7 +149,7 @@ export function resolveManagedCreate(
       ? args.folder_hint.trim().replace(/^\/+|\/+$/g, "")
       : undefined;
   if (hint) {
-    const canonical = folderForType(type);
+    const canonical = folderForType(type, profile);
     // Path-traversal guard: a hint like `20_notes/../50_decisions` would PASS a
     // naive `startsWith("20_notes/")` check yet collapse (via path.join) to a
     // folder OUTSIDE the type's home — or, with enough `..`, escape the vault
@@ -141,16 +160,22 @@ export function resolveManagedCreate(
     const hasTraversal = segments.some(
       (seg) => seg === ".." || seg === "." || seg === "",
     );
+    // A hint is honored when it sits under the type's canonical folder AND the
+    // resulting path passes the (profile-aware) placement guard. The guard
+    // encodes karpathy's flat-Wiki rule, so a `Wiki/sub` hint is rejected here
+    // (the canonical flat path stands) instead of being built and then bounced
+    // by createNote's guard.
     const underCanonical =
       !hasTraversal &&
       (hint === canonical || hint.startsWith(`${canonical}/`));
-    if (underCanonical) {
-      // Re-derive with the hint as the folder, preserving the dated prefix for
-      // dated types (mirror derivePathForType's dated convention).
-      const leaf = isDatedType(type)
-        ? `${now.toISOString().slice(0, 10)}-${slug}`
-        : slug;
-      path = `${hint}/${leaf}`;
+    // Re-derive the leaf via derivePathForType against the hint folder so the
+    // dated prefix + profile-specific date separator (PARA `-`, karpathy `_`)
+    // match exactly what createNote would synthesize.
+    const datedLeaf = derivePathForType(type, slug, now, profile).split("/").pop();
+    const leaf = isDatedType(type, profile) ? (datedLeaf ?? slug) : slug;
+    const candidate = `${hint}/${leaf}`;
+    if (underCanonical && checkPathMatchesType(type, candidate, profile).ok) {
+      path = candidate;
     }
     // else: hint ignored — canonical path stands.
   }
@@ -167,7 +192,7 @@ export type ManagedCreateError =
   | ManagedCreateInputError
   | {
       error: "type-folder-mismatch";
-      type: DocType;
+      type: AnyDocType;
       expectedFolder: string;
       gotPath: string;
     };
@@ -195,8 +220,13 @@ export type ManagedCreateResult =
 export async function createManaged(
   intent: NoteCreateIntent,
   now: Date = new Date(),
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
 ): Promise<ManagedCreateResult> {
-  const resolved = resolveManagedCreate(intent as unknown as Record<string, unknown>, now);
+  const resolved = resolveManagedCreate(
+    intent as unknown as Record<string, unknown>,
+    now,
+    profile,
+  );
   if (!resolved.ok) {
     return { ok: false, error: resolved.error };
   }
@@ -206,6 +236,7 @@ export async function createManaged(
     const note = await createNote(path, intent.body, {
       title,
       type,
+      profile,
       ...(tags.length > 0 ? { extra: { tags } } : {}),
       validatePlacement: true,
     });

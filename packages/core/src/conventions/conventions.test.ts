@@ -97,9 +97,17 @@ describe("getVaultConventions — karpathy profile (Story S2 / B1)", () => {
     expect(paths.has("30_captures")).toBe(false);
   });
 
-  it("uses the static {folder}/slug pattern (karpathy has no dated type)", () => {
+  it("dates RAW (raw-source) with an underscore, keeps Wiki/Outputs static (Story S3)", () => {
+    // Story S3 — raw-source IS dated (`RAW/{YYYY-MM-DD}_slug`, underscore sep
+    // per KONVENTIONEN RAW-Dateinamen-Vertrag). Wiki + Outputs stay static.
     const raw = conv.folders.find((f) => f.path === "RAW");
-    expect(raw?.pathPattern).toBe("RAW/slug");
+    const wiki = conv.folders.find((f) => f.path === "Wiki");
+    const outputs = conv.folders.find((f) => f.path === "Outputs");
+    expect(raw?.pathPattern).toBe("RAW/{YYYY-MM-DD}_slug");
+    expect(wiki?.pathPattern).toBe("Wiki/slug");
+    expect(outputs?.pathPattern).toBe("Outputs/slug");
+    // The `ids` blurb stays profile-correct: karpathy shows the static
+    // {folder}/slug summary (no dated example string).
     expect(conv.ids).not.toContain("{YYYY-MM-DD}");
   });
 

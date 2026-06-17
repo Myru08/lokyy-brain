@@ -66,7 +66,22 @@ export interface VoiceDefaults {
   aiTitle: boolean;
 }
 
-/** Whitelisted top-level vault folders. Mirrors the structure documented in CLAUDE.md. */
+/**
+ * Whitelisted top-level vault folders. Mirrors the structure documented in
+ * CLAUDE.md.
+ *
+ * Story S3 — PARA-SCOPED ON PURPOSE. This whitelist gates the voice-note
+ * placement folder (`validateVoiceDefaultsPatch` / `DEFAULT_VOICE_DEFAULTS` →
+ * `30_captures/voice`), a PARA-vault feature whose default home (`30_captures`)
+ * does not exist in a karpathy vault. A karpathy vault would use RAW/Wiki/
+ * Outputs/00_meta instead. Threading the active profile through the voice-setup
+ * surface (so it whitelists the karpathy roots when the vault is karpathy) is a
+ * follow-up — the voice pipeline is not profile-wired yet (MCP/profile wiring
+ * is S7). Residual drift, documented: a karpathy vault cannot set a voice
+ * folder until that wiring lands; it does NOT mis-route karpathy `type:`s
+ * (routing goes through folderMap, which IS profile-aware), it only constrains
+ * the voice-note placement default to PARA roots.
+ */
 export const VAULT_ROOTS: readonly string[] = [
   "00_meta",
   "10_projects",

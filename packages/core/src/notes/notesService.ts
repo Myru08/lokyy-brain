@@ -15,10 +15,15 @@ import {
   parseFrontmatter,
   serializeFrontmatter,
   validateFrontmatter,
+  type AnyDocType,
   type DocType,
   type EncodedContext,
   type FrontmatterMap,
 } from "../frontmatter/index.js";
+import {
+  DEFAULT_VAULT_PROFILE,
+  type VaultProfile,
+} from "../frontmatter/profiles.js";
 import { FrontmatterValidationError } from "../errors/FrontmatterValidationError.js";
 import { TypeFolderMismatchError } from "../errors/TypeFolderMismatchError.js";
 import { checkPathMatchesType } from "./folderMap.js";
@@ -275,8 +280,19 @@ export async function getTree(): Promise<TreeNode[]> {
 }
 
 export interface CreateNoteOpts {
-  /** Doc type. Defaults to "note". Must be a SPEC DOC_TYPES value. */
-  type?: DocType;
+  /**
+   * Doc type. Defaults to "note". Must be a type of the active profile
+   * (`AnyDocType` = PARA `DocType` ∪ karpathy types). PARA callers pass a
+   * `DocType` exactly as before — the widened union is a superset.
+   */
+  type?: AnyDocType;
+  /**
+   * Story S3 — active SPEC profile for path-derivation + placement guard +
+   * frontmatter validation. Default `para` so every existing call-site is
+   * byte-identical; the MCP/server layer (S7) resolves the real profile via
+   * `resolveVaultProfile` and threads it in here.
+   */
+  profile?: VaultProfile;
   /** Caller-supplied ULID. If absent, generated. */
   id?: string;
   /** Human title. Defaults to the last path segment of the note id. */
@@ -329,14 +345,18 @@ export async function createNote(
     // stat hat geworfen -> Datei gibt es nicht, weiter geht's
   }
 
-  const type: DocType = opts.type ?? "note";
+  const type: AnyDocType = opts.type ?? "note";
+  // Story S3 — active profile (Default para → byte-identical legacy behaviour).
+  const profile: VaultProfile = opts.profile ?? DEFAULT_VAULT_PROFILE;
 
-  // Story 10.2 (AC#5) — opt-in placement guard. The folder of the supplied
-  // path must be the type's canonical folder or a sub-folder of it
-  // (e.g. `30_captures/youtube/…`). Throws BEFORE any git op so the caller
-  // can surface a `type-folder-mismatch` correction.
+  // Story 10.2 (AC#5) / S3 — opt-in placement guard, now profile-aware. The
+  // folder of the supplied path must be the type's canonical folder or a
+  // sub-folder of it (e.g. `30_captures/youtube/…`, `RAW/transkripte/…`),
+  // except karpathy flat types (`wiki-article` → `Wiki/`) which reject
+  // sub-folders. Throws BEFORE any git op so the caller can surface a
+  // `type-folder-mismatch` correction.
   if (opts.validatePlacement) {
-    const placement = checkPathMatchesType(type, id);
+    const placement = checkPathMatchesType(type, id, profile);
     if (!placement.ok) {
       throw new TypeFolderMismatchError({
         type: placement.type,
@@ -350,7 +370,7 @@ export async function createNote(
   const now = new Date().toISOString();
   const frontmatter: FrontmatterMap = {
     id: opts.id ?? generateUlid(),
-    type,
+    type: type as FrontmatterMap["type"],
     title,
     created: now,
     updated: now,
@@ -363,7 +383,7 @@ export async function createNote(
     frontmatter.encoded = opts.encoded;
   }
 
-  const validation = validateFrontmatter(frontmatter, type);
+  const validation = validateFrontmatter(frontmatter, type, profile);
   if (!validation.valid) {
     throw new FrontmatterValidationError({
       message: `Frontmatter for new note "${id}" failed validation.`,
@@ -506,11 +526,13 @@ async function preflightCreate(
     // not present — good, continue.
   }
 
-  const type: DocType = opts.type ?? "note";
+  const type: AnyDocType = opts.type ?? "note";
+  const profile: VaultProfile = opts.profile ?? DEFAULT_VAULT_PROFILE;
 
-  // (b) opt-in placement guard (Story 10.2) — same as createNote.
+  // (b) opt-in placement guard (Story 10.2 / S3) — same as createNote,
+  //     profile-aware.
   if (opts.validatePlacement) {
-    const placement = checkPathMatchesType(type, id);
+    const placement = checkPathMatchesType(type, id, profile);
     if (!placement.ok) {
       return {
         id,
@@ -528,7 +550,7 @@ async function preflightCreate(
   const now = new Date().toISOString();
   const frontmatter: FrontmatterMap = {
     id: opts.id ?? generateUlid(),
-    type,
+    type: type as FrontmatterMap["type"],
     title,
     created: now,
     updated: now,
@@ -536,7 +558,7 @@ async function preflightCreate(
   };
   if (opts.encoded) frontmatter.encoded = opts.encoded;
 
-  const validation = validateFrontmatter(frontmatter, type);
+  const validation = validateFrontmatter(frontmatter, type, profile);
   if (!validation.valid) {
     return {
       id,
@@ -813,8 +835,30 @@ export async function deleteEntry(
  *  run through `gitService` (no direct `fs.unlink` — AC#6).
  * ------------------------------------------------------------------ */
 
-/** Canonical trash folder for soft-deleted notes (Story 10.3, AC#1). */
+/**
+ * Canonical trash folder for soft-deleted notes (Story 10.3, AC#1).
+ *
+ * Remains the PARA value as a stable, byte-identical export for every existing
+ * call-site. Profile-aware resolution goes through `trashFolderForProfile`
+ * (Story S3, AC#3).
+ */
 export const TRASH_FOLDER = "99_archive/_trash";
+
+/**
+ * Profile-aware trash folder (Story S3, AC#3).
+ *
+ * - `para`     → `99_archive/_trash` (unchanged — `TRASH_FOLDER`).
+ * - `karpathy` → `_trash` (top-level). The karpathy vault has no `99_archive`
+ *   root; `_trash/` matches its `_<name>/` "Hände weg"-Konvention (underscore-
+ *   prefixed = nicht-automatisiert/Sonderzone) and stays out of the four
+ *   content roots (RAW/Wiki/Outputs/00_meta), so trashed notes never collide
+ *   with or pollute the routing zones.
+ */
+export function trashFolderForProfile(
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
+): string {
+  return profile === "karpathy" ? "_trash" : TRASH_FOLDER;
+}
 
 /** ISO date stamp `YYYY-MM-DD` (UTC) for the dated trash path. */
 function trashDateStamp(now: Date): string {
@@ -848,6 +892,7 @@ export interface TrashResult {
 export async function trashEntry(
   path: string,
   now: Date = new Date(),
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
 ): Promise<TrashResult> {
   const c = coreConfig();
   const abs = join(c.vaultDir, ...path.split("/")) + ".md";
@@ -858,7 +903,7 @@ export async function trashEntry(
   }
 
   const slug = path.split("/").pop() ?? path;
-  const to = `${TRASH_FOLDER}/${trashDateStamp(now)}-${slug}`;
+  const to = `${trashFolderForProfile(profile)}/${trashDateStamp(now)}-${slug}`;
   // moveEntry handles the git move + ULID-cache + BM25 reindex under the new id.
   await moveEntry(path, to, "note");
   return { from: path, to };
