@@ -33,7 +33,7 @@ services:
     environment:
       # Coolify magic-var → rewritten to public FQDN + Traefik labels auto-added.
       - SERVICE_FQDN_LOKYYBRAIN_8787
-      - DATABASE_URL=postgres://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/lokyy_brain
+      - DATABASE_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
       - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-karpathy}
       - GIT_REMOTE=${GIT_REMOTE}
@@ -84,7 +84,7 @@ services:
         condition: service_healthy
     environment:
       - SERVICE_FQDN_LOKYYMCP_8788
-      - LOKYY_DB_URL=postgres://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/lokyy_brain
+      - LOKYY_DB_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
       - LOKYY_VAULT_DIR=/var/lokyy/vault
       - LOKYY_GIT_REMOTE=${GIT_REMOTE}
       - LOKYY_GIT_BRANCH=${GIT_BRANCH:-main}
@@ -128,9 +128,11 @@ services:
     image: paradedb/paradedb:latest
     restart: unless-stopped
     environment:
-      # Coolify generiert + persistiert dieses Secret automatisch (Magic-Var).
-      # Kein manuelles Eintragen nötig — wie bei einer Coolify-Managed-DB.
-      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
+      # Festes INTERNES DB-Passwort: die DB hat kein `ports:`-Mapping, ist also
+      # nur im privaten Compose-Netz erreichbar. Kein manuelles Eintragen nötig.
+      # (Coolify-Magic-Vars werden NICHT in eingebettete URLs expandiert — daher
+      #  ein Literal, das in postgres + server + mcp identisch verwendet wird.)
+      - POSTGRES_PASSWORD=lokyybraininternal
       - POSTGRES_DB=lokyy_brain
     volumes:
       # Postgres 18+ (ParadeDB latest) speichert Daten versioniert UNTER
