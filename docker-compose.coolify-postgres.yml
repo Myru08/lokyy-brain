@@ -1,13 +1,26 @@
 # Lokyy-Brain — Postgres (ParadeDB) als eigener Coolify-SERVICE.
 #
+# ⚠️ OPTIONALE VARIANTE — NICHT der empfohlene Weg.
+#    Empfohlen ist docker-compose.coolify.yml (ALLES in EINER Resource), weil
+#    dort `postgres` nativ per Docker-DNS auflöst. Diese getrennten Composes
+#    sind nur sinnvoll, wenn du DB/Ollama bewusst unabhängig betreiben willst —
+#    und dann musst du die EAI_AGAIN-Falle kennen (siehe unten).
+#
 # In Coolify: "+ New" → "Docker Compose (from repository)" → dieses Repo,
 # Compose File Path: docker-compose.coolify-postgres.yml.
 #
 # WICHTIG / Sicherheit: KEIN `ports:`-Mapping → die DB hat KEINEN Public Port,
 # ist also nur im internen Coolify-Netz erreichbar. Genau das wollen wir.
 #
-# Erreichbar für die App unter dem Hostnamen `postgres` (Port 5432), sofern
-# App + dieser Service im selben Netz hängen ("Connect To Predefined Network").
+# ⚠️ CROSS-RESOURCE-HOSTNAME (EAI_AGAIN-URSACHE):
+#   Laut Coolify-Doku (knowledge-base/docker/compose) liegt JEDE Compose-Resource
+#   in einem EIGENEN Netz (Name = Resource-UUID). Damit die App diese DB erreicht,
+#   musst du in der App-Resource "Connect To Predefined Network" aktivieren —
+#   ABER: dann "will make the internal Docker DNS not work as expected", und
+#   Coolify benennt den Host in `postgres-<uuid>` um. Der bloße Name `postgres`
+#   löst dann NICHT auf → genau das ist der EAI_AGAIN-/Restart-Loop.
+#   Du musst in der App also POSTGRES_HOST = `postgres-<uuid>` setzen (UUID aus
+#   der Coolify-UI dieser Resource). Deshalb ist die All-in-One-Variante robuster.
 #
 # ParadeDB = Postgres + pg_search (BM25) + pgvector — auf pg17 gepinnt
 # (kein PG18-Daten-Layout-Problem).

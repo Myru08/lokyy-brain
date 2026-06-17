@@ -1,10 +1,15 @@
 # Lokyy-Brain — Ollama als eigener Coolify-SERVICE (Embeddings für Tier-2).
 #
+# ⚠️ OPTIONALE VARIANTE — NICHT der empfohlene Weg (siehe coolify-postgres.yml).
+#    Empfohlen: docker-compose.coolify.yml (alles in EINER Resource).
+#
 # In Coolify: "+ New" → "Docker Compose (from repository)" → dieses Repo,
 # Compose File Path: docker-compose.coolify-ollama.yml.
 #
-# KEIN `ports:` → nur intern erreichbar. Hostname für die App: `ollama` (11434),
-# sofern im selben Netz ("Connect To Predefined Network").
+# KEIN `ports:` → nur intern erreichbar.
+# ⚠️ Cross-Resource-Hostname: NICHT `ollama`, sondern `ollama-<uuid>` (Coolify
+#    benennt bei "Connect To Predefined Network" um; reiner Name = EAI_AGAIN).
+#    In der App: OLLAMA_HOST=http://ollama-<uuid>:11434.
 #
 # `ollama-init` zieht beim Start einmalig das Embedding-Modell.
 # Env (optional): OLLAMA_EMBED_MODEL (default nomic-embed-text)
@@ -27,6 +32,7 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
+    exclude_from_hc: true
     entrypoint:
       - /bin/sh
       - -c

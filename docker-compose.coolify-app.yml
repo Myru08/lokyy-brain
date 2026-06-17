@@ -1,36 +1,37 @@
 # lokyy-brain — Coolify Application (Architektur B: Resources + App split).
 #
-# THIS COMPOSE contains ONLY the three Lokyy services. Postgres, Ollama and
-# Forgejo are deployed as separate Coolify "Resources" in the same Project
-# and are reachable via Coolify's shared Docker network (service-name
-# hostname resolution).
+# ⚠️ OPTIONALE VARIANTE — NICHT empfohlen. Nimm docker-compose.coolify.yml.
+#    Diese Datei enthält NUR die drei Lokyy-Services; Postgres, Ollama und
+#    Forgejo laufen als getrennte Coolify-Resources.
 #
-# Why split? The all-in-one docker-compose.coolify.yml builds 3 Node images
-# AND pulls 3 vendor images at once. On Coolify build hosts <6 GB RAM this
-# OOM-kills the builder (Exit 255). Splitting into Resources lets each piece
-# scale, restart, and back up independently.
+# ⚠️ EAI_AGAIN-FALLE (der Grund, warum diese Variante zickt):
+#    Coolify-Doku (knowledge-base/docker/compose): getrennte Resources liegen je
+#    in einem eigenen Netz. Erst "Connect To Predefined Network" verbindet sie —
+#    "will make the internal Docker DNS not work as expected": die Hosts heißen
+#    dann `postgres-<uuid>` / `ollama-<uuid>` / `forgejo-<uuid>`, NICHT `postgres`.
+#    Der bloße Servicename löst NICHT auf → EAI_AGAIN + 10×-Restart-Loop.
+#    Du MUSST hier die UUID-Hosts setzen (UUID je aus der Coolify-UI der Resource):
+#       POSTGRES_HOST = postgres-<uuid>
+#       OLLAMA_HOST   = http://ollama-<uuid>:11434
+#       GIT_REMOTE    = http://forgejo-<uuid>:3000/<user>/lokyy-vault
 #
 # Coolify Magic-Vars (set indirectly via "Add Domain" in UI):
 #   SERVICE_FQDN_LOKYYBRAIN_8787  → e.g. api.lokyy.example.tld
 #   SERVICE_FQDN_LOKYYPWA_80      → e.g. lokyy.example.tld
 #   SERVICE_FQDN_LOKYYMCP_8788    → e.g. mcp.lokyy.example.tld
 #
-# User-provided ENV-Vars (Coolify UI → Application → Environment) —
-# values point at the Resources by their compose service name:
-#   POSTGRES_PASSWORD          (matches what you set on the Postgres resource)
-#   DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
-#   OLLAMA_HOST=http://ollama:11434
-#   GIT_REMOTE=http://forgejo:3000/oliver/lokyy-vault
-#   GIT_BRANCH=main
-#   GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL
+# User-provided ENV-Vars (Coolify UI → Application → Environment):
+#   POSTGRES_PASSWORD          (gleicher Wert wie auf der Postgres-Resource)
+#   POSTGRES_HOST=postgres-<uuid>
+#   OLLAMA_HOST=http://ollama-<uuid>:11434
+#   GIT_REMOTE=http://forgejo-<uuid>:3000/<user>/lokyy-vault
+#   GIT_BRANCH=main ; GIT_AUTHOR_NAME ; GIT_AUTHOR_EMAIL
 #   LOKYY_MCP_TOKEN            (Bearer token for claude.ai Custom Connector)
 #   LOKYY_VAULT_ID             (filled AFTER first Setup Wizard run)
 #   LOKYY_AGENT_ID=claude-code
 #   OLLAMA_EMBED_MODEL=nomic-embed-text
 #   SUPADATA_API_KEY           (optional; UI-configurable)
 #   ANTHROPIC_API_KEY, OPENAI_API_KEY, COHERE_API_KEY  (optional)
-#
-# See docs/DEPLOY-RESOURCES.md for the step-by-step Coolify setup.
 
 services:
   # ── Server (Hono REST API + setup wizard backend) ──────────────────────
@@ -66,10 +67,15 @@ services:
     volumes:
       - vault-data:/var/lokyy/vault
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8787/health"]
-      interval: 30s
+      # node-eigener TCP-Port-Check (kein curl): funktioniert in jedem node-Image.
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8787,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 15s
       timeout: 5s
-      retries: 5
+      retries: 10
       start_period: 60s
 
   # ── PWA (nginx-served static build) ────────────────────────────────────
@@ -116,11 +122,14 @@ services:
     volumes:
       - vault-data:/var/lokyy/vault
     healthcheck:
-      # MCP HTTP exposes /mcp/health (200 OK, no auth) for liveness probes.
-      test: ["CMD-SHELL", "curl -fsS http://localhost:8788/mcp/health || exit 1"]
-      interval: 30s
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8788,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 15s
       timeout: 5s
-      retries: 3
+      retries: 10
       start_period: 30s
 
 volumes:
