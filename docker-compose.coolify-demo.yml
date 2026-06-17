@@ -62,8 +62,9 @@ services:
       - SERVICE_FQDN_LOKYYBRAIN_8787
       - DATABASE_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
-      # 'para' als Default — 'karpathy' killt den Server ~30s nach Start.
-      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
+      # HART auf 'para' — 'karpathy' killt den Server ~30s nach Start. Bewusst
+      # KEIN ${...}, damit keine (Alt-)UI-Env-Var das je überschreiben kann.
+      - LOKYY_VAULT_PROFILE=para
       # KEIN OLLAMA_HOST → Ollama wird nicht registriert, Tier-2 bleibt aus.
       - SUPADATA_API_KEY=${SUPADATA_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
@@ -119,7 +120,7 @@ services:
       - SERVICE_FQDN_LOKYYMCP_8788
       - LOKYY_DB_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
       - LOKYY_VAULT_DIR=/var/lokyy/vault
-      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
+      - LOKYY_VAULT_PROFILE=para
       - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
       - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
       - LOKYY_MCP_HTTP_PORT=8788
