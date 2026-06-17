@@ -55,6 +55,9 @@ services:
       dockerfile: Dockerfile
       target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
+    # DEBUG: App starten; egal wie sie endet, Container per sleep am Leben halten,
+    # damit Coolify ihn als "running" sieht und das Crash-Log auslesbar bleibt.
+    command: ["sh","-lc","node dist/index.js; echo \"=== LOKYY-BRAIN EXIT CODE $? ===\"; sleep 86400"]
     depends_on:
       postgres:
         condition: service_healthy
