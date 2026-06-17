@@ -13,6 +13,7 @@ import { LlmRouter, routeContextFromNote } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
 import { LlmUnavailable } from "../../llm/errors.js";
 import { parseFrontmatter } from "../../frontmatter/index.js";
+import { isHandsOffZone } from "../rawGuard.js";
 import type { ChatMessage } from "../../llm/types.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
@@ -151,6 +152,10 @@ export const entityExtractionPass: SleepPass = {
 
       const candidates: typeof sorted = [];
       for (const n of sorted) {
+        // Story S4 — the `RAW/_…` Hände-weg-Zone is NEVER cross-linked
+        // (entity extraction = Vernetzung). Skip it before any DB probe or
+        // LLM call (AC#1 Bullet 3). Regular RAW notes remain readable here.
+        if (isHandsOffZone(n.id)) continue;
         const updated = new Date(n.updatedAt).getTime();
         const isRecent = Number.isFinite(updated) && updated > since;
 

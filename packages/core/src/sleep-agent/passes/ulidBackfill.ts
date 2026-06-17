@@ -7,6 +7,8 @@ import {
   type FrontmatterMap,
 } from "../../frontmatter/index.js";
 import { DOC_TYPES } from "../../frontmatter/types.js";
+import { resolveVaultProfile } from "../../frontmatter/profiles.js";
+import { isRawImmutable, isHandsOffZone } from "../rawGuard.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
 /**
@@ -97,6 +99,13 @@ export const ulidBackfillPass: SleepPass = {
     let errors = 0;
     let backfilled = 0;
 
+    // Story S4 — RAW-Immutabilität. Resolve the active profile once. Under
+    // `karpathy` every RAW note is the verbatim Single Source of Truth and
+    // must NEVER be rewritten — not even to inject a missing ULID/`updated`.
+    // Under `para` (Default) this is always `false`, so the candidate filter
+    // below is a byte-identical no-op and legacy backfill is unchanged.
+    const profile = resolveVaultProfile();
+
     try {
       const allNotes = await listNotes();
 
@@ -105,6 +114,12 @@ export const ulidBackfillPass: SleepPass = {
       const candidates: BackfillCandidate[] = [];
       for (const summary of allNotes) {
         if (candidates.length >= NOTES_PER_RUN) break;
+        // RAW guard (S4): skip RAW notes under karpathy entirely — no rewrite
+        // of body or frontmatter. The `RAW/_…` Hände-weg-Zone is skipped
+        // unconditionally (profile-independent). Both are pure path checks, so
+        // a skipped note costs nothing (no getNote read).
+        if (isRawImmutable(summary.id, profile)) continue;
+        if (isHandsOffZone(summary.id)) continue;
         const full = await getNote(summary.id).catch(() => null);
         if (!full?.body) continue;
         const parsed = parseFrontmatter(full.body);

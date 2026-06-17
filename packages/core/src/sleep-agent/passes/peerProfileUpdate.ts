@@ -10,6 +10,8 @@ import {
   type FrontmatterMap,
 } from "../../frontmatter/index.js";
 import { isPeerType, type PeerType } from "../../frontmatter/types.js";
+import { resolveVaultProfile } from "../../frontmatter/profiles.js";
+import { isRawImmutable, isHandsOffZone } from "../rawGuard.js";
 import { computeRelationshipStrength } from "../../peers/index.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
@@ -83,8 +85,18 @@ export const peerProfileUpdatePass: SleepPass = {
       const candidateIds = new Set<string>(peerCandidates.map((n) => n.id));
       for (const p of existingProfiles) candidateIds.add(p.noteId);
 
+      // Story S4 — RAW-Immutabilität. A peer-note never lives under RAW/ by
+      // convention (peers are PARA `peers/` / karpathy never marks RAW as
+      // peer), but this is a SYSTEM-driven frontmatter write-back, so we guard
+      // defensively: under `karpathy` no RAW source is ever rewritten, and the
+      // `RAW/_…` Hände-weg-Zone is skipped unconditionally. Under `para`
+      // `isRawImmutable` is always `false` → byte-identical behaviour.
+      const profile = resolveVaultProfile();
+
       for (const noteId of candidateIds) {
         try {
+          if (isRawImmutable(noteId, profile)) continue;
+          if (isHandsOffZone(noteId)) continue;
           // Read the note body fresh — listNotes summaries don't carry body.
           // Failures (file gone between listNotes and getNote) drop silently.
           const { readFile } = await import("node:fs/promises");

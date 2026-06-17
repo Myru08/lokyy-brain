@@ -9,6 +9,7 @@ import { getScoring } from "../../scoring/store.js";
 import { getMemoryProvider } from "../../memory/index.js";
 import { parseFrontmatter, validateFrontmatter } from "../../frontmatter/index.js";
 import { DOC_TYPES } from "../../frontmatter/types.js";
+import { isHandsOffZone } from "../rawGuard.js";
 import type { DocType } from "../../frontmatter/index.js";
 import { LlmRouter } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
@@ -70,7 +71,12 @@ export const lintPass: SleepPass = {
 
     try {
       const graph = await buildGraph();
-      const allNotes = await listNotes();
+      // Story S4 — the `RAW/_…` Hände-weg-Zone is NEVER linted/geprüft
+      // (AC#1 Bullet 3). Filter it out of the note set every heuristic walks,
+      // so no finding is ever emitted ABOUT a hands-off note. Regular RAW notes
+      // stay in scope — RAW is allowed to be read/checked, only the `_`-zone
+      // is off-limits. Profile-independent pure-path filter (no-op under para).
+      const allNotes = (await listNotes()).filter((n) => !isHandsOffZone(n.id));
 
       // ─── Check 1: Orphan Detection ─────────────────────────────────────
       const incomingLinks = new Map<string, number>();

@@ -25,6 +25,7 @@
 import { buildGraph } from "../../graph/graphService.js";
 import { detectCommunities } from "../../graph/community.js";
 import { getNote, createNote } from "../../notes/notesService.js";
+import { isHandsOffZone } from "../rawGuard.js";
 import { LlmRouter } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
@@ -96,6 +97,10 @@ export const topicSynthesisPass: SleepPass = {
           // still goes to the LLM with whatever remains.
           const memberContent = await Promise.all(
             members.slice(0, MAX_MEMBERS_PER_PROMPT).map(async (nid) => {
+              // Story S4 — the `RAW/_…` Hände-weg-Zone is NEVER distilled,
+              // not even read into a synthesis prompt (AC#1 Bullet 3). Regular
+              // RAW notes stay readable here — distillation reads RAW legitimately.
+              if (isHandsOffZone(nid)) return null;
               const n = await getNote(nid).catch(() => null);
               if (!n) return null;
               return `[${nid}] ${n.title}\n${(n.body ?? "").slice(0, MAX_BODY_CHARS)}`;
