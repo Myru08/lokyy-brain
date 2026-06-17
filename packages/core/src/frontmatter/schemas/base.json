@@ -11,6 +11,7 @@
     },
     "type": {
       "type": "string",
+      "comment": "MUST stay in sync with DOC_TYPES in ../types.ts (the single source of truth). The frontmatter.test.ts drift-guard fails the build if these diverge.",
       "enum": [
         "note",
         "capture",
@@ -22,7 +23,11 @@
         "workflow",
         "intervention",
         "content",
-        "peer"
+        "peer",
+        "skill",
+        "tool",
+        "resource",
+        "reference"
       ]
     },
     "title": { "type": "string", "minLength": 1 },

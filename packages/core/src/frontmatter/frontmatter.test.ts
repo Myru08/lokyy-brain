@@ -5,6 +5,8 @@ import {
   serializeFrontmatter,
   validateFrontmatter,
 } from "./index.js";
+import { DOC_TYPES } from "./types.js";
+import baseSchema from "./schemas/base.json" with { type: "json" };
 
 const VALID_NOTE = {
   id: "01JXYZABCDEFGHJKMNPQRSTVWX",
@@ -263,6 +265,33 @@ describe("validateFrontmatter — extended type enum (Story 10.15)", () => {
       });
     });
   }
+});
+
+describe("doc-type single source of truth (Story S1 drift-guard)", () => {
+  // DOC_TYPES (types.ts) is the canonical list. base.json's `type` enum must
+  // mirror it exactly — otherwise a note that is valid against its per-type
+  // schema could silently drift out of the documented base contract (and the
+  // conventions/MCP surface that advertises the closed list). This guard fails
+  // the build the moment a type is added to one place but not the other.
+  const baseEnum = (
+    baseSchema as { properties: { type: { enum: string[] } } }
+  ).properties.type.enum;
+
+  it("base.json type-enum equals DOC_TYPES (same members, same order)", () => {
+    expect(baseEnum).toEqual([...DOC_TYPES]);
+  });
+
+  it("every DOC_TYPES member is present in the base enum", () => {
+    for (const t of DOC_TYPES) {
+      expect(baseEnum).toContain(t);
+    }
+  });
+
+  it("the base enum introduces no extra types beyond DOC_TYPES", () => {
+    for (const t of baseEnum) {
+      expect(DOC_TYPES as readonly string[]).toContain(t);
+    }
+  });
 });
 
 describe("validateFrontmatter — unknown type", () => {

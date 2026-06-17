@@ -62,7 +62,7 @@ function inferTypeFromPath(noteId: string): DocType {
   if (noteId.startsWith("40_customers/")) return "customer";
   if (noteId.startsWith("50_decisions/")) return "decision";
   if (noteId.startsWith("10_projects/")) return "project";
-  if (noteId.startsWith("20_tasks/")) return "task";
+  if (noteId.startsWith("40_tasks/")) return "task";
   if (noteId.startsWith("70_pai/")) return "note";
   if (noteId.startsWith("peers/")) return "peer";
   return "note";
