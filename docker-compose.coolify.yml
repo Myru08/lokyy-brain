@@ -25,7 +25,10 @@ services:
       context: .
       dockerfile: Dockerfile
       target: server
-    restart: unless-stopped
+    # DIAG: kein Auto-Restart, damit ein Crash als "Exited" stehenbleibt und der
+    # Exit-Code/OOM-Flag in Ruhe inspizierbar ist (Coolify-Cleanup-Rennen umgehen).
+    # Nach der Diagnose zurück auf "unless-stopped".
+    restart: "no"
     depends_on:
       postgres:
         condition: service_healthy
