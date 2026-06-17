@@ -189,6 +189,112 @@ describe("slugifyTitle (Story 13.1)", () => {
 });
 
 /**
+ * Story S7 (demo subset) — profile-aware MCP input resolution.
+ *
+ * The MCP layer resolves the active SPEC-profile at boot and threads it into
+ * the pure resolvers (`resolveCreateNoteInput`, `resolveManagedCreate`) and the
+ * conventions surface (`getVaultConventions`). These tests prove that with the
+ * karpathy profile threaded, the create-paths ACCEPT the karpathy doc-types and
+ * route them to RAW/Wiki/Outputs, while the para profile (Default) is
+ * unchanged. The actual write (`createNote`) is covered by the e2e block below;
+ * here we pin the derivation + acceptance contract without a live DB.
+ */
+describe("Story S7 — profile-aware create resolution (karpathy)", () => {
+  it("resolveManagedCreate(karpathy) accepts raw-source → dated RAW/ path", () => {
+    const now = new Date("2026-06-17T00:00:00.000Z");
+    const res = resolveManagedCreate({ title: "Karpathy Talk", type: "raw-source" }, now, "karpathy");
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.type).toBe("raw-source");
+      // karpathy dated separator is `_` (RAW is the dated type).
+      expect(res.path).toBe("RAW/2026-06-17_karpathy-talk");
+    }
+  });
+
+  it("resolveManagedCreate(karpathy) accepts wiki-article → flat Wiki/ path", () => {
+    const res = resolveManagedCreate(
+      { title: "Attention Is All You Need", type: "wiki-article" },
+      new Date(),
+      "karpathy",
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.type).toBe("wiki-article");
+      expect(res.path).toBe("Wiki/attention-is-all-you-need");
+    }
+  });
+
+  it("resolveManagedCreate(karpathy) accepts frage-report → Outputs/ path", () => {
+    const res = resolveManagedCreate({ title: "Q1 Report", type: "frage-report" }, new Date(), "karpathy");
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.type).toBe("frage-report");
+      expect(res.path).toBe("Outputs/q1-report");
+    }
+  });
+
+  it("resolveManagedCreate(karpathy) REJECTS a PARA type (note) as unknown", () => {
+    const res = resolveManagedCreate({ title: "X", type: "note" }, new Date(), "karpathy");
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.error).toBe("invalid-type");
+      if (res.error.error === "invalid-type") {
+        expect(res.error.allowed).toEqual(["raw-source", "wiki-article", "frage-report"]);
+      }
+    }
+  });
+
+  it("resolveManagedCreate(para) still REJECTS karpathy types (backward-compat)", () => {
+    const res = resolveManagedCreate({ title: "X", type: "raw-source" });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.error).toBe("invalid-type");
+  });
+
+  it("resolveCreateNoteInput(karpathy) derives RAW/ from type+slug", () => {
+    const res = resolveCreateNoteInput({ type: "raw-source", slug: "talk" }, "karpathy");
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.type).toBe("raw-source");
+      expect(res.path).toMatch(/^RAW\/\d{4}-\d{2}-\d{2}_talk$/);
+    }
+  });
+
+  it("resolveCreateNoteInput(karpathy) rejects a PARA type, lists karpathy allowed", () => {
+    const res = resolveCreateNoteInput({ type: "decision", slug: "x" }, "karpathy");
+    expect(res.ok).toBe(false);
+    if (!res.ok && res.error.error === "invalid-type") {
+      expect(res.error.allowed).toEqual(["raw-source", "wiki-article", "frage-report"]);
+    }
+  });
+
+  it("getVaultConventions(karpathy) describes the karpathy contract", () => {
+    const conv = getVaultConventions("karpathy");
+    // The conventions object exposes the active profile's type→folder view.
+    const json = JSON.stringify(conv);
+    expect(json).toContain("raw-source");
+    expect(json).toContain("wiki-article");
+    expect(json).toContain("frage-report");
+    expect(json).toContain("RAW");
+    expect(json).toContain("Wiki");
+    expect(json).toContain("Outputs");
+    // And it must NOT advertise the PARA types/folders.
+    expect(json).not.toContain("20_notes");
+  });
+
+  it("getVaultConventions(para) is unchanged (Default contract)", () => {
+    const conv = getVaultConventions();
+    const json = JSON.stringify(conv);
+    expect(json).toContain("20_notes");
+    // The PARA `types` list must NOT contain karpathy doc-types (the para
+    // profile rejects them). The folder catalogue may still describe physical
+    // RAW/Wiki/Outputs folders, so assert on the type list specifically.
+    const typeNames = (conv.types as { type: string }[]).map((t) => t.type);
+    expect(typeNames).not.toContain("raw-source");
+    expect(typeNames).toContain("note");
+  });
+});
+
+/**
  * Story 10.7 — structured-error classifier (`classifyToolError`).
  *
  * The dispatch wrapper routes every uncaught throw through this so a calling
@@ -1309,5 +1415,144 @@ describe("MCP get_health — vault_warning when ambiguous (e2e)", () => {
     expect(out.vault_warning).toContain("vault-bbb");
     expect(out.vault_warning).toContain("work");
     expect(out.vault_warning).toContain("LOKYY_VAULT_ID");
+  });
+});
+
+/**
+ * Story S7 (demo subset) — karpathy-profile server (e2e).
+ *
+ * Boots a server whose active SPEC-profile is `karpathy` (resolved at boot via
+ * `resolveVaultProfile({ vaultId })` from the `LOKYY_VAULT_PROFILE` env). This
+ * is the live-demo path: a karpathy vault must ACCEPT raw-source/wiki-article/
+ * frage-report via create_managed_note, route them to RAW/Wiki/Outputs, and
+ * report the karpathy contract from get_vault_conventions. `createNote` is
+ * mocked (no live DB/git) — we assert the handler threads `profile:"karpathy"`
+ * and the karpathy-derived path into core, which is the seam this story adds.
+ */
+describe("Story S7 — karpathy-profile server (e2e)", () => {
+  let vaultDir: string;
+  let prevProfileEnv: string | undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let client: any;
+
+  beforeAll(async () => {
+    prevProfileEnv = process.env.LOKYY_VAULT_PROFILE;
+    process.env.LOKYY_VAULT_PROFILE = "karpathy";
+
+    vaultDir = await mkdtemp(join(tmpdir(), "lokyy-mcp-karpathy-"));
+    await mkdir(join(vaultDir, "00_meta"), { recursive: true });
+    await writeFile(
+      join(vaultDir, "00_meta", "mcp-scopes.yaml"),
+      "scopes:\n  karpathy-agent:\n    read: ['**/*.md']\n    write: ['**/*.md']\n    commit_prefix: '[agent:karpathy]'\n",
+      "utf8",
+    );
+
+    resolveVaultResolutionMock.mockResolvedValue({
+      vaultId: "vault-karpathy",
+      ambiguous: false,
+      candidates: [],
+      source: "db",
+    });
+
+    const { buildServer } = await import("./server.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+
+    const server = await buildServer(
+      { vaultDir } as never,
+      "postgres://unused",
+      "vault-karpathy",
+      "karpathy-agent",
+    );
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+  });
+
+  afterAll(async () => {
+    await client?.close();
+    await rm(vaultDir, { recursive: true, force: true });
+    if (prevProfileEnv === undefined) delete process.env.LOKYY_VAULT_PROFILE;
+    else process.env.LOKYY_VAULT_PROFILE = prevProfileEnv;
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function payload(res: any): any {
+    return JSON.parse(res.content[0].text);
+  }
+
+  it("advertises the karpathy doc-types in the create_managed_note enum", async () => {
+    const { tools } = await client.listTools();
+    const cmn = tools.find((t: { name: string }) => t.name === "create_managed_note");
+    expect(cmn).toBeDefined();
+    const enumVals = cmn.inputSchema.properties.type.enum as string[];
+    expect(enumVals).toEqual(["raw-source", "wiki-article", "frage-report"]);
+  });
+
+  it("create_managed_note accepts raw-source → dated RAW/ path + profile threaded", async () => {
+    createNoteMock.mockClear();
+    createNoteMock.mockResolvedValueOnce({ id: "RAW/2026-06-17_karpathy-talk", type: "raw-source" });
+    const res = await client.callTool({
+      name: "create_managed_note",
+      arguments: { title: "Karpathy Talk", type: "raw-source", body: "# notes" },
+    });
+    const out = payload(res);
+    expect(out.created.type).toBe("raw-source");
+    const [derivedPath, , opts] = createNoteMock.mock.calls.at(-1) as [
+      string,
+      string | undefined,
+      { type?: string; profile?: string; validatePlacement?: boolean },
+    ];
+    expect(derivedPath).toMatch(/^RAW\/\d{4}-\d{2}-\d{2}_karpathy-talk$/);
+    expect(opts.type).toBe("raw-source");
+    expect(opts.profile).toBe("karpathy");
+    expect(opts.validatePlacement).toBe(true);
+  });
+
+  it("create_managed_note accepts wiki-article → flat Wiki/ path", async () => {
+    createNoteMock.mockClear();
+    createNoteMock.mockResolvedValueOnce({ id: "Wiki/transformers", type: "wiki-article" });
+    await client.callTool({
+      name: "create_managed_note",
+      arguments: { title: "Transformers", type: "wiki-article" },
+    });
+    const [derivedPath, , opts] = createNoteMock.mock.calls.at(-1) as [
+      string,
+      string | undefined,
+      { profile?: string },
+    ];
+    expect(derivedPath).toBe("Wiki/transformers");
+    expect(opts.profile).toBe("karpathy");
+  });
+
+  it("create_managed_note accepts frage-report → Outputs/ path", async () => {
+    createNoteMock.mockClear();
+    createNoteMock.mockResolvedValueOnce({ id: "Outputs/q1", type: "frage-report" });
+    await client.callTool({
+      name: "create_managed_note",
+      arguments: { title: "Q1", type: "frage-report" },
+    });
+    const [derivedPath] = createNoteMock.mock.calls.at(-1) as [string];
+    expect(derivedPath).toBe("Outputs/q1");
+  });
+
+  it("create_managed_note REJECTS a PARA type (note) on a karpathy vault", async () => {
+    createNoteMock.mockClear();
+    const res = await client.callTool({
+      name: "create_managed_note",
+      arguments: { title: "X", type: "note" },
+    });
+    const out = payload(res);
+    expect(out.error).toBe("invalid-type");
+    expect(createNoteMock).not.toHaveBeenCalled();
+  });
+
+  it("get_vault_conventions returns the karpathy contract", async () => {
+    const res = await client.callTool({ name: "get_vault_conventions", arguments: {} });
+    const json = JSON.stringify(payload(res));
+    expect(json).toContain("raw-source");
+    expect(json).toContain("Wiki");
+    expect(json).toContain("Outputs");
+    expect(json).not.toContain("20_notes");
   });
 });

@@ -23,10 +23,19 @@ import {
   // frontmatter for the .md files via the shared core `importSkill`.
   importSkill,
   type ImportSkillFile,
-  DOC_TYPES,
   derivePathForType,
   folderForType,
   TypeFolderMismatchError,
+  // Story S7 (demo subset) — active SPEC-profile resolution for the MCP layer.
+  // The server resolves the vault's profile ONCE at boot (env-driven, Default
+  // `para`) and threads it through the create / validate / conventions paths so
+  // a karpathy vault accepts raw-source/wiki-article/frage-report. `para`
+  // vaults keep Default behaviour byte-for-byte (the param defaults to `para`).
+  resolveVaultProfile,
+  getProfileSpec,
+  DEFAULT_VAULT_PROFILE,
+  type VaultProfile,
+  type AnyDocType,
   // Story 13.1 — managed-create intent resolver lives in @lokyy/core so the
   // MCP `notes.create_managed` tool and the HTTP POST /api/notes/create-managed
   // route share DIESELBE Quelle (ISC-59 — no parallel write/path logic).
@@ -66,7 +75,6 @@ import {
   enqueue,
   listJobs,
   type CoreConfig,
-  type DocType,
   type BulkCreateItem,
   type BulkUpdateItem,
   type DataviewQuery,
@@ -139,6 +147,18 @@ let activeVaultId = "";
 let activeVaultDir = "";
 
 /**
+ * Module-level active SPEC-profile captured by `initServerDeps` (Story S7 demo
+ * subset). Resolved ONCE at boot via core's `resolveVaultProfile({ vaultId })`
+ * — env-driven (`LOKYY_VAULT_PROFILE` / `LOKYY_VAULT_PROFILE_<VAULTID>`),
+ * Default `para` — exactly analogous to how `activeVaultId` is resolved at
+ * boot. The CallTool handlers close over it (like `activeVaultId`) and thread
+ * it into the profile-aware core entry points (createNote / resolveManagedCreate
+ * / resolveCreateNoteInput / validateFrontmatter / getVaultConventions). A
+ * `para` vault keeps Default behaviour byte-for-byte.
+ */
+let activeVaultProfile: VaultProfile = DEFAULT_VAULT_PROFILE;
+
+/**
  * Module-level vault-resolution warning captured by `initServerDeps`. Computed
  * ONCE at boot (one detection call, kept off the per-request path so get_health
  * stays cheap — AC#5/10.8-AC#6). `createServer()` reads this synchronously so
@@ -168,6 +188,18 @@ export async function initServerDeps(
   await loadScopes(coreConfig.vaultDir, agentId);
   activeVaultId = vaultId;
   activeVaultDir = coreConfig.vaultDir;
+
+  // Story S7 (demo subset) — resolve the active SPEC-profile for THIS vault,
+  // analogous to the vault-id resolution above. Env-driven, Default `para`:
+  //   - LOKYY_VAULT_PROFILE_<VAULTID> (per-vault override, vaultId upper-cased,
+  //     non-alnum → `_`) wins, else LOKYY_VAULT_PROFILE (single-vault), else
+  //     the PARA default. Pure + side-effect-free in core; safe at boot.
+  activeVaultProfile = resolveVaultProfile({ vaultId });
+  if (activeVaultProfile !== DEFAULT_VAULT_PROFILE) {
+    console.log(
+      `[lokyy-mcp] active vault profile: ${activeVaultProfile} (vault ${vaultId})`,
+    );
+  }
 
   // Story 10.13/10.8 — multi-vault detection for get_health.vault_warning.
   // Computed ONCE at boot (one detection call, kept off the per-request path so
@@ -204,6 +236,11 @@ export function createServer(): Server {
   // module-level `activeVaultWarning`; read synchronously here so each per-session
   // `Server` surfaces the same warning without re-running detection.
   const vaultWarning = activeVaultWarning;
+
+  // Story S7 (demo subset) — capture the active SPEC-profile so every handler
+  // in this `Server` closes over the same value (resolved once in
+  // `initServerDeps`). `para` by default → Default behaviour unchanged.
+  const profile = activeVaultProfile;
 
   const server = new Server(
     { name: "lokyy-brain", version: "0.0.1" },
@@ -285,10 +322,12 @@ export function createServer(): Server {
             title: { type: "string" },
             type: {
               type: "string",
-              // Single source of truth — enum mirrors DOC_TYPES from @lokyy/core
-              // (incl. `skill`, `peer`) so the tool surface never drifts.
-              enum: [...DOC_TYPES],
-              default: "note",
+              // Single source of truth — enum mirrors the ACTIVE profile's
+              // doc-types from @lokyy/core (PARA's 15 incl. `skill`/`peer`, or
+              // karpathy's raw-source/wiki-article/frage-report) so the tool
+              // surface never drifts from what the handler will accept.
+              enum: [...getProfileSpec(profile).docTypes],
+              default: profile === "para" ? "note" : getProfileSpec(profile).docTypes[0],
             },
             frontmatter: {
               type: "object",
@@ -456,7 +495,14 @@ export function createServer(): Server {
                   id: { type: "string", description: "Note id (path without .md), e.g. '10_projects/foo/overview'." },
                   body: { type: "string", description: "Markdown body (optional)." },
                   title: { type: "string" },
-                  type: { type: "string", enum: [...DOC_TYPES], default: "note" },
+                  type: {
+                    type: "string",
+                    // Story S7 — the ACTIVE profile's doc-types (PARA superset
+                    // or karpathy's three) so bulk-create advertises what the
+                    // handler accepts on this vault.
+                    enum: [...getProfileSpec(profile).docTypes],
+                    default: profile === "para" ? "note" : getProfileSpec(profile).docTypes[0],
+                  },
                 },
                 required: ["id"],
               },
@@ -642,11 +688,11 @@ export function createServer(): Server {
             body: { type: "string", description: "Markdown body (optional — defaults to '# {title}')." },
             type: {
               type: "string",
-              // Brain's FULL enum (superset of ADR-004's NoteType subset —
-              // backward-compatible: every ADR type is accepted, plus the
-              // extended ones skill/peer/tool/resource/reference).
-              enum: [...DOC_TYPES],
-              default: "note",
+              // The ACTIVE profile's doc-types (PARA's full superset, or
+              // karpathy's raw-source/wiki-article/frage-report). Story S7 —
+              // matches what resolveManagedCreate will accept on this vault.
+              enum: [...getProfileSpec(profile).docTypes],
+              default: profile === "para" ? "note" : getProfileSpec(profile).docTypes[0],
             },
             tags: {
               type: "array",
@@ -754,7 +800,7 @@ export function createServer(): Server {
           // AC#1/2/4 — resolve type (strict, no silent coerce) + path
           // (derive from type+slug when omitted). Pure function so the
           // decision logic is unit-testable without a live DB/git server.
-          const resolved = resolveCreateNoteInput(args);
+          const resolved = resolveCreateNoteInput(args, profile);
           if (!resolved.ok) return text(resolved.error);
           const { type, path } = resolved;
 
@@ -775,6 +821,10 @@ export function createServer(): Server {
               {
                 title: args.title as string | undefined,
                 type,
+                // Story S7 — thread the active profile so path-derivation,
+                // placement guard, and schema validation use the karpathy
+                // contract on a karpathy vault (no-op for `para`).
+                profile,
                 ...(extra ? { extra } : {}),
                 // AC#5 — couple folder to type; contradictory paths throw
                 // TypeFolderMismatchError, surfaced as a structured error.
@@ -941,7 +991,7 @@ export function createServer(): Server {
         case "get_vault_conventions": {
           // Story 10.4 — pure, no scope gate (it describes the vault shape, not
           // any note's content).
-          return text(getVaultConventions());
+          return text(getVaultConventions(profile));
         }
         case "get_skill_schema": {
           // Story 10.5 — pure schema + example + field docs.
@@ -974,7 +1024,7 @@ export function createServer(): Server {
           // Story 10.10 — atomic bulk create via core `createNotes` (validate-all
           // then write-all). Per-item write-scope BEFORE handing to core, so an
           // out-of-scope item is rejected without writing anything.
-          const items = normalizeBulkCreate(args.notes);
+          const items = normalizeBulkCreate(args.notes, profile);
           const scopeErr = firstWriteScopeViolation(items.map((i) => i.id));
           if (scopeErr) throw scopeErr;
           const result = await createNotes(items);
@@ -1065,7 +1115,7 @@ export function createServer(): Server {
         case "validate_note": {
           // Story 10.17 — frontmatter validation without writing. Source the
           // markdown from `path` (read + scope-gated) OR a raw `body` string.
-          return validateNote(args);
+          return validateNote(args, profile);
         }
 
         /* ---- Story 13.1 — OS-MCP-contract NEW tools (snake_case, 13.2 fix) ---- */
@@ -1074,7 +1124,10 @@ export function createServer(): Server {
           // derives the path from `type` (NEVER trusts a client path), then
           // reuses the existing createNote path so ULID/created/updated/
           // frontmatter assembly + SPEC validation are identical to create_note.
-          const resolved = resolveManagedCreate(args);
+          // Story S7 — resolve the INTENT under the active profile so a
+          // karpathy vault derives RAW/Wiki/Outputs paths and accepts
+          // raw-source/wiki-article/frage-report; `para` keeps Default.
+          const resolved = resolveManagedCreate(args, new Date(), profile);
           if (!resolved.ok) return text(resolved.error);
           const { type, path, title, tags } = resolved;
 
@@ -1088,6 +1141,9 @@ export function createServer(): Server {
             const note = await createNote(path, args.body as string | undefined, {
               title,
               type,
+              // Story S7 — same profile drives createNote's path-derivation,
+              // placement guard, and SPEC validation.
+              profile,
               ...(extra ? { extra } : {}),
               // Couple folder to type; a contradictory derived path can never
               // happen (we derive it), but keep the guard on for the
@@ -1337,7 +1393,10 @@ type ValidateNoteError = ValidationErrorDetail;
  *
  * Returns the `text()`-wrapped tool payload.
  */
-async function validateNote(args: Record<string, unknown>) {
+async function validateNote(
+  args: Record<string, unknown>,
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
+) {
   const path = typeof args.path === "string" && args.path.length > 0 ? args.path : undefined;
   const rawBody = typeof args.body === "string" ? args.body : undefined;
 
@@ -1365,8 +1424,11 @@ async function validateNote(args: Record<string, unknown>) {
   const data: FrontmatterMap = parseFrontmatter(markdown).data;
   // `type` drives schema selection; validateFrontmatter returns a structured
   // enum error for a missing/unknown type (no throw), so pass it through as-is.
-  const type = data.type as DocType;
-  const result = validateFrontmatter(data, type);
+  // Story S7 — widen to AnyDocType + pass the active profile so a karpathy note
+  // (raw-source/wiki-article/frage-report) validates against the karpathy
+  // schema set instead of being rejected as an unknown PARA type.
+  const type = data.type as AnyDocType;
+  const result = validateFrontmatter(data, type, profile);
   return text({ valid: result.valid, errors: result.errors });
 }
 
@@ -1374,20 +1436,37 @@ async function validateNote(args: Record<string, unknown>) {
  *  Story 10.10 — bulk create/update helpers.
  * ------------------------------------------------------------------ */
 
-/** Coerce the `notes` arg into `BulkCreateItem[]` (id + body + per-item opts). */
-function normalizeBulkCreate(raw: unknown): BulkCreateItem[] {
+/**
+ * Coerce the `notes` arg into `BulkCreateItem[]` (id + body + per-item opts).
+ * Story S7 — `profile` (Default `para`) drives the type guard (so a karpathy
+ * vault accepts raw-source/wiki-article/frage-report) and is threaded into each
+ * item's `opts` so core's per-item createNote derives/validates under the right
+ * profile. A `para` vault keeps Default behaviour byte-for-byte.
+ */
+function normalizeBulkCreate(
+  raw: unknown,
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
+): BulkCreateItem[] {
   const arr = Array.isArray(raw) ? raw : [];
+  const allowed = getProfileSpec(profile).docTypes as readonly string[];
+  const isProfileType = (v: unknown): v is AnyDocType =>
+    typeof v === "string" && allowed.includes(v);
   return arr.map((n) => {
     const o = (n ?? {}) as Record<string, unknown>;
     const id = String(o.id ?? o.path ?? "");
-    const type = isDocType(o.type) ? o.type : undefined;
+    const type = isProfileType(o.type) ? o.type : undefined;
     const title = typeof o.title === "string" ? o.title : undefined;
     return {
       id,
       ...(typeof o.body === "string" ? { body: o.body } : {}),
       // validatePlacement mirrors single create_note (Story 10.2) so bulk
       // items obey the same type→folder coupling; core validates it pre-flight.
-      opts: { ...(type ? { type } : {}), ...(title ? { title } : {}), validatePlacement: true },
+      opts: {
+        ...(type ? { type } : {}),
+        ...(title ? { title } : {}),
+        profile,
+        validatePlacement: true,
+      },
     };
   });
 }
@@ -1593,16 +1672,6 @@ function slugifyForScope(name: string): string {
   return slug.length > 0 ? slug : "skill";
 }
 
-/**
- * Runtime type-guard for the closed DOC_TYPES list (Story 10.2, AC#1/2).
- * The MCP SDK does not validate `arguments` against the inputSchema enum, so
- * the create_note handler relies on this explicit check to reject unknown
- * types instead of silently coercing them to "note".
- */
-function isDocType(value: unknown): value is DocType {
-  return typeof value === "string" && (DOC_TYPES as readonly string[]).includes(value);
-}
-
 /** Structured error payloads `create_note` returns before touching disk. */
 export type CreateNoteInputError =
   | { error: "invalid-type"; got: unknown; allowed: string[] }
@@ -1610,7 +1679,7 @@ export type CreateNoteInputError =
 
 /** Resolved type + target path for a valid `create_note` request. */
 export type CreateNoteInput =
-  | { ok: true; type: DocType; path: string }
+  | { ok: true; type: AnyDocType; path: string }
   | { ok: false; error: CreateNoteInputError };
 
 /**
@@ -1626,17 +1695,29 @@ export type CreateNoteInput =
  */
 export function resolveCreateNoteInput(
   args: Record<string, unknown>,
+  profile: VaultProfile = DEFAULT_VAULT_PROFILE,
 ): CreateNoteInput {
+  // Story S7 — the allowed doc-type set, the absent-type default, the derived
+  // path, and the expected-folder hint all come from the ACTIVE profile. For
+  // `para` this is byte-identical to the old DOC_TYPES / "note" / non-dated
+  // behaviour; for karpathy it accepts raw-source/wiki-article/frage-report and
+  // derives RAW/Wiki/Outputs paths.
+  const allowed = getProfileSpec(profile).docTypes as readonly AnyDocType[];
+  const isProfileType = (v: unknown): v is AnyDocType =>
+    typeof v === "string" && (allowed as readonly string[]).includes(v);
+
   const rawType = args.type;
-  let type: DocType;
+  let type: AnyDocType;
   if (rawType === undefined || rawType === null) {
-    type = "note";
-  } else if (isDocType(rawType)) {
+    // PARA default is "note"; karpathy has no "note", so fall back to its first
+    // type (raw-source) as the safe ingest default — mirrors resolveManagedCreate.
+    type = profile === "para" ? "note" : (allowed[0] ?? "note");
+  } else if (isProfileType(rawType)) {
     type = rawType;
   } else {
     return {
       ok: false,
-      error: { error: "invalid-type", got: rawType, allowed: [...DOC_TYPES] },
+      error: { error: "invalid-type", got: rawType, allowed: [...allowed] },
     };
   }
 
@@ -1644,14 +1725,18 @@ export function resolveCreateNoteInput(
     return { ok: true, type, path: args.path };
   }
   if (typeof args.slug === "string" && args.slug.length > 0) {
-    return { ok: true, type, path: derivePathForType(type, args.slug) };
+    return {
+      ok: true,
+      type,
+      path: derivePathForType(type, args.slug, new Date(), profile),
+    };
   }
   return {
     ok: false,
     error: {
       error: "missing-path",
       message: "Provide either `path` or `slug`.",
-      expectedFolder: folderForType(type),
+      expectedFolder: folderForType(type, profile),
     },
   };
 }
