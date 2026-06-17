@@ -1,4 +1,5 @@
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 // Install the console.warn/error → ring-buffer capture as EARLY as possible so
 // startup warnings (LLM registry, sleep-agent scheduler) land in /api/logs.
@@ -355,6 +356,14 @@ app.route("/api/templates", templatesRoutes);
 // darf nicht in eine Setup-Wall laufen, wenn der Setup schon durch ist.
 app.use("/api/settings/*", setupGate);
 app.route("/api/settings", settingsRoutes);
+
+// ── Statische PWA (Single-Service-Demo) ────────────────────────────────
+// NACH allen /api-Routen + /health registriert, damit die API Vorrang hat.
+// Der Server liefert die mitgebaute PWA (pwa/dist, vom Dockerfile kopiert) aus
+// und fällt für unbekannte Routen auf index.html zurück (SPA-Routing).
+// cwd ist /app/server (Dockerfile WORKDIR), pwa/dist liegt unter /app/pwa/dist.
+app.use("/*", serveStatic({ root: "../pwa/dist" }));
+app.get("*", serveStatic({ path: "../pwa/dist/index.html" }));
 
 // Pipe-Handler registrieren — ein neuer Pipe ist eine Zeile mehr hier.
 registerHandler("youtube", youtubeHandler);
