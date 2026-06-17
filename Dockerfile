@@ -62,9 +62,7 @@ COPY --from=build /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml
 
 EXPOSE 8787
 WORKDIR /app/server
-# DEBUG: Wenn LOKYY_DEBUG_HOLD=1, Container nach App-Ende offenhalten, damit das
-# Absturz-Log auslesbar bleibt (Coolify ignoriert compose `command`, CMD greift sicher).
-CMD ["sh","-lc","node dist/index.js; code=$?; echo \"=== LOKYY-BRAIN EXITED code=$code ===\"; if [ \"${LOKYY_DEBUG_HOLD}\" = \"1\" ]; then echo 'DEBUG_HOLD aktiv — halte Container offen'; sleep 86400; fi; exit $code"]
+CMD ["node", "dist/index.js"]
 
 # ─── MCP-only target (Coolify Architektur B) ────────────────────────────
 # Carries the compiled MCP HTTP transport and the core/shared packages it
