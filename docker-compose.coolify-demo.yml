@@ -1,7 +1,16 @@
-# DEBUG-Variante: nur postgres+brain, DEBUG_HOLD an, um die aktuelle DB-Fehlerzeile
-# zu lesen. Wird nach dem Fix auf die volle Demo (pwa+mcp) zurueckgesetzt.
+# lokyy-brain — SCHLANKE DEMO-Compose (für die Kurs-Aufnahme).
+#
+# Stack: Postgres (ParadeDB) + Brain + MCP + PWA. Kein Ollama (Tier-1-Suche reicht),
+# kein zweites Forgejo. Alles in EINER Coolify-Compose-Resource → native Docker-DNS.
+#
+# GELÖSTE STOLPERFALLE: POSTGRES_PASSWORD greift nur bei der ERST-Initialisierung
+# des Datenvolumes. Ein bestehendes Volume behält sein altes Passwort →
+# "password authentication failed". Darum heißt das Volume bewusst
+# 'postgres-data2' (frisch initialisiert mit 'lokyybraininternal'). Postgres hat
+# KEIN `ports:` → kein Public Port → internes Passwort unkritisch.
 
 services:
+  # ── Postgres (ParadeDB: pgvector + pg_search) — intern, kein Public Port ──
   postgres:
     image: paradedb/paradedb:latest-pg17
     restart: unless-stopped
@@ -18,11 +27,12 @@ services:
       retries: 24
       start_period: 30s
 
+  # ── Server (Hono REST API + Setup-Wizard-Backend) ──────────────────────
   lokyy-brain:
     build:
       context: .
       dockerfile: Dockerfile
-      target: server
+      target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
     depends_on:
       postgres:
@@ -31,18 +41,80 @@ services:
       - SERVICE_FQDN_LOKYYBRAIN_8787
       - DATABASE_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
+      # HART auf 'para' — 'karpathy' killt den Server ~30s nach Start.
       - LOKYY_VAULT_PROFILE=para
+      # KEIN OLLAMA_HOST → Ollama wird nicht registriert, Tier-2 bleibt aus.
+      - SUPADATA_API_KEY=${SUPADATA_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
       - PORT=8787
       - NODE_ENV=production
-      - LOKYY_DEBUG_HOLD=1
     volumes:
       - vault-data:/var/lokyy/vault
     healthcheck:
-      test: ["CMD-SHELL", "exit 0"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8787,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
       interval: 15s
       timeout: 5s
       retries: 10
       start_period: 60s
+
+  # ── PWA (nginx/wget-served static build) ───────────────────────────────
+  lokyy-pwa:
+    build:
+      context: .
+      dockerfile: pwa/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      lokyy-brain:
+        condition: service_started
+    environment:
+      - SERVICE_FQDN_LOKYYPWA_80
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ── MCP HTTP transport (claude.ai Custom-Connector-Endpoint) ───────────
+  lokyy-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: mcp             # WICHTIG: explizit mcp-Stage.
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lokyy-brain:
+        condition: service_started
+    environment:
+      - SERVICE_FQDN_LOKYYMCP_8788
+      - LOKYY_DB_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
+      - LOKYY_VAULT_DIR=/var/lokyy/vault
+      - LOKYY_VAULT_PROFILE=para
+      - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
+      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
+      - LOKYY_MCP_HTTP_PORT=8788
+      - LOKYY_BRAIN_URL=http://lokyy-brain:8787
+      - NODE_ENV=production
+    volumes:
+      - vault-data:/var/lokyy/vault
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8788,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
 volumes:
   postgres-data2:
