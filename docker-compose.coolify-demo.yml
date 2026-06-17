@@ -55,6 +55,10 @@ services:
       dockerfile: Dockerfile
       target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
+    # DEBUG: App starten, Ausgabe behalten, danach Container per sleep am Leben halten.
+    # Zusammen mit dem exit-0-Healthcheck trennt das OOM (Container stirbt trotzdem)
+    # von Code-Crash (Container bleibt, Brain-Log wird lesbar).
+    command: ["sh","-lc","node dist/index.js 2>&1; echo \"=== LOKYY-BRAIN EXIT CODE $? ===\"; sleep 86400"]
     depends_on:
       postgres:
         condition: service_healthy
