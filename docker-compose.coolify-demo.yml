@@ -55,10 +55,6 @@ services:
       dockerfile: Dockerfile
       target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
-    # DEBUG: App starten, Ausgabe behalten, danach Container per sleep am Leben halten.
-    # Zusammen mit dem exit-0-Healthcheck trennt das OOM (Container stirbt trotzdem)
-    # von Code-Crash (Container bleibt, Brain-Log wird lesbar).
-    command: ["sh","-lc","node dist/index.js 2>&1; echo \"=== LOKYY-BRAIN EXIT CODE $? ===\"; sleep 86400"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -79,8 +75,11 @@ services:
     volumes:
       - vault-data:/var/lokyy/vault
     healthcheck:
-      # DEBUG: immer gesund — testet, ob Coolify den Container wegen Healthcheck killt.
-      test: ["CMD-SHELL", "exit 0"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8787,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
       interval: 15s
       timeout: 5s
       retries: 10
@@ -98,7 +97,7 @@ services:
     environment:
       - SERVICE_FQDN_LOKYYPWA_80
     healthcheck:
-      test: ["CMD-SHELL", "exit 0"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 6
@@ -129,7 +128,11 @@ services:
     volumes:
       - vault-data:/var/lokyy/vault
     healthcheck:
-      test: ["CMD-SHELL", "exit 0"]
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8788,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
       interval: 15s
       timeout: 5s
       retries: 10
