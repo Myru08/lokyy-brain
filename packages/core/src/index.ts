@@ -409,6 +409,8 @@ export {
   // what the MCP layer + future callers import from `@lokyy/core`.
   getQuarantinedNotes,
   clearQuarantine,
+  // Gate-0 recovery — bulk un-quarantine after the array-binding fix ships.
+  clearAllQuarantine,
   getBreakerStateSize,
   type QuarantinedNote,
 } from "./memory/index.js";

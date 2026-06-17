@@ -179,6 +179,28 @@ export function clearQuarantine(noteId: string): void {
   breakerByNote.delete(noteId);
 }
 
+/**
+ * Clear ALL breaker/quarantine state and report how many entries were dropped
+ * (Gate-0 recovery). Idempotent: a second call returns 0.
+ *
+ * WHY this exists: the Gate-0 array-binding bug (`Tier1BM25.upsert`) made every
+ * tag-less note fail its index write and get quarantined. After the fix is
+ * deployed those notes will index correctly again — but the in-memory breaker
+ * still holds their stale quarantine entries and SKIPS them until a successful
+ * write or an explicit clear. This is the smallest correct recovery lever: call
+ * it once after deploying the fix, then the next save of each affected note
+ * (or a re-index) upserts successfully because the bug is gone.
+ *
+ * NOTE: breaker state is process-local and in-memory. Restarting the
+ * server/container ALSO clears all quarantine — that is the zero-code operator
+ * path; this function is the no-restart equivalent for an operator/health tool.
+ */
+export function clearAllQuarantine(): number {
+  const cleared = breakerByNote.size;
+  breakerByNote.clear();
+  return cleared;
+}
+
 /** Test hook — wipe all breaker state so cases start from a clean slate. */
 export function resetQuarantineState(): void {
   breakerByNote.clear();

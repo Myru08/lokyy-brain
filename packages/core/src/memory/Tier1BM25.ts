@@ -129,9 +129,21 @@ export class Tier1BM25 {
     // Story 10.1, AC#2/AC#4: index writes run on the isolated index pool so a
     // slow/failing ParadeDB index-maintenance write can never starve the main
     // read/search pool. The statement remains idempotent via ON CONFLICT.
+    //
+    // Gate-0 fix: bind `tags` as a SINGLE array parameter via `sql.param(tags)`
+    // rather than interpolating the JS array directly. In drizzle-orm 0.36.4 a
+    // bare `${tags}` in an sql-template is *expanded* into a comma-separated
+    // placeholder list — `($1, $2)` for `['a','b']` and, fatally, `()` for the
+    // empty array, which Postgres rejects with `syntax error at or near ")"`
+    // (SQLSTATE 42601). That 42601 made every tag-less note fail its index
+    // write, trip the per-note circuit breaker after 3 attempts, and fall out
+    // of the BM25 index entirely. `sql.param(tags)` compiles to a single bound
+    // placeholder (`$N::text[]`) so postgres.js serialises the array to a
+    // proper `text[]` literal — `'{}'` for `[]`, `'{"a","b"}'` for `['a','b']`
+    // — for BOTH the empty and non-empty cases.
     await indexDatabase().execute(sql`
       INSERT INTO note_search (note_id, vault_id, title, body, tags, forgotten, updated_at)
-      VALUES (${noteId}, ${vaultId}, ${title}, ${body}, ${tags as unknown as string}::text[], ${forgotten}, NOW())
+      VALUES (${noteId}, ${vaultId}, ${title}, ${body}, ${sql.param(tags)}::text[], ${forgotten}, NOW())
       ON CONFLICT (note_id) DO UPDATE
         SET vault_id   = EXCLUDED.vault_id,
             title      = EXCLUDED.title,
