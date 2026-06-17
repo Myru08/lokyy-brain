@@ -63,7 +63,7 @@ services:
       - SERVICE_FQDN_LOKYYPWA_80
     depends_on:
       lokyy-brain:
-        condition: service_healthy
+        condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
       interval: 10s
@@ -81,7 +81,7 @@ services:
       postgres:
         condition: service_healthy
       lokyy-brain:
-        condition: service_healthy
+        condition: service_started
     environment:
       - SERVICE_FQDN_LOKYYMCP_8788
       - LOKYY_DB_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
