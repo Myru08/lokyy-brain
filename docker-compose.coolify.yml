@@ -133,7 +133,10 @@ services:
       - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
       - POSTGRES_DB=lokyy_brain
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # Postgres 18+ (ParadeDB latest) speichert Daten versioniert UNTER
+      # /var/lib/postgresql — daher den Mount dorthin, nicht auf /data.
+      # Neuer Volume-Name erzwingt eine frische, PG18-konforme Initialisierung.
+      - postgres-data-pg:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d lokyy_brain"]
       interval: 5s
@@ -173,5 +176,5 @@ services:
 volumes:
   vault-data:
   forgejo-data:
-  postgres-data:
+  postgres-data-pg:
   ollama-data:
