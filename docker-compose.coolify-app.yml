@@ -43,7 +43,12 @@ services:
     environment:
       # Coolify magic-var → rewritten to public FQDN + Traefik labels auto-added.
       - SERVICE_FQDN_LOKYYBRAIN_8787
-      - DATABASE_URL=${DATABASE_URL}
+      # Wird automatisch zusammengebaut aus zwei einfachen Werten, die du in der
+      # Coolify-App-Env setzt:
+      #   POSTGRES_HOST     = UUID der Postgres-Resource (z. B. ba85vwbow5cl1n5epeu6yolo)
+      #   POSTGRES_PASSWORD = aus der Postgres-Resource (deren Env-Variable)
+      # Kein manuelles URL-Basteln mehr.
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
       - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
       - GIT_REMOTE=${GIT_REMOTE}
@@ -97,7 +102,7 @@ services:
         condition: service_healthy
     environment:
       - SERVICE_FQDN_LOKYYMCP_8788
-      - LOKYY_DB_URL=${DATABASE_URL}
+      - LOKYY_DB_URL=postgres://postgres:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:5432/lokyy_brain
       - LOKYY_VAULT_DIR=/var/lokyy/vault
       - LOKYY_GIT_REMOTE=${GIT_REMOTE}
       - LOKYY_GIT_BRANCH=${GIT_BRANCH:-main}
