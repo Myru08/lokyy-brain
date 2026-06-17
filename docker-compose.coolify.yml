@@ -33,9 +33,9 @@ services:
     environment:
       # Coolify magic-var → rewritten to public FQDN + Traefik labels auto-added.
       - SERVICE_FQDN_LOKYYBRAIN_8787
-      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
+      - DATABASE_URL=postgres://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
-      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
+      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-karpathy}
       - GIT_REMOTE=${GIT_REMOTE}
       - GIT_BRANCH=${GIT_BRANCH:-main}
       - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-lokyy-brain}
@@ -84,14 +84,14 @@ services:
         condition: service_healthy
     environment:
       - SERVICE_FQDN_LOKYYMCP_8788
-      - LOKYY_DB_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
+      - LOKYY_DB_URL=postgres://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/lokyy_brain
       - LOKYY_VAULT_DIR=/var/lokyy/vault
       - LOKYY_GIT_REMOTE=${GIT_REMOTE}
       - LOKYY_GIT_BRANCH=${GIT_BRANCH:-main}
       - LOKYY_VAULT_ID=${LOKYY_VAULT_ID}
-      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
+      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-karpathy}
       - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
-      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
+      - LOKYY_MCP_TOKEN=${SERVICE_PASSWORD_MCPTOKEN}
       - LOKYY_MCP_HTTP_PORT=8788
       - NODE_ENV=production
     volumes:
@@ -128,7 +128,9 @@ services:
     image: paradedb/paradedb:latest
     restart: unless-stopped
     environment:
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      # Coolify generiert + persistiert dieses Secret automatisch (Magic-Var).
+      # Kein manuelles Eintragen nötig — wie bei einer Coolify-Managed-DB.
+      - POSTGRES_PASSWORD=${SERVICE_PASSWORD_POSTGRES}
       - POSTGRES_DB=lokyy_brain
     volumes:
       - postgres-data:/var/lib/postgresql/data
