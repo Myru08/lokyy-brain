@@ -18,10 +18,10 @@ import { C, FONT } from "./theme.js";
 
 type StepKey = "forgejo" | "postgres" | "ollama" | "admin" | "done";
 const STEP_ORDER: StepKey[] = [
+  "admin",
   "forgejo",
   "postgres",
   "ollama",
-  "admin",
   "done",
 ];
 const STEP_LABEL: Record<StepKey, string> = {
@@ -62,7 +62,7 @@ type WizardState = {
 };
 
 const initialState: WizardState = {
-  step: "forgejo",
+  step: "admin",
   forgejo: {
     gitRemote: { value: "", testStatus: "idle" },
     gitBranch: "main",
@@ -166,7 +166,14 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         return;
       }
 
-      // info.configured === true: connection endpoint should be live
+      // info.configured === true: connection endpoint should be live.
+      // 401 = no session yet (e.g. landed here before the admin step finished) —
+      // treat as "not connected" and show the Connect flow, never a fatal error.
+      if (connRes.status === 401) {
+        setForgejoConn({ connected: false });
+        setForgejoPhase("not-connected");
+        return;
+      }
       if (!connRes.ok) throw new Error(`connection HTTP ${connRes.status}`);
       const conn = (await connRes.json()) as ForgejoConnection;
       setForgejoConn(conn);
@@ -287,15 +294,34 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
   }
 
   useEffect(() => {
-    // Strip the OAuth callback marker from the URL on first mount so refreshes
-    // don't re-trigger the flow. The presence of the param means we just came
-    // back from Forgejo — kick a refetch either way.
+    // After the full-page OAuth redirect the React state is fresh, so re-hydrate
+    // the admin identity from the session cookie — completeSetup() needs userId.
+    void (async () => {
+      try {
+        const res = await fetch("/api/auth/me");
+        if (res.ok) {
+          const me = (await res.json()) as { userId?: string };
+          const uid = me.userId;
+          if (uid) {
+            setS((p) => ({
+              ...p,
+              admin: { ...p.admin, userId: uid, submitState: "ok" },
+            }));
+          }
+        }
+      } catch {
+        // not logged in yet — the admin step creates the session.
+      }
+    })();
+
+    // Returning from Forgejo OAuth? Strip the marker and land on the Forgejo
+    // step so the user can pick a repo. The per-step effect loads the status.
     if (typeof window !== "undefined" && window.location.search.includes("forgejo=connected")) {
       const url = new URL(window.location.href);
       url.searchParams.delete("forgejo");
       window.history.replaceState({}, "", url.pathname + (url.search ? `?${url.searchParams}` : "") + url.hash);
+      setStep("forgejo");
     }
-    void loadForgejoStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -348,7 +374,10 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
   }
 
   useEffect(() => {
-    if (s.step === 'postgres') {
+    if (s.step === 'forgejo') {
+      // Admin step ran first, so a session cookie now exists → no more 401.
+      void loadForgejoStatus();
+    } else if (s.step === 'postgres') {
       void loadPgStatus();
     } else if (s.step === 'ollama') {
       void loadOllamaStatus();
@@ -601,7 +630,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
             )}
             <NextRow
               enabled={ollama.phase === 'ok'}
-              onNext={() => setStep('admin')}
+              onNext={() => setStep('done')}
             />
           </StepShell>
         )}
@@ -620,7 +649,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
             />
             <NextRow
               enabled={s.admin.submitState === "ok"}
-              onNext={() => setStep("done")}
+              onNext={() => setStep("forgejo")}
             />
           </StepShell>
         )}

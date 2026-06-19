@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { setCookie } from "hono/cookie";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import postgres from "postgres";
@@ -19,10 +20,24 @@ import {
 } from "@lokyy/core";
 import { config } from "../config.js";
 import { seedSkills } from "../setup/seedSkills.js";
+import { createSession } from "../auth/sessions.js";
 
 const exec = promisify(execFile);
 
 export const setupRoutes = new Hono();
+
+// Mirrors sessionCookieOpts in routes/auth.ts — keep in sync. secure:false
+// works over HTTPS too (browser still sends it); set true only if you drop
+// the HTTP entrypoint entirely.
+function sessionCookieOpts(expires: Date) {
+  return {
+    path: "/",
+    httpOnly: true,
+    sameSite: "Lax" as const,
+    secure: false,
+    expires,
+  };
+}
 
 // GET /api/setup/status
 setupRoutes.get("/status", async (c) => {
@@ -206,6 +221,10 @@ setupRoutes.post("/admin", async (c) => {
         .set({ role: "admin" })
         .where(eq(users.id, u.id));
     }
+    // Log the admin in immediately (session + cookie) — the wizard runs the
+    // admin step FIRST so the Forgejo-OAuth step has an authenticated session.
+    const session = await createSession(u.id);
+    setCookie(c, "lokyy_session", session.id, sessionCookieOpts(session.expiresAt));
     return c.json({ userId: u.id, reused: true });
   }
 
@@ -221,6 +240,9 @@ setupRoutes.post("/admin", async (c) => {
     name,
     role: "admin",
   });
+  // Log the admin in immediately (session + cookie) — see note above.
+  const session = await createSession(id);
+  setCookie(c, "lokyy_session", session.id, sessionCookieOpts(session.expiresAt));
   return c.json({ userId: id });
 });
 
