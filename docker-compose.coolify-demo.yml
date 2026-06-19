@@ -61,39 +61,6 @@ services:
       retries: 5
       start_period: 60s
 
-  # ── MCP HTTP transport (claude.ai Custom-Connector, Lese+Schreib auf den Vault) ──
-  # Teilt sich das vault-data-Volume mit dem Brain → liest/schreibt denselben
-  # Working-Copy; Schreibvorgänge laufen über den Brain (LOKYY_BRAIN_URL).
-  lokyy-mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: mcp             # WICHTIG: explizit mcp-Stage.
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      lokyy-brain:
-        condition: service_started
-    environment:
-      - SERVICE_FQDN_LOKYYMCP_8788
-      - LOKYY_DB_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
-      - LOKYY_VAULT_DIR=/var/lokyy/vault
-      - LOKYY_VAULT_PROFILE=para
-      - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
-      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
-      - LOKYY_MCP_HTTP_PORT=8788
-      - LOKYY_BRAIN_URL=http://lokyy-brain:8787
-      - NODE_ENV=production
-    volumes:
-      - vault-data:/var/lokyy/vault
-    healthcheck:
-      test: ["CMD-SHELL", "exit 0"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
 volumes:
   postgres-data2:
   vault-data:
