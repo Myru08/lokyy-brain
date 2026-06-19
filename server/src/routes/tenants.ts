@@ -122,14 +122,30 @@ tenantRoutes.post("/", async (c) => {
   if (useForgejo) {
     const baseOrigin = new URL(config.forgejoBaseUrl).origin;
     const org = config.forgejoTenantsOrg;
+    const fjHeaders = {
+      Authorization: `Bearer ${config.forgejoAdminToken}`,
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    // Ensure the tenants org exists — Lokyy owns it, no manual Forgejo step.
+    // Idempotent: 422/409 = already there.
+    const orgRes = await fetch(`${baseOrigin}/api/v1/orgs`, {
+      method: "POST",
+      headers: fjHeaders,
+      body: JSON.stringify({ username: org, visibility: "private" }),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!orgRes.ok && orgRes.status !== 422 && orgRes.status !== 409) {
+      const text = await orgRes.text().catch(() => "");
+      return c.json(
+        { error: "forgejo-org-failed", status: orgRes.status, body: text.slice(0, 300) },
+        502,
+      );
+    }
     const createUrl = `${baseOrigin}/api/v1/orgs/${encodeURIComponent(org)}/repos`;
     const res = await fetch(createUrl, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${config.forgejoAdminToken}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: fjHeaders,
       body: JSON.stringify({
         name: slug,
         private: true,
