@@ -53,7 +53,7 @@ services:
       - PORT=8787
       - NODE_ENV=production
     volumes:
-      - vault-data:/var/lokyy/vault
+      - vault-data2:/var/lokyy/vault
     healthcheck:
       test: ["CMD-SHELL", "exit 0"]
       interval: 30s
@@ -63,4 +63,4 @@ services:
 
 volumes:
   postgres-data2:
-  vault-data:
+  vault-data2:
