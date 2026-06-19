@@ -107,7 +107,9 @@ forgejoOauthRoutes.get("/start", async (c) => {
   authorizeUrl.searchParams.set("redirect_uri", redirectUri);
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("state", state);
-  authorizeUrl.searchParams.set("scope", "write:repository");
+  // read:user → /api/v1/user-Lookup im Callback; write:repository → Repos
+  // listen/anlegen + Vault pushen. (Gitea: write:X impliziert read:X.)
+  authorizeUrl.searchParams.set("scope", "read:user write:repository");
 
   return c.redirect(authorizeUrl.toString(), 302);
 });
