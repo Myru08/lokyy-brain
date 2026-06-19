@@ -28,10 +28,14 @@ export interface AgentScope {
   commitPrefix: string;
 }
 
+// Fallback when no mcp-scopes.yaml exists OR the connecting agent isn't declared.
+// Read+write to all markdown: the MCP bearer token is the gatekeeper (single-
+// tenant / shared-vault default). Lock this down with an explicit mcp-scopes.yaml
+// (per-agent read/write globs) for multi-agent / multi-tenant isolation.
 const FALLBACK_SCOPE: AgentScope = {
   readGlobs: ["**/*.md"],
-  writeGlobs: [],
-  commitPrefix: "[agent:unknown]",
+  writeGlobs: ["**/*.md"],
+  commitPrefix: "[agent:lokyy]",
 };
 
 let agents = new Map<string, AgentScope>();
@@ -89,7 +93,14 @@ export async function loadScopes(vaultDir: string, agentId: string): Promise<Age
   activeAgent = agentId;
   const scope = agents.get(agentId);
   if (!scope) {
-    throw new Error(`[mcp] agent "${agentId}" not declared in mcp-scopes.yaml. Default-deny.`);
+    // Undeclared agent → use the read+write fallback instead of hard-failing,
+    // so a vault whose scopes file predates this agent-id still works. Register
+    // it so activeScope()/canWrite() resolve consistently.
+    console.warn(
+      `[mcp] agent "${agentId}" not declared in mcp-scopes.yaml — using read+write fallback.`,
+    );
+    agents.set(agentId, FALLBACK_SCOPE);
+    return FALLBACK_SCOPE;
   }
   return scope;
 }

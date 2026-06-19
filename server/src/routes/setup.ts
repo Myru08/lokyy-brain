@@ -53,6 +53,56 @@ setupRoutes.get("/_reset", async (c) => {
   return c.json({ ok: true, reset: true });
 });
 
+// TEMP (Recovery): klont den BESTEHENDEN Vault (Zeile existiert schon → Wizard-
+// Insert würde an vaults_slug_key scheitern). Nutzt den gespeicherten Forgejo-
+// Token des Admins. Aufruf: GET /api/setup/_reclone?repo=Owner/repo[&branch=main]
+setupRoutes.get("/_reclone", async (c) => {
+  const repoFullName = c.req.query("repo");
+  const branch = c.req.query("branch") ?? "main";
+  if (!repoFullName) {
+    return c.json({ error: "repo query param required, e.g. ?repo=Owner/repo" }, 400);
+  }
+  const admin = (
+    await database().select().from(users).where(eq(users.role, "admin")).limit(1)
+  )[0];
+  if (!admin) return c.json({ error: "no-admin-user" }, 400);
+
+  const tokenRow = await loadToken(admin.id, config.forgejoBaseUrl);
+  if (!tokenRow) return c.json({ error: "no-forgejo-token" }, 400);
+  const accessToken = await getValidForgejoToken(admin.id, {
+    forgejoBaseUrl: config.forgejoBaseUrl,
+    clientId: config.forgejoOauthClientId,
+    clientSecret: config.forgejoOauthClientSecret,
+  });
+  if (!accessToken) return c.json({ error: "token-refresh-failed" }, 400);
+
+  const slug = repoFullName.split("/").pop()!.replace(/\.git$/i, "");
+  const vault =
+    (await database().select().from(vaults).where(eq(vaults.slug, slug)).limit(1))[0] ??
+    (await database().select().from(vaults).where(eq(vaults.ownerId, admin.id)).limit(1))[0];
+  if (!vault) return c.json({ error: "no-vault-row" }, 400);
+
+  try {
+    const result = await setupVaultFromForgejo({
+      vaultId: vault.id,
+      forgejoBaseUrl: tokenRow.forgejoBaseUrl,
+      accessToken,
+      repoFullName,
+      branch,
+    });
+    await database()
+      .update(vaults)
+      .set({ gitRemote: result.gitRemote, gitBranch: result.gitBranch })
+      .where(eq(vaults.id, vault.id));
+    return c.json({ ok: true, vaultId: vault.id, slug, gitBranch: result.gitBranch });
+  } catch (err) {
+    return c.json(
+      { ok: false, error: err instanceof Error ? `${err.name}: ${err.message}` : String(err) },
+      200,
+    );
+  }
+});
+
 // POST /api/setup/test-forgejo  { gitRemote, gitBranch? }
 setupRoutes.post("/test-forgejo", async (c) => {
   const { gitRemote, gitBranch = "main" } = await c.req.json<{
