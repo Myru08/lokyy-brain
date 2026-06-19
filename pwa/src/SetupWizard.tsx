@@ -626,10 +626,16 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                   Geprüfter Host: <code style={{ fontFamily: FONT.mono }}>{ollama.host}</code>.
                   Setze <code>OLLAMA_HOST</code> korrekt in den Container-Env-Vars.
                 </div>
+                <div style={{ marginTop: 8, fontSize: 12 }}>
+                  Ollama ist <strong>optional</strong> — es liefert nur die Tier-2-Suche
+                  (semantische Embeddings). Du kannst ohne fortfahren; die
+                  Tier-1-Volltextsuche (BM25) funktioniert auch ohne. Ollama lässt
+                  sich jederzeit später nachrüsten.
+                </div>
               </Note>
             )}
             <NextRow
-              enabled={ollama.phase === 'ok'}
+              enabled={ollama.phase === 'ok' || ollama.phase === 'fail'}
               onNext={() => setStep('done')}
             />
           </StepShell>
