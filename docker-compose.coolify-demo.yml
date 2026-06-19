@@ -54,6 +54,7 @@ services:
       - NODE_ENV=production
     volumes:
       - vault-data2:/var/lokyy/vault
+      - tenants-data:/var/lokyy/vaults
     healthcheck:
       test: ["CMD-SHELL", "exit 0"]
       interval: 30s
@@ -64,3 +65,4 @@ services:
 volumes:
   postgres-data2:
   vault-data2:
+  tenants-data:

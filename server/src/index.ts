@@ -26,6 +26,7 @@ import { vaultRoutes } from "./routes/vault.js";
 import { graphRoutes } from "./routes/graph.js";
 import { pipesRoutes } from "./routes/pipes.js";
 import { setupRoutes } from "./routes/setup.js";
+import { tenantRoutes } from "./routes/tenants.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { searchRoutes } from "./routes/search.js";
@@ -92,6 +93,7 @@ app.get("/health", (c) => c.json({ ok: true }));
 // Setup + auth endpoints — always reachable (auth needs to work before setup,
 // and register/login obviously can't sit behind setupGate).
 app.route("/api/setup", setupRoutes);
+app.route("/api/tenants", tenantRoutes);
 app.route("/api/auth", authRoutes);
 
 // Forgejo OAuth (setup-wizard). Not setupGate-protected — the whole point
