@@ -396,7 +396,20 @@ async function main() {
       "[lokyy-brain] GIT_REMOTE not set — vault clone deferred to setup wizard.",
     );
   } else {
-    await ensureRepo();
+    // Best-effort, like every other init step below: a failed vault clone
+    // (e.g. expired/again-rotated credentials, transient Forgejo outage) must
+    // NOT crash the whole server — it would take the dashboard, MCP and every
+    // OTHER vault down with it. Log loudly and boot; the vault simply shows
+    // whatever is already on disk until the clone/pull recovers.
+    try {
+      await ensureRepo();
+    } catch (err) {
+      console.error(
+        `[lokyy-brain] ensureRepo (vault clone) failed — booting anyway: ${
+          err instanceof Error ? `${err.name}: ${err.message}` : String(err)
+        }`,
+      );
+    }
   }
 
   // ── LLM registry init (Phase-0 Wave C-Backend) ─────────────────────────
