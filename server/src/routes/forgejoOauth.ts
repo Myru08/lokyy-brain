@@ -256,6 +256,29 @@ forgejoApiRoutes.get("/connection", async (c) => {
   });
 });
 
+// TEMP DEBUG: server-seitige Reachability zu Forgejo via undici (gleicher
+// fetch-Mechanismus wie der OAuth-Callback). Öffentlich, zum Diagnostizieren
+// des Callback-502. Wird nach dem Fix wieder entfernt.
+forgejoApiRoutes.get("/_probe", async (c) => {
+  const url = new URL(
+    "/api/v1/version",
+    ensureTrailingSlash(config.forgejoBaseUrl),
+  ).toString();
+  const t0 = Date.now();
+  try {
+    const r = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+    const body = await r.text();
+    return c.json({ ok: true, url, status: r.status, ms: Date.now() - t0, body: body.slice(0, 200) });
+  } catch (e) {
+    return c.json({
+      ok: false,
+      url,
+      ms: Date.now() - t0,
+      error: e instanceof Error ? `${e.name}: ${e.message}` : String(e),
+    });
+  }
+});
+
 /**
  * GET /api/forgejo/probe
  *
