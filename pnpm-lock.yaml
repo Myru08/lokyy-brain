@@ -184,6 +184,9 @@ importers:
       '@lokyy/core':
         specifier: workspace:*
         version: link:../packages/core
+      '@lokyy/mcp':
+        specifier: workspace:*
+        version: link:../mcp
       '@lokyy/shared':
         specifier: workspace:*
         version: link:../packages/shared

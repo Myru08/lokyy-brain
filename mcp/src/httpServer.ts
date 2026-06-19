@@ -53,6 +53,102 @@ function setCors(res: ServerResponse) {
   res.setHeader("Access-Control-Expose-Headers", "Mcp-Session-Id");
 }
 
+/**
+ * Handle a single MCP HTTP request against the raw Node `req`/`res`. Extracted
+ * from the standalone listener so the SAME logic can be mounted INSIDE another
+ * Node process (e.g. the brain's Hono app) without spinning up a second
+ * `http.createServer`/port — see `inProcess.ts` and the server's `mcpMount.ts`.
+ *
+ * Writes the full response to `res` (including CORS, auth, session, streaming)
+ * and resolves once handed off to the transport. Callers mounting this in Hono
+ * must signal "response already sent" so Hono does not write a second time.
+ */
+export async function handleMcpHttpRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  serverFactory: () => Server | Promise<Server>,
+  token: string,
+): Promise<void> {
+  setCors(res);
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204).end();
+    return;
+  }
+
+  const oauthHandled = await handleOAuthRoute(req, res);
+  if (oauthHandled) return;
+
+  if (!req.url || !req.url.startsWith("/mcp")) {
+    res.writeHead(404, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "not-found", hint: "POST /mcp" }));
+    return;
+  }
+
+  if (req.url === "/mcp/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
+    return;
+  }
+
+  const auth = req.headers["authorization"];
+  const bearerToken = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
+  const isLegacyToken = bearerToken === token;
+  const isOAuthToken = bearerToken ? verifyToken(bearerToken, "access") : false;
+
+  if (!isLegacyToken && !isOAuthToken) {
+    const base = deriveBase(req);
+    res.writeHead(401, {
+      "Content-Type": "application/json",
+      "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource", error="invalid_token"`,
+    });
+    res.end(JSON.stringify({ error: "unauthorized" }));
+    return;
+  }
+
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  let transport: StreamableHTTPServerTransport;
+
+  if (sessionId && sessions.has(sessionId)) {
+    transport = sessions.get(sessionId)!;
+  } else if (req.method === "POST") {
+    // New session — build a FRESH Server for this session. The MCP SDK
+    // forbids one Server/Protocol instance from connecting to more than one
+    // transport, so every session gets its own instance. The heavy global
+    // init (core/db/repo/scopes) already ran once via initServerDeps.
+    const sessionServer = await serverFactory();
+    transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid) => {
+        sessions.set(sid, transport);
+        console.error(`[lokyy-mcp-http] session opened: ${sid}`);
+      },
+    });
+    transport.onclose = () => {
+      if (transport.sessionId) {
+        sessions.delete(transport.sessionId);
+        console.error(`[lokyy-mcp-http] session closed: ${transport.sessionId}`);
+      }
+    };
+    await sessionServer.connect(transport);
+  } else {
+    res.writeHead(400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "no-session", hint: "POST to initialize" }));
+    return;
+  }
+
+  try {
+    const body = req.method === "POST" ? await readBody(req) : undefined;
+    await transport.handleRequest(req, res, body);
+  } catch (err) {
+    console.error("[lokyy-mcp-http] request handling failed:", err);
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "internal", message: (err as Error).message }));
+    }
+  }
+}
+
 export async function startHttpServer(
   serverFactory: () => Server | Promise<Server>,
   port: number,
@@ -63,103 +159,8 @@ export async function startHttpServer(
     process.exit(2);
   }
 
-  const http = createServer(async (req, res) => {
-    setCors(res);
-
-    // ------------------------------------------------------------------
-    // OPTIONS preflight — handled globally for CORS; OAuth handler also
-    // short-circuits its own paths, so we handle top-level here first.
-    // ------------------------------------------------------------------
-    if (req.method === "OPTIONS") {
-      res.writeHead(204).end();
-      return;
-    }
-
-    // ------------------------------------------------------------------
-    // OAuth endpoints — must be checked BEFORE the /mcp block.
-    // handleOAuthRoute returns true if it handled the request.
-    // ------------------------------------------------------------------
-    const oauthHandled = await handleOAuthRoute(req, res);
-    if (oauthHandled) return;
-
-    // ------------------------------------------------------------------
-    // Unknown paths (not OAuth, not /mcp*)
-    // ------------------------------------------------------------------
-    if (!req.url || !req.url.startsWith("/mcp")) {
-      res.writeHead(404, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "not-found", hint: "POST /mcp" }));
-      return;
-    }
-
-    // ------------------------------------------------------------------
-    // Health check — unauthenticated
-    // ------------------------------------------------------------------
-    if (req.url === "/mcp/health") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
-      return;
-    }
-
-    // ------------------------------------------------------------------
-    // Auth — Bearer token required on every /mcp request.
-    // Accepts: (1) legacy static LOKYY_MCP_TOKEN, (2) OAuth JWT access token.
-    // ------------------------------------------------------------------
-    const auth = req.headers["authorization"];
-    const bearerToken = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
-    const isLegacyToken = bearerToken === token;
-    const isOAuthToken = bearerToken ? verifyToken(bearerToken, "access") : false;
-
-    if (!isLegacyToken && !isOAuthToken) {
-      const base = deriveBase(req);
-      res.writeHead(401, {
-        "Content-Type": "application/json",
-        "WWW-Authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource", error="invalid_token"`,
-      });
-      res.end(JSON.stringify({ error: "unauthorized" }));
-      return;
-    }
-
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    let transport: StreamableHTTPServerTransport;
-
-    if (sessionId && sessions.has(sessionId)) {
-      transport = sessions.get(sessionId)!;
-    } else if (req.method === "POST") {
-      // New session — build a FRESH Server for this session. The MCP SDK
-      // forbids one Server/Protocol instance from connecting to more than one
-      // transport, so every session gets its own instance. The heavy global
-      // init (core/db/repo/scopes) already ran once via initServerDeps.
-      const sessionServer = await serverFactory();
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid) => {
-          sessions.set(sid, transport);
-          console.error(`[lokyy-mcp-http] session opened: ${sid}`);
-        },
-      });
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          sessions.delete(transport.sessionId);
-          console.error(`[lokyy-mcp-http] session closed: ${transport.sessionId}`);
-        }
-      };
-      await sessionServer.connect(transport);
-    } else {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "no-session", hint: "POST to initialize" }));
-      return;
-    }
-
-    try {
-      const body = req.method === "POST" ? await readBody(req) : undefined;
-      await transport.handleRequest(req, res, body);
-    } catch (err) {
-      console.error("[lokyy-mcp-http] request handling failed:", err);
-      if (!res.headersSent) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "internal", message: (err as Error).message }));
-      }
-    }
+  const http = createServer((req, res) => {
+    void handleMcpHttpRequest(req, res, serverFactory, token);
   });
 
   http.listen(port, () => {

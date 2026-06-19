@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { initMcp, mountMcp } from "./mcpMount.js";
 import { Hono } from "hono";
 // Install the console.warn/error → ring-buffer capture as EARLY as possible so
 // startup warnings (LLM registry, sleep-agent scheduler) land in /api/logs.
@@ -357,6 +358,11 @@ app.route("/api/templates", templatesRoutes);
 app.use("/api/settings/*", setupGate);
 app.route("/api/settings", settingsRoutes);
 
+// ── MCP (in-process) — Lese+Schreib-Endpoint /mcp für claude.ai-Connector.
+// MUSS vor den statischen Catch-all-Routen stehen, sonst verschluckt der
+// SPA-Fallback (app.get("*")) die /mcp-Requests.
+mountMcp(app);
+
 // ── Statische PWA (Single-Service-Demo) ────────────────────────────────
 // NACH allen /api-Routen + /health registriert, damit die API Vorrang hat.
 // Der Server liefert die mitgebaute PWA (pwa/dist, vom Dockerfile kopiert) aus
@@ -456,6 +462,16 @@ async function main() {
   } catch (err) {
     console.warn(
       `[lokyy-brain] sleep-agent scheduler skipped — ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // ── MCP in-process init (Lese+Schreib-Endpoint /mcp, claude.ai-Connector) ──
+  // Best-effort: ein MCP-Init-Fehler darf den Server NICHT abbrechen.
+  try {
+    await initMcp();
+  } catch (err) {
+    console.warn(
+      `[lokyy-brain] MCP mount skipped — ${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

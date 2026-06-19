@@ -57,6 +57,9 @@ ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/server ./server
+# In-process MCP: the brain imports @lokyy/mcp (subpath dist/*) at runtime, so
+# the built mcp package must ship in the server image too.
+COPY --from=build /app/mcp ./mcp
 COPY --from=build /app/pwa/dist ./pwa/dist
 COPY --from=build /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml ./
 
