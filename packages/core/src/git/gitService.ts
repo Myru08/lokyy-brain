@@ -48,16 +48,24 @@ const config = coreConfig;
  * so a *rejected* op never poisons the queue — the next op still runs. But the
  * caller's own `run` keeps the original rejection, so failures still surface.
  */
-let lockTail: Promise<unknown> = Promise.resolve();
+const lockTails = new Map<string, Promise<unknown>>();
 
-/** Stellt git-Operationen hintereinander, gibt das Ergebnis von `fn` zurück. */
+/**
+ * Stellt git-Operationen hintereinander, gibt das Ergebnis von `fn` zurück.
+ *
+ * Multi-tenant (LBMT-1.2): the FIFO chain is keyed by `vaultDir`, so an op on
+ * one customer's working copy never blocks an op on another's. For the single
+ * vault this is exactly the old behaviour (a single key). The tail is advanced
+ * synchronously (before any await yields) so the very next `serialize()` in
+ * this tick queues behind us, never onto a stale tail.
+ */
 function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const key = config().vaultDir;
+  const prev = lockTails.get(key) ?? Promise.resolve();
   // Both branches run `fn` regardless of whether the previous op fulfilled or
   // rejected — a failed predecessor must not cancel its successor (FIFO).
-  const run = lockTail.then(fn, fn);
-  // Advance the tail synchronously (before any await yields) so the very next
-  // serialize() in this tick queues behind us, never onto a stale tail.
-  lockTail = run.catch(() => {});
+  const run = prev.then(fn, fn);
+  lockTails.set(key, run.catch(() => {}));
   return run;
 }
 
@@ -81,6 +89,15 @@ interface Pending {
   waiters: Array<{ resolve: (sha: string) => void; reject: (err: unknown) => void }>;
 }
 const pendingSaves = new Map<string, Pending>();
+
+/**
+ * Coalescing key — vault-scoped (LBMT-1.2) so the same `relPath` in two
+ * different customer vaults never collides into one push. NUL separates the
+ * two components (it is illegal in a path, so it can't appear in either side).
+ */
+function saveKey(relPath: string): string {
+  return `${config().vaultDir}\u0000${relPath}`;
+}
 
 /** Roher git-Aufruf im Vault-Verzeichnis. */
 async function git(args: string[]): Promise<string> {
@@ -479,10 +496,11 @@ function runSave(relPath: string, content: string, message: string): Promise<str
     // Coalescing handoff: this op now owns the latest pending bytes for
     // `relPath`. Read them, then drop the registry entry so any save() arriving
     // from here on starts a brand-new op (it can't mutate our in-flight bytes).
-    const pend = pendingSaves.get(relPath);
+    const key = saveKey(relPath);
+    const pend = pendingSaves.get(key);
     const finalContent = pend ? pend.content : content;
     const finalMessage = pend ? pend.message : message;
-    pendingSaves.delete(relPath);
+    pendingSaves.delete(key);
 
     const c = config();
     const abs = join(c.vaultDir, relPath);
@@ -549,7 +567,8 @@ export async function save(
     return runSave(relPath, content, message);
   }
 
-  const existing = pendingSaves.get(relPath);
+  const key = saveKey(relPath);
+  const existing = pendingSaves.get(key);
   if (existing) {
     // A queued-but-not-started save for this note already exists. Update the
     // bytes it will commit (last write wins) and ride along on its result.
@@ -565,7 +584,7 @@ export async function save(
   // bytes when it starts and clears the entry, so saves arriving while it waits
   // coalesce, while saves arriving after it starts open a fresh window.
   const pend: Pending = { content, message, waiters: [] };
-  pendingSaves.set(relPath, pend);
+  pendingSaves.set(key, pend);
 
   const result = runSave(relPath, content, message);
 
@@ -577,11 +596,11 @@ export async function save(
   // only on the rare path where the op settles without ever having started).
   result.then(
     (sha) => {
-      if (pendingSaves.get(relPath) === pend) pendingSaves.delete(relPath);
+      if (pendingSaves.get(key) === pend) pendingSaves.delete(key);
       for (const w of pend.waiters) w.resolve(sha);
     },
     (err) => {
-      if (pendingSaves.get(relPath) === pend) pendingSaves.delete(relPath);
+      if (pendingSaves.get(key) === pend) pendingSaves.delete(key);
       for (const w of pend.waiters) w.reject(err);
     },
   );

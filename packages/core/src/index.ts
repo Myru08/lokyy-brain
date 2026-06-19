@@ -21,6 +21,11 @@ export {
   initCore,
   coreConfig,
   type CoreConfig,
+  // Multi-tenant (M3 / LBMT-1.2): per-request vault binding + path helpers.
+  withCoreConfig,
+  vaultConfigFor,
+  vaultWorkingCopyPath,
+  vaultsRoot,
 } from "./util/coreConfig.js";
 
 // ─── gitService (Story 1.3) ─────────────────────────────────────────────
