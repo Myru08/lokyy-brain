@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import {
   database,
@@ -11,6 +11,7 @@ import {
   vaultMemberships,
   generateUlid,
   vaultWorkingCopyPath,
+  getVaultById,
   createMcpToken,
   listMcpTokens,
   revokeMcpToken,
@@ -257,5 +258,73 @@ tenantRoutes.delete("/tokens/:id", async (c) => {
   const id = c.req.param("id");
   if (!id) return c.json({ error: "token id required" }, 400);
   await revokeMcpToken(id);
+  return c.json({ ok: true });
+});
+
+/**
+ * POST /api/tenants/:vaultId/tokens — issue an ADDITIONAL MCP token for a
+ * vault (e.g. after revoking one). Returns the plaintext ONCE.
+ */
+tenantRoutes.post("/:vaultId/tokens", async (c) => {
+  const vaultId = c.req.param("vaultId");
+  const vault = await getVaultById(vaultId);
+  if (!vault) return c.json({ error: "not-found" }, 404);
+  const body = await c.req
+    .json<{ agentId?: string; role?: McpRole; label?: string }>()
+    .catch(() => ({}) as { agentId?: string; role?: McpRole; label?: string });
+  const agentId = (body.agentId ?? "").trim() || `kunde-${vault.slug}`;
+  const role: McpRole = body.role ?? "write";
+  const { token } = await createMcpToken({
+    vaultId,
+    agentId,
+    role,
+    label: body.label ?? vault.name,
+  });
+  return c.json({ vaultId, agentId, role, token, connector: "/mcp" });
+});
+
+/**
+ * DELETE /api/tenants/:vaultId — delete a customer/company vault entirely:
+ * its Forgejo repo (best-effort), its working copy, and its registry rows
+ * (mcp_tokens cascade via FK). The personal vault is protected.
+ */
+tenantRoutes.delete("/:vaultId", async (c) => {
+  const vaultId = c.req.param("vaultId");
+  const vault = await getVaultById(vaultId);
+  if (!vault) return c.json({ error: "not-found" }, 404);
+  if (vault.kind === "personal") {
+    return c.json(
+      { error: "cannot-delete-personal", message: "Der eigene Vault kann nicht geloescht werden." },
+      400,
+    );
+  }
+
+  // 1) Forgejo repo (best-effort — never block local cleanup on a remote error).
+  if (config.forgejoAdminToken && config.forgejoTenantsOrg && config.forgejoBaseUrl) {
+    const baseOrigin = new URL(config.forgejoBaseUrl).origin;
+    const org = config.forgejoTenantsOrg;
+    if (vault.gitRemote.includes(`/${org}/`)) {
+      try {
+        await fetch(
+          `${baseOrigin}/api/v1/repos/${org}/${encodeURIComponent(vault.slug)}`,
+          {
+            method: "DELETE",
+            headers: { Authorization: `Bearer ${config.forgejoAdminToken}` },
+            signal: AbortSignal.timeout(15_000),
+          },
+        );
+      } catch {
+        // best-effort
+      }
+    }
+  }
+
+  // 2) Working copy.
+  await rm(vaultWorkingCopyPath(vaultId), { recursive: true, force: true });
+
+  // 3) Registry: memberships + vault (mcp_tokens cascade via FK ON DELETE CASCADE).
+  await database().delete(vaultMemberships).where(eq(vaultMemberships.vaultId, vaultId));
+  await database().delete(vaults).where(eq(vaults.id, vaultId));
+
   return c.json({ ok: true });
 });

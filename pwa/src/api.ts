@@ -1349,4 +1349,25 @@ export const api = {
       method: "DELETE",
       credentials: "include",
     }).then(json<{ ok: true }>),
+
+  /** Issue an additional MCP token for a vault (e.g. after revoking). Token shown once. */
+  createTenantToken: (
+    vaultId: string,
+    input: { agentId?: string; role?: "read" | "write" } = {},
+  ): Promise<{ vaultId: string; agentId: string; role: string; token: string; connector: string }> =>
+    fetch(`${BASE}/tenants/${encodeURIComponent(vaultId)}/tokens`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    }).then(
+      json<{ vaultId: string; agentId: string; role: string; token: string; connector: string }>,
+    ),
+
+  /** Delete a customer/company vault entirely (Forgejo repo + working copy + rows). */
+  deleteTenant: (vaultId: string): Promise<{ ok: true }> =>
+    fetch(`${BASE}/tenants/${encodeURIComponent(vaultId)}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).then(json<{ ok: true }>),
 };

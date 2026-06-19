@@ -63,6 +63,7 @@ export function TenantsTab() {
   const [role, setRole] = useState<"read" | "write">("write");
   const [creating, setCreating] = useState(false);
   const [created, setCreated] = useState<CreateTenantResult | null>(null);
+  const [newTok, setNewTok] = useState<{ token: string; vaultSlug: string } | null>(null);
   const [copied, setCopied] = useState<string | null>(null);
 
   const connector = `${window.location.origin}/mcp`;
@@ -130,6 +131,33 @@ export function TenantsTab() {
     }
   }
 
+  async function issueToken(vaultId: string, vaultSlug: string) {
+    setErr(null);
+    try {
+      const r = await api.createTenantToken(vaultId, { role: "write" });
+      setNewTok({ token: r.token, vaultSlug });
+      await load();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Token erzeugen fehlgeschlagen");
+    }
+  }
+
+  async function del(vaultId: string, lbl: string) {
+    if (
+      !window.confirm(
+        `Mandant „${lbl}" inkl. Forgejo-Repo und ALLEN Daten löschen? Das kann nicht rückgängig gemacht werden.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await api.deleteTenant(vaultId);
+      await load();
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "Löschen fehlgeschlagen");
+    }
+  }
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, maxWidth: 760 }}>
       <div>
@@ -141,6 +169,17 @@ export function TenantsTab() {
           und sieht nur seine freigegebenen Ordner (<code style={{ color: C.gold }}>Freigabe/</code>,{" "}
           <code style={{ color: C.gold }}>RAW/kunde/</code>) — der Rest bleibt unsichtbar.
         </p>
+      </div>
+
+      {/* MCP-Connector-URL — für alle Kunden gleich; der Token unterscheidet. */}
+      <div style={{ ...box, display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1 }}>
+          <label style={label}>MCP-Connector-URL (für alle Kunden)</label>
+          <span style={mono}>{connector}</span>
+        </div>
+        <button style={btn()} onClick={() => void copy(connector, "connector")}>
+          {copied === "connector" ? "kopiert" : "kopieren"}
+        </button>
       </div>
 
       {err && (
@@ -228,6 +267,26 @@ export function TenantsTab() {
         </div>
       )}
 
+      {/* Einmalig: neu erzeugter Token (für bestehenden Mandanten) */}
+      {newTok && (
+        <div style={{ ...box, borderColor: C.accent, background: C.accentSoft }}>
+          <h3 style={{ color: C.accent, margin: "0 0 8px", fontSize: 15 }}>
+            ✓ Neuer Token für {newTok.vaultSlug} — jetzt kopieren!
+          </h3>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ ...mono, flex: 1 }}>{newTok.token}</span>
+            <button style={btn(true)} onClick={() => void copy(newTok.token, "newtok")}>
+              {copied === "newtok" ? "kopiert" : "kopieren"}
+            </button>
+          </div>
+          <div style={{ marginTop: 12 }}>
+            <button style={btn()} onClick={() => setNewTok(null)}>
+              Schließen
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Liste */}
       <div>
         <h3 style={{ color: C.text, margin: "0 0 10px", fontSize: 15 }}>
@@ -296,6 +355,17 @@ export function TenantsTab() {
                       );
                     })
                   )}
+                </div>
+                <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+                  <button style={btn()} onClick={() => void issueToken(v.vaultId, v.slug)}>
+                    + Neuer Token
+                  </button>
+                  <button
+                    style={{ ...btn(), borderColor: C.err, color: C.err }}
+                    onClick={() => void del(v.vaultId, v.name)}
+                  >
+                    Mandant löschen
+                  </button>
                 </div>
               </div>
             ))}
