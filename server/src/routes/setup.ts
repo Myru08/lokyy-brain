@@ -7,6 +7,7 @@ import { eq } from "drizzle-orm";
 import {
   isSetupComplete,
   markSetupComplete,
+  resetSetup,
   database,
   generateUlid,
   setupVaultFromForgejo,
@@ -43,6 +44,13 @@ function sessionCookieOpts(expires: Date) {
 setupRoutes.get("/status", async (c) => {
   const complete = await isSetupComplete();
   return c.json({ setupComplete: complete });
+});
+
+// TEMP (Recovery): Setup zurücksetzen, damit der Wizard erneut läuft und den
+// Vault-Klon mit dem EBUSY-Fix nachzieht. Nach erfolgreichem Re-Setup entfernen.
+setupRoutes.get("/_reset", async (c) => {
+  await resetSetup();
+  return c.json({ ok: true, reset: true });
 });
 
 // POST /api/setup/test-forgejo  { gitRemote, gitBranch? }
