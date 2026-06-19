@@ -40,6 +40,14 @@ export const config = {
   forgejoOauthClientId: process.env.FORGEJO_OAUTH_CLIENT_ID ?? "",
   forgejoOauthClientSecret: process.env.FORGEJO_OAUTH_CLIENT_SECRET ?? "",
   /**
+   * Multi-tenant (M3 / LBMT-1.4): Forgejo admin token + org under which each
+   * customer vault gets its OWN private repo (`<org>/<slug>`). When both are
+   * set, `POST /api/tenants` creates + clones a real Forgejo repo; otherwise it
+   * falls back to a local-only working copy (demo / not-yet-configured).
+   */
+  forgejoAdminToken: process.env.FORGEJO_ADMIN_TOKEN ?? "",
+  forgejoTenantsOrg: process.env.FORGEJO_TENANTS_ORG ?? "",
+  /**
    * Whisper transcription endpoint.
    *
    * Empty (default) → fall back to OpenAI cloud
