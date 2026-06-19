@@ -120,6 +120,8 @@ forgejoOauthRoutes.get("/start", async (c) => {
  * and UPSERTs the token row. Finally 302s back to the wizard.
  */
 forgejoOauthRoutes.get("/callback", async (c) => {
+ try {
+  console.log("[forgejo-callback] start");
   const code = c.req.query("code");
   const state = c.req.query("state");
   if (!code || !state) {
@@ -170,16 +172,17 @@ forgejoOauthRoutes.get("/callback", async (c) => {
       }).toString(),
     },
   );
+  console.log("[forgejo-callback] token-exchange status", tokenRes.status);
   if (!tokenRes.ok) {
     const text = await safeReadText(tokenRes);
     return c.json(
       { error: "token-exchange-failed", status: tokenRes.status, body: text },
-      502,
+      200,
     );
   }
   const tokenJson = (await tokenRes.json()) as TokenResponse;
   if (!tokenJson.access_token) {
-    return c.json({ error: "no-access-token-in-response" }, 502);
+    return c.json({ error: "no-access-token-in-response" }, 200);
   }
 
   // Lookup Forgejo user login with the new token.
@@ -195,11 +198,12 @@ forgejoOauthRoutes.get("/callback", async (c) => {
       },
     },
   );
+  console.log("[forgejo-callback] user-lookup status", userRes.status);
   if (!userRes.ok) {
     const text = await safeReadText(userRes);
     return c.json(
       { error: "forgejo-user-lookup-failed", status: userRes.status, body: text },
-      502,
+      200,
     );
   }
   const forgejoUser = (await userRes.json()) as ForgejoUserResponse;
@@ -229,7 +233,15 @@ forgejoOauthRoutes.get("/callback", async (c) => {
   const safeNext =
     (decodedNext && sanitizeNextPath(decodedNext)) ?? "/setup?forgejo=connected";
   const targetUrl = buildSameOriginUrl(c, safeNext);
+  console.log("[forgejo-callback] success → redirect", targetUrl);
   return c.redirect(targetUrl, 302);
+ } catch (err) {
+  console.error("[forgejo-callback] EXCEPTION:", err);
+  return c.json(
+    { error: "callback-exception", message: err instanceof Error ? `${err.name}: ${err.message}` : String(err) },
+    200,
+  );
+ }
 });
 
 // ─── /api/forgejo ───────────────────────────────────────────────────────
