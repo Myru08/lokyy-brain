@@ -21,6 +21,7 @@ import { migration0013PeerProfiles } from "./0013_peer_profiles.js";
 import { migration0014NoteSearchForgotten } from "./0014_note_search_forgotten.js";
 import { migration0015ForgejoOauthTokens } from "./0015_forgejo_oauth_tokens.js";
 import { migration0016ForgejoOauthTokensEncrypt } from "./0016_forgejo_oauth_tokens_encrypt.js";
+import { migration0017McpTokens } from "./0017_mcp_tokens.js";
 
 export interface Migration {
   name: string;
@@ -48,4 +49,5 @@ export const MIGRATIONS: Migration[] = [
     name: "0016_forgejo_oauth_tokens_encrypt",
     sql: migration0016ForgejoOauthTokensEncrypt,
   },
+  { name: "0017_mcp_tokens", sql: migration0017McpTokens },
 ];

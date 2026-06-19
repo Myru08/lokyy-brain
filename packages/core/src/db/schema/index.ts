@@ -18,3 +18,4 @@ export * from "./entities.js";
 export * from "./peerProfiles.js";
 export * from "./forgejoOauthTokens.js";
 export * from "./forgejoOauthState.js";
+export * from "./mcpTokens.js";

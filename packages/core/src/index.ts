@@ -644,6 +644,26 @@ export {
   type ForgejoOauthConfig,
 } from "./forgejo/refresh.js";
 
+// ─── MCP token registry (multi-tenant foundation, M3 / LBMT-2) ──────────
+// Per-customer bearer tokens that route a `/mcp` request to its isolated
+// vault + role. Only the SHA-256 of the bearer is stored; plaintext is shown
+// once at creation. Wiring into the request path is LBMT-3, provisioning is
+// LBMT-4. See packages/core/src/mcp/tokens.ts.
+export {
+  hashMcpToken,
+  generateMcpToken,
+  lookupMcpToken,
+  touchMcpToken,
+  createMcpToken,
+  revokeMcpToken,
+  listMcpTokens,
+  MCP_TOKEN_PREFIX,
+  type McpRole,
+  type McpTokenContext,
+  type CreateMcpTokenInput,
+} from "./mcp/tokens.js";
+export type { McpToken, NewMcpToken } from "./db/schema/mcpTokens.js";
+
 // ─── Sidebar menu config (Epic 11 / Story 11.1) ─────────────────────────
 // Lokyy-Workspace sidebar menu = (folder) + (view type). System-Items are
 // code constants (SYSTEM_ITEMS, always merged first, never persisted); custom
