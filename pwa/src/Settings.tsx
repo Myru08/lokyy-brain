@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { AiProviderSettings } from "./AiProviderSettings.js";
+import { TenantsTab } from "./Tenants.js";
 import { AgentReviewPanel } from "./AgentReviewPanel.js";
 import { api } from "./api.js";
 import type {
@@ -309,6 +310,7 @@ type TabKey =
   | "vault"
   | "ai"
   | "mcp"
+  | "mandanten"
   | "voice"
   | "skills"
   | "kurator"
@@ -321,6 +323,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "vault", label: "Vault" },
   { key: "ai", label: "AI Provider" },
   { key: "mcp", label: "MCP" },
+  { key: "mandanten", label: "Mandanten" },
   { key: "voice", label: "Voice" },
   { key: "skills", label: "Skills" },
   { key: "kurator", label: "Kurator" },
@@ -1343,6 +1346,8 @@ export function Settings({
       </div>
 
       {/* ───── Tab: System ───── */}
+      {tab === "mandanten" && <TenantsTab />}
+
       {tab === "system" && (
         <>
           <Section title="System-Status">

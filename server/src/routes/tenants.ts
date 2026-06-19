@@ -13,6 +13,7 @@ import {
   vaultWorkingCopyPath,
   createMcpToken,
   listMcpTokens,
+  revokeMcpToken,
   type McpRole,
 } from "@lokyy/core";
 import { config } from "../config.js";
@@ -181,4 +182,15 @@ tenantRoutes.get("/", async (c) => {
     })),
   );
   return c.json({ tenants });
+});
+
+/**
+ * DELETE /api/tenants/tokens/:id — revoke an MCP token (LBMT-1.5).
+ * Soft-revoke: after this the token's next /mcp request resolves to null → 401.
+ */
+tenantRoutes.delete("/tokens/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "token id required" }, 400);
+  await revokeMcpToken(id);
+  return c.json({ ok: true });
 });

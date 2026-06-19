@@ -396,6 +396,50 @@ export interface MenuConfig {
   items: MenuItem[];
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Multi-tenant — customer/shared vaults (M3 / LBMT-1.5). Mirrors
+ * `server/src/routes/tenants.ts`. Token plaintext is returned ONCE on create
+ * and never again (only the hash is stored server-side).
+ * ────────────────────────────────────────────────────────────────────── */
+export interface TenantTokenMeta {
+  id: string;
+  agentId: string;
+  role: "read" | "write";
+  label: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface TenantVault {
+  vaultId: string;
+  name: string;
+  slug: string;
+  kind: string;
+  /** Credentials already stripped server-side. */
+  gitRemote: string;
+  tokens: TenantTokenMeta[];
+}
+
+export interface CreateTenantInput {
+  name: string;
+  slug: string;
+  agentId: string;
+  kind?: "shared" | "company" | "personal";
+  role?: "read" | "write";
+}
+
+export interface CreateTenantResult {
+  vaultId: string;
+  slug: string;
+  kind: string;
+  agentId: string;
+  role: string;
+  scope: { read: string[]; write: string[] };
+  /** Plaintext bearer — show once, then it's gone. */
+  token: string;
+  connector: string;
+}
+
 /**
  * API-Client. Dünne fetch-Wrapper. Der Server pullt vor jedem Lesen selbst —
  * der Client muss sich um Git nicht kümmern.
@@ -1281,4 +1325,28 @@ export const api = {
       body: JSON.stringify({ items }),
       credentials: "include",
     }).then(json<MenuConfig>),
+
+  /* ──── Multi-tenant — customer/shared vaults (LBMT-1.5) ──── */
+
+  /** List provisioned vaults + their token metadata (no plaintext). */
+  listTenants: (): Promise<{ tenants: TenantVault[] }> =>
+    fetch(`${BASE}/tenants`, { credentials: "include" }).then(
+      json<{ tenants: TenantVault[] }>,
+    ),
+
+  /** Provision an isolated customer vault; returns the token ONCE. */
+  createTenant: (input: CreateTenantInput): Promise<CreateTenantResult> =>
+    fetch(`${BASE}/tenants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    }).then(json<CreateTenantResult>),
+
+  /** Revoke an MCP token — its next request 401s. */
+  revokeTenantToken: (tokenId: string): Promise<{ ok: true }> =>
+    fetch(`${BASE}/tenants/tokens/${encodeURIComponent(tokenId)}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).then(json<{ ok: true }>),
 };
