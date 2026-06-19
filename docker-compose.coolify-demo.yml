@@ -35,6 +35,13 @@ services:
       dockerfile: Dockerfile
       target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
+    # Server-seitige Forgejo-Calls (OAuth-Token-Tausch, /api/v1/user, Repos)
+    # gehen sonst über Cloudflare und hairpinnen auf denselben Server zurück →
+    # Hänger → 502 im OAuth-Callback. host-gateway löst forgejo.kimiboca.de auf
+    # den Docker-Host auf → lokaler Traefik terminiert TLS (gültiges LE-Cert) und
+    # routet intern zu Forgejo. Der Browser nutzt weiterhin die öffentliche Domain.
+    extra_hosts:
+      - "forgejo.kimiboca.de:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
