@@ -40,9 +40,22 @@ export function VaultSwitcher() {
     vaults.find((v) => v.isDefault) ??
     vaults[0];
 
-  function select(v: VaultListItem) {
+  async function select(v: VaultListItem) {
     // Default/singleton → drop the cookie (no rebind); else pin the vault.
     setActiveVaultCookie(v.isDefault ? null : v.id);
+    // A soft reload can be served a STALE app-shell by a stuck service worker
+    // (the "needs a hard refresh to see the switcher" symptom). Defeat that for
+    // this rare action: unregister the SW + drop its caches, then reload fresh.
+    try {
+      const regs = (await navigator.serviceWorker?.getRegistrations?.()) ?? [];
+      await Promise.all(regs.map((r) => r.unregister()));
+      if (typeof caches !== "undefined") {
+        const keys = await caches.keys();
+        await Promise.all(keys.map((k) => caches.delete(k)));
+      }
+    } catch {
+      /* SW/caches API unavailable — fall through to a plain reload */
+    }
     window.location.reload();
   }
 
