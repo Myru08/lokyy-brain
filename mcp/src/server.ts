@@ -86,6 +86,9 @@ import type { PipeType, SharePayload } from "@lokyy/shared";
 import { canRead, canWrite, activeScope, loadScopes, ScopeViolation } from "./scopes.js";
 // Story 10.13 — multi-vault detection API (consumed by get_health.vault_warning).
 import { resolveVaultResolution } from "./resolveVaultId.js";
+// LBMT-1.3 — per-request vault/scope binding (multi-tenant). Null on the legacy
+// single-vault path → handlers fall back to the boot singleton below.
+import { currentMcpSession } from "./sessionContext.js";
 
 /**
  * Lokyy-Brain Usage Conventions — auto-injected as system-prompt addendum
@@ -229,7 +232,10 @@ export async function initServerDeps(
  * to have run first — the handlers read module-level core/scope/vault state.
  */
 export function createServer(): Server {
-  const vaultId = activeVaultId;
+  // Per-request session (multi-tenant) wins; legacy single-vault path uses the
+  // boot singleton. createServer runs inside the request's withMcpSession wrap
+  // (see httpServer), so a customer session captures ITS vault here.
+  const vaultId = currentMcpSession()?.vaultId ?? activeVaultId;
 
   // Story 10.13/10.8 — multi-vault detection for get_health.vault_warning.
   // Resolved ONCE at boot inside `initServerDeps` (async path) and cached in the
@@ -854,7 +860,7 @@ export function createServer(): Server {
           // Skill notes are ordinary notes (canonically under 70_pai/skills/);
           // reading them already runs through the read-scope, so only return
           // skills whose note path is readable by this agent (AC#4).
-          const skills = await listSkillNotes(activeVaultDir);
+          const skills = await listSkillNotes(currentMcpSession()?.vaultDir ?? activeVaultDir);
           const summaries = skills
             .filter((s) => canRead(skillNotePath(s.skill_name)))
             .map((s) => ({
@@ -883,7 +889,7 @@ export function createServer(): Server {
           if (!canRead(skillNotePath(skillName))) {
             throw new ScopeViolation("read", `70_pai/skills/${skillName}`);
           }
-          const skills = await listSkillNotes(activeVaultDir);
+          const skills = await listSkillNotes(currentMcpSession()?.vaultDir ?? activeVaultDir);
           const skill = skills.find((s) => s.skill_name === skillName);
           if (!skill) {
             return text({ ok: false, error: "skill-not-found", skill_name: skillName });

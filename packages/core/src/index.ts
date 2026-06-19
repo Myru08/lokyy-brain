@@ -669,6 +669,9 @@ export {
 } from "./mcp/tokens.js";
 export type { McpToken, NewMcpToken } from "./db/schema/mcpTokens.js";
 
+// ─── Vault registry queries (multi-tenant, M3) ──────────────────────────
+export { getVaultById } from "./vaults/index.js";
+
 // ─── Sidebar menu config (Epic 11 / Story 11.1) ─────────────────────────
 // Lokyy-Workspace sidebar menu = (folder) + (view type). System-Items are
 // code constants (SYSTEM_ITEMS, always merged first, never persisted); custom

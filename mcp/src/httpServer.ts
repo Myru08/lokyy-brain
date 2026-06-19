@@ -3,6 +3,19 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { handleOAuthRoute, verifyToken, deriveBase } from "./oauth.js";
+import {
+  lookupMcpToken,
+  vaultConfigFor,
+  withCoreConfig,
+  getVaultById,
+  type CoreConfig,
+} from "@lokyy/core";
+import { resolveScopeFor } from "./scopes.js";
+import {
+  withMcpSession,
+  type McpSession,
+  type McpSessionRole,
+} from "./sessionContext.js";
 
 /**
  * lokyy-brain MCP HTTP transport (companion to stdio).
@@ -25,6 +38,38 @@ import { handleOAuthRoute, verifyToken, deriveBase } from "./oauth.js";
  */
 
 const sessions = new Map<string, StreamableHTTPServerTransport>();
+
+/**
+ * Resolve a per-customer registry bearer token (`mcp_tokens`) to its request
+ * context (LBMT-1.3). Returns null for unknown/revoked tokens or a missing
+ * vault row → the caller 401s and reveals nothing. Builds the vault-bound
+ * CoreConfig (LBMT-1.2) + the folder-scope with the role gate applied.
+ */
+async function resolveRegistrySession(
+  bearerToken: string,
+): Promise<{ coreConfig: CoreConfig; mcp: McpSession } | null> {
+  const ctx = await lookupMcpToken(bearerToken);
+  if (!ctx) return null;
+  const vault = await getVaultById(ctx.vaultId);
+  if (!vault) return null;
+  const coreConfig = vaultConfigFor({
+    vaultId: ctx.vaultId,
+    gitRemote: vault.gitRemote,
+    gitBranch: vault.gitBranch,
+  });
+  const role = ctx.role as McpSessionRole; // registry role: "read" | "write"
+  const scope = await resolveScopeFor(coreConfig.vaultDir, ctx.agentId, role);
+  return {
+    coreConfig,
+    mcp: {
+      vaultId: ctx.vaultId,
+      vaultDir: coreConfig.vaultDir,
+      agentId: ctx.agentId,
+      role,
+      scope,
+    },
+  };
+}
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -96,7 +141,16 @@ export async function handleMcpHttpRequest(
   const isLegacyToken = bearerToken === token;
   const isOAuthToken = bearerToken ? verifyToken(bearerToken, "access") : false;
 
-  if (!isLegacyToken && !isOAuthToken) {
+  // Multi-tenant (LBMT-1.3): a bearer that is neither the owner's static token
+  // nor an OAuth JWT may be a per-customer registry token → resolve it to its
+  // vault + folder-scope. Owner tokens keep full, unscoped access on the boot
+  // singleton vault (no session → singleton fallback everywhere).
+  let registry: { coreConfig: CoreConfig; mcp: McpSession } | null = null;
+  if (bearerToken && !isLegacyToken && !isOAuthToken) {
+    registry = await resolveRegistrySession(bearerToken);
+  }
+
+  if (!isLegacyToken && !isOAuthToken && !registry) {
     const base = deriveBase(req);
     res.writeHead(401, {
       "Content-Type": "application/json",
@@ -106,46 +160,60 @@ export async function handleMcpHttpRequest(
     return;
   }
 
-  const sessionId = req.headers["mcp-session-id"] as string | undefined;
-  let transport: StreamableHTTPServerTransport;
+  // The full session/transport/handleRequest dance. Bound to the request's
+  // vault + scope when a registry token is in play; the legacy singleton path
+  // otherwise. createServer() (inside serverFactory) reads the active session,
+  // so a customer session captures ITS vault; every tool call runs scoped.
+  const run = async (): Promise<void> => {
+    const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    let transport: StreamableHTTPServerTransport;
 
-  if (sessionId && sessions.has(sessionId)) {
-    transport = sessions.get(sessionId)!;
-  } else if (req.method === "POST") {
-    // New session — build a FRESH Server for this session. The MCP SDK
-    // forbids one Server/Protocol instance from connecting to more than one
-    // transport, so every session gets its own instance. The heavy global
-    // init (core/db/repo/scopes) already ran once via initServerDeps.
-    const sessionServer = await serverFactory();
-    transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      onsessioninitialized: (sid) => {
-        sessions.set(sid, transport);
-        console.error(`[lokyy-mcp-http] session opened: ${sid}`);
-      },
-    });
-    transport.onclose = () => {
-      if (transport.sessionId) {
-        sessions.delete(transport.sessionId);
-        console.error(`[lokyy-mcp-http] session closed: ${transport.sessionId}`);
-      }
-    };
-    await sessionServer.connect(transport);
-  } else {
-    res.writeHead(400, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "no-session", hint: "POST to initialize" }));
-    return;
-  }
-
-  try {
-    const body = req.method === "POST" ? await readBody(req) : undefined;
-    await transport.handleRequest(req, res, body);
-  } catch (err) {
-    console.error("[lokyy-mcp-http] request handling failed:", err);
-    if (!res.headersSent) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "internal", message: (err as Error).message }));
+    if (sessionId && sessions.has(sessionId)) {
+      transport = sessions.get(sessionId)!;
+    } else if (req.method === "POST") {
+      // New session — build a FRESH Server for this session. The MCP SDK
+      // forbids one Server/Protocol instance from connecting to more than one
+      // transport, so every session gets its own instance. The heavy global
+      // init (core/db/repo/scopes) already ran once via initServerDeps.
+      const sessionServer = await serverFactory();
+      transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (sid) => {
+          sessions.set(sid, transport);
+          console.error(`[lokyy-mcp-http] session opened: ${sid}`);
+        },
+      });
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          sessions.delete(transport.sessionId);
+          console.error(`[lokyy-mcp-http] session closed: ${transport.sessionId}`);
+        }
+      };
+      await sessionServer.connect(transport);
+    } else {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "no-session", hint: "POST to initialize" }));
+      return;
     }
+
+    try {
+      const body = req.method === "POST" ? await readBody(req) : undefined;
+      await transport.handleRequest(req, res, body);
+    } catch (err) {
+      console.error("[lokyy-mcp-http] request handling failed:", err);
+      if (!res.headersSent) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "internal", message: (err as Error).message }));
+      }
+    }
+  };
+
+  if (registry) {
+    await withCoreConfig(registry.coreConfig, () =>
+      withMcpSession(registry.mcp, run),
+    );
+  } else {
+    await run();
   }
 }
 
