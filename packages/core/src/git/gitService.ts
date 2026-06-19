@@ -184,28 +184,41 @@ export async function setupVaultFromForgejo(opts: {
   return serialize(async () => {
     const c = config();
 
-    // Fresh-setup: wipe + recreate the vault directory. The wizard runs
-    // before any writes; there is nothing valuable to preserve.
-    await rm(c.vaultDir, { recursive: true, force: true });
+    // Fresh-setup: clear the vault directory CONTENTS in place. We must NOT
+    // rmdir `vaultDir` itself — it is a Docker volume mount point, and removing
+    // the mount fails with `EBUSY: resource busy or locked, rmdir`. So we keep
+    // the dir and delete everything inside it (incl. a stale .git), then clone
+    // IN PLACE via init+fetch+checkout (plain `git clone <url> <dir>` refuses a
+    // pre-existing dir and we cannot recreate the mount).
     await mkdir(c.vaultDir, { recursive: true });
+    for (const entry of await readdir(c.vaultDir)) {
+      await rm(join(c.vaultDir, entry), { recursive: true, force: true });
+    }
+    await exec("git", ["-C", c.vaultDir, "init"]);
+    await exec("git", ["-C", c.vaultDir, "remote", "add", "origin", remoteUrl]);
 
-    // Attempt 1: clone the existing branch.
+    // Attempt 1: fetch + check out the existing branch.
     try {
-      await exec("git", ["clone", "--branch", branch, remoteUrl, c.vaultDir]);
+      await exec("git", ["-C", c.vaultDir, "fetch", "origin", branch]);
+      await exec("git", ["-C", c.vaultDir, "checkout", "-B", branch, "FETCH_HEAD"]);
+      await exec("git", [
+        "-C", c.vaultDir, "branch", `--set-upstream-to=origin/${branch}`, branch,
+      ]).catch(() => {});
       return { gitRemote: remoteUrl, gitBranch: branch };
     } catch (err) {
-      // Forgejo returns "Remote branch <x> not found in upstream origin" for
-      // an empty repo. Fall through to the init-and-push path. Any other
+      // Empty repo (branch/ref doesn't exist yet) → bootstrap below. Any other
       // failure (network, auth) re-throws.
       const msg = err instanceof Error ? err.message : String(err);
-      if (!/remote branch .* not found|empty repository/i.test(msg)) {
+      if (
+        !/couldn't find remote ref|remote branch .* not found|not found in upstream|empty repository|no such ref|did not match any/i.test(
+          msg,
+        )
+      ) {
         throw new Error(`git clone failed: ${msg}`);
       }
     }
 
-    // Attempt 2: empty-repo bootstrap.
-    await exec("git", ["init", c.vaultDir]);
-    await exec("git", ["-C", c.vaultDir, "remote", "add", "origin", remoteUrl]);
+    // Attempt 2: empty-repo bootstrap (init + origin already done above).
     await exec("git", ["-C", c.vaultDir, "checkout", "-b", branch]);
 
     await writeFile(join(c.vaultDir, ".gitkeep"), "", "utf8");
