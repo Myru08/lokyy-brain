@@ -27,6 +27,9 @@ import { graphRoutes } from "./routes/graph.js";
 import { pipesRoutes } from "./routes/pipes.js";
 import { setupRoutes } from "./routes/setup.js";
 import { tenantRoutes } from "./routes/tenants.js";
+import { vaultsRoutes } from "./routes/vaults.js";
+import { getCookie } from "hono/cookie";
+import { getVaultById, vaultConfigFor, withCoreConfig } from "@lokyy/core";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { searchRoutes } from "./routes/search.js";
@@ -88,12 +91,31 @@ app.use("*", async (c, next) => {
   await next();
 });
 
+// Owner vault-switcher (LBMT-C): a `lokyy_vault` cookie rebinds API requests to
+// the selected vault via withCoreConfig — notes/tree/graph/dashboard then read
+// THAT vault's working copy. No cookie or the personal singleton → default
+// behaviour (the vault at config.vaultDir). MCP is unaffected (it routes by
+// bearer token, not cookie). Scoped to /api/* so static assets never hit the DB.
+app.use("/api/*", async (c, next) => {
+  const selected = getCookie(c, "lokyy_vault");
+  if (!selected || selected === config.lokyyVaultId) return next();
+  const vault = await getVaultById(selected);
+  if (!vault || vault.id === config.lokyyVaultId) return next();
+  const cfg = vaultConfigFor({
+    vaultId: vault.id,
+    gitRemote: vault.gitRemote,
+    gitBranch: vault.gitBranch,
+  });
+  return withCoreConfig(cfg, () => next());
+});
+
 app.get("/health", (c) => c.json({ ok: true }));
 
 // Setup + auth endpoints — always reachable (auth needs to work before setup,
 // and register/login obviously can't sit behind setupGate).
 app.route("/api/setup", setupRoutes);
 app.route("/api/tenants", tenantRoutes);
+app.route("/api/vaults", vaultsRoutes);
 app.route("/api/auth", authRoutes);
 
 // Forgejo OAuth (setup-wizard). Not setupGate-protected — the whole point

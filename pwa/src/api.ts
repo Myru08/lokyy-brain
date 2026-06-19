@@ -401,6 +401,33 @@ export interface MenuConfig {
  * `server/src/routes/tenants.ts`. Token plaintext is returned ONCE on create
  * and never again (only the hash is stored server-side).
  * ────────────────────────────────────────────────────────────────────── */
+/** Owner vault-switcher entry (LBMT-C). */
+export interface VaultListItem {
+  id: string;
+  name: string;
+  slug: string;
+  kind: string;
+  isDefault: boolean;
+}
+
+/**
+ * Active-vault selector (LBMT-C). A `lokyy_vault` cookie tells the server which
+ * vault to bind API requests to (notes/tree/graph). Same-origin → the cookie
+ * rides along on every fetch automatically; no per-call header needed.
+ */
+export function setActiveVaultCookie(vaultId: string | null): void {
+  if (typeof document === "undefined") return;
+  document.cookie = vaultId
+    ? `lokyy_vault=${encodeURIComponent(vaultId)}; path=/; max-age=31536000; samesite=lax`
+    : "lokyy_vault=; path=/; max-age=0";
+}
+
+export function getActiveVaultCookie(): string {
+  if (typeof document === "undefined") return "";
+  const m = document.cookie.match(/(?:^|;\s*)lokyy_vault=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 export interface TenantTokenMeta {
   id: string;
   agentId: string;
@@ -1325,6 +1352,14 @@ export const api = {
       body: JSON.stringify({ items }),
       credentials: "include",
     }).then(json<MenuConfig>),
+
+  /* ──── Owner vault-switcher (LBMT-C) ──── */
+
+  /** All vaults the owner can open, with kind + which is the default singleton. */
+  getVaults: (): Promise<{ defaultVaultId: string; vaults: VaultListItem[] }> =>
+    fetch(`${BASE}/vaults`, { credentials: "include" }).then(
+      json<{ defaultVaultId: string; vaults: VaultListItem[] }>,
+    ),
 
   /* ──── Multi-tenant — customer/shared vaults (LBMT-1.5) ──── */
 

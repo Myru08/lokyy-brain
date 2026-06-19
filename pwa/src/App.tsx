@@ -16,6 +16,7 @@ const GraphView = lazy(() =>
 );
 import { api, ApiError, type MenuItem } from "./api.js";
 import { Sidebar } from "./sidebar/Sidebar.js";
+import { VaultSwitcher } from "./VaultSwitcher.js";
 import { MenuEditor } from "./sidebar/MenuEditor.js";
 import { resolveView } from "./sidebar/views/registry.js";
 import { SplitView } from "./SplitView.js";
@@ -2359,6 +2360,8 @@ export function App() {
               </button>
             </div>
           )}
+          {/* Owner vault-switcher (LBMT-C) — eigene / Mandanten / Firma. */}
+          <VaultSwitcher />
           {/* (a) Workspace-Menüpunkte OBEN — kompakte Liste (embedded Sidebar),
               KEINE eigene Rail-Spalte mehr. Auswahl setzt den aktiven
               Menüpunkt + schaltet <main> auf die View (selectMenuItem); das

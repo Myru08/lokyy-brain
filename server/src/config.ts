@@ -23,6 +23,12 @@ function req(name: string): string {
 export const config = {
   /** absoluter Pfad zum Vault-Working-Clone */
   vaultDir: resolve(process.env.VAULT_DIR ?? "../vault"),
+  /**
+   * The singleton/personal vault id (the working copy at `vaultDir`). Used by
+   * the owner vault-switcher middleware (C) to decide when NOT to rebind: the
+   * personal vault lives at `vaultDir`, every other vault under `vaultsRoot`.
+   */
+  lokyyVaultId: process.env.LOKYY_VAULT_ID ?? "",
   gitRemote: process.env.GIT_REMOTE ?? "",
   // AC#1 (Story 10.6): trim + validate to a single clean ref token at config
   // load. A bad GIT_BRANCH (`"main "`, two tokens) now fails loudly here
