@@ -30,6 +30,23 @@ export const tenantRoutes = new Hono();
 const DEFAULT_READ_GLOBS = ["Freigabe/**", "RAW/kunde/**"];
 const DEFAULT_WRITE_GLOBS = ["Freigabe/**", "RAW/kunde/**"];
 
+/**
+ * Strip any embedded credentials (`user:token@`) from a git remote before it
+ * leaves the server — `gitRemote` can carry a Forgejo PAT/OAuth token baked
+ * into the URL, which must never appear in an API response.
+ */
+function maskRemote(remote: string): string {
+  if (!remote) return "";
+  try {
+    const u = new URL(remote);
+    u.username = "";
+    u.password = "";
+    return u.toString();
+  } catch {
+    return remote.includes("@") ? remote.replace(/\/\/[^@]*@/, "//") : remote;
+  }
+}
+
 interface CreateTenantBody {
   name: string;
   slug: string;
@@ -152,7 +169,7 @@ tenantRoutes.get("/", async (c) => {
       name: v.name,
       slug: v.slug,
       kind: v.kind,
-      gitRemote: v.gitRemote,
+      gitRemote: maskRemote(v.gitRemote),
       tokens: (await listMcpTokens(v.id)).map((t) => ({
         id: t.id,
         agentId: t.agentId,
