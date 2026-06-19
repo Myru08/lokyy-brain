@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { eq } from "drizzle-orm";
-import { mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   database,
@@ -327,4 +327,84 @@ tenantRoutes.delete("/:vaultId", async (c) => {
   await database().delete(vaults).where(eq(vaults.id, vaultId));
 
   return c.json({ ok: true });
+});
+
+/**
+ * GET /api/tenants/:vaultId/scope — current folder-scope (read/write globs) for
+ * the vault's customer agent, so the tree-lock UI can render per-folder state.
+ */
+tenantRoutes.get("/:vaultId/scope", async (c) => {
+  const vaultId = c.req.param("vaultId");
+  const vault = await getVaultById(vaultId);
+  if (!vault) return c.json({ error: "not-found" }, 404);
+  const vaultDir = vaultWorkingCopyPath(vaultId);
+  let agentId = "";
+  let readGlobs: string[] = [];
+  let writeGlobs: string[] = [];
+  try {
+    const raw = await readFile(join(vaultDir, "00_meta", "mcp-scopes.yaml"), "utf8");
+    agentId = raw.match(/scopes:\s*\n\s+([^:\s]+):/)?.[1] ?? "";
+    readGlobs = JSON.parse(raw.match(/\bread:\s*(\[[^\]]*\])/)?.[1] ?? "[]");
+    writeGlobs = JSON.parse(raw.match(/\bwrite:\s*(\[[^\]]*\])/)?.[1] ?? "[]");
+  } catch {
+    const toks = await listMcpTokens(vaultId);
+    agentId = toks[0]?.agentId ?? `kunde-${vault.slug}`;
+  }
+  return c.json({ vaultId, agentId, readGlobs, writeGlobs });
+});
+
+/**
+ * PUT /api/tenants/:vaultId/scope { readGlobs, writeGlobs } — rewrite the
+ * customer's folder-scope (e.g. from tree-lock toggles), commit + push. The MCP
+ * reads the scope file fresh per request, so the change is live immediately.
+ */
+tenantRoutes.put("/:vaultId/scope", async (c) => {
+  const vaultId = c.req.param("vaultId");
+  const vault = await getVaultById(vaultId);
+  if (!vault) return c.json({ error: "not-found" }, 404);
+  const body = await c.req
+    .json<{ agentId?: string; readGlobs?: string[]; writeGlobs?: string[] }>()
+    .catch(() => ({}) as { agentId?: string; readGlobs?: string[]; writeGlobs?: string[] });
+  const readGlobs = Array.isArray(body.readGlobs) ? body.readGlobs : [];
+  const writeGlobs = Array.isArray(body.writeGlobs) ? body.writeGlobs : [];
+  const vaultDir = vaultWorkingCopyPath(vaultId);
+
+  let agentId = (body.agentId ?? "").trim();
+  if (!agentId) {
+    try {
+      const raw = await readFile(join(vaultDir, "00_meta", "mcp-scopes.yaml"), "utf8");
+      agentId = raw.match(/scopes:\s*\n\s+([^:\s]+):/)?.[1] ?? "";
+    } catch {
+      /* none yet */
+    }
+  }
+  if (!agentId) {
+    const toks = await listMcpTokens(vaultId);
+    agentId = toks[0]?.agentId ?? `kunde-${vault.slug}`;
+  }
+
+  const yaml =
+    `scopes:\n  ${agentId}:\n    read: ${JSON.stringify(readGlobs)}\n` +
+    `    write: ${JSON.stringify(writeGlobs)}\n    commit_prefix: "[agent:${agentId}]"\n`;
+  await mkdir(join(vaultDir, "00_meta"), { recursive: true });
+  await writeFile(join(vaultDir, "00_meta", "mcp-scopes.yaml"), yaml, "utf8");
+
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: config.gitAuthorName,
+    GIT_AUTHOR_EMAIL: config.gitAuthorEmail,
+    GIT_COMMITTER_NAME: config.gitAuthorName,
+    GIT_COMMITTER_EMAIL: config.gitAuthorEmail,
+  };
+  const git = (args: string[]) => exec("git", ["-C", vaultDir, ...args], { env: gitEnv });
+  try {
+    await git(["add", "--", "00_meta/mcp-scopes.yaml"]);
+    await git(["commit", "-m", "chore: update tenant scope"]);
+    if (vault.gitRemote) await git(["push", "origin", "main"]);
+  } catch {
+    // "nothing to commit" / transient push error — file is written, scope is
+    // already live for the MCP (which reads it per request).
+  }
+
+  return c.json({ ok: true, agentId, readGlobs, writeGlobs });
 });

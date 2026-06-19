@@ -18,6 +18,8 @@ import {
   MoreVertical,
   Pencil,
   Trash2,
+  Lock,
+  Eye,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { useIsMobile } from "./responsive.js";
@@ -30,6 +32,16 @@ import { useIsMobile } from "./responsive.js";
  * Drag-State). Die eigentlichen Operationen — und das anschließende
  * Neuladen des Baums — macht die App über die `on*`-Callbacks.
  */
+
+/**
+ * Per-folder share control for a tenant vault (Freigaben). When present, each
+ * FOLDER row shows a 3-state lock — verborgen → nur lesen → lesen+schreiben —
+ * that toggles what the customer's scoped MCP can see/write for that folder.
+ */
+export interface TenantScope {
+  stateFor: (folderPath: string) => "hidden" | "read" | "write";
+  cycle: (folderPath: string) => void;
+}
 
 interface FileTreeProps {
   tree: TreeNode[];
@@ -46,6 +58,8 @@ interface FileTreeProps {
    * Notiz enthalten). null/undefined = kein Filter.
    */
   tagFilteredNoteIds?: Set<string> | null;
+  /** When set, folder rows show per-folder share locks (tenant vaults only). */
+  tenantScope?: TenantScope | null;
 }
 
 /**
@@ -100,6 +114,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
     onMove,
     onDelete,
     tagFilteredNoteIds,
+    tenantScope,
   },
   ref,
 ) {
@@ -316,6 +331,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
             key={node.path}
             node={node}
             depth={0}
+            tenantScope={tenantScope}
             isMobile={isMobile}
             expanded={expanded}
             editing={editing}
@@ -368,6 +384,7 @@ export const FileTree = forwardRef<FileTreeHandle, FileTreeProps>(function FileT
 interface RowProps {
   node: TreeNode;
   depth: number;
+  tenantScope?: TenantScope | null;
   /** True on phone-width viewports — switches actions to tap-to-reveal. */
   isMobile: boolean;
   expanded: Set<string>;
@@ -393,6 +410,7 @@ function Row(props: RowProps) {
   const {
     node,
     depth,
+    tenantScope,
     isMobile,
     expanded,
     editing,
@@ -559,6 +577,41 @@ function Row(props: RowProps) {
         >
           {node.name}
         </span>
+
+        {/* Freigabe-Schloss (nur Mandanten-Vaults): 3 Zustände, immer sichtbar
+            als Status. Klick zykelt verborgen → nur lesen → lesen+schreiben. */}
+        {isFolder &&
+          tenantScope &&
+          (() => {
+            const st = tenantScope.stateFor(node.path);
+            const Icon = st === "write" ? Pencil : st === "read" ? Eye : Lock;
+            const col = st === "write" ? C.accent : st === "read" ? C.gold : C.textFaint;
+            const lbl =
+              st === "write" ? "lesen+schreiben" : st === "read" ? "nur lesen" : "verborgen";
+            return (
+              <button
+                title={`Kunde: ${lbl} — klicken zum Umschalten`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  tenantScope.cycle(node.path);
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 24,
+                  height: 24,
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: col,
+                  flexShrink: 0,
+                }}
+              >
+                <Icon size={15} />
+              </button>
+            );
+          })()}
 
         {/* Mobile: immer sichtbarer „⋮"-Schalter, der die Aktionszeile per
             Tap ein-/ausblendet (Hover existiert auf Touch nicht). */}

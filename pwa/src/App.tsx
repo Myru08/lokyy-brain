@@ -17,6 +17,7 @@ const GraphView = lazy(() =>
 import { api, ApiError, type MenuItem } from "./api.js";
 import { Sidebar } from "./sidebar/Sidebar.js";
 import { VaultSwitcher } from "./VaultSwitcher.js";
+import { useTenantScope } from "./useTenantScope.js";
 import { MenuEditor } from "./sidebar/MenuEditor.js";
 import { resolveView } from "./sidebar/views/registry.js";
 import { SplitView } from "./SplitView.js";
@@ -483,6 +484,8 @@ export function App() {
   // jump to a folder (expand ancestors + scroll into view) without
   // lifting all of FileTree's UI state into App.tsx.
   const fileTreeRef = useRef<FileTreeHandle | null>(null);
+  // Per-folder share locks — non-null only when the active vault is a tenant.
+  const tenantScope = useTenantScope();
 
   // Save-lifecycle tracking — surfaced to NoteHeader for the badge UI.
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
@@ -2389,6 +2392,7 @@ export function App() {
               onMove={handleMove}
               onDelete={handleDelete}
               tagFilteredNoteIds={tagFilteredNoteIds}
+              tenantScope={tenantScope}
             />
           </div>
           {/* (c) Tags GANZ UNTEN — Aufklapp-Fähnchen, das von UNTEN nach OBEN

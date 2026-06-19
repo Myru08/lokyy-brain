@@ -1405,4 +1405,24 @@ export const api = {
       method: "DELETE",
       credentials: "include",
     }).then(json<{ ok: true }>),
+
+  /** Current folder-scope (read/write globs) for a tenant vault's customer agent. */
+  getTenantScope: (
+    vaultId: string,
+  ): Promise<{ agentId: string; readGlobs: string[]; writeGlobs: string[] }> =>
+    fetch(`${BASE}/tenants/${encodeURIComponent(vaultId)}/scope`, {
+      credentials: "include",
+    }).then(json<{ agentId: string; readGlobs: string[]; writeGlobs: string[] }>),
+
+  /** Rewrite a tenant vault's folder-scope (e.g. from tree-lock toggles). Live immediately. */
+  putTenantScope: (
+    vaultId: string,
+    body: { readGlobs: string[]; writeGlobs: string[] },
+  ): Promise<{ ok: true; agentId: string }> =>
+    fetch(`${BASE}/tenants/${encodeURIComponent(vaultId)}/scope`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    }).then(json<{ ok: true; agentId: string }>),
 };
