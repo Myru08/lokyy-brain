@@ -23,7 +23,19 @@ export function UserMenu({ isMobile }: { isMobile: boolean }) {
   const user = useContext(SessionUserContext);
   const [open, setOpen] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  // The top bar (<header>) has `overflow: hidden`, which would clip an
+  // absolutely-positioned dropdown. We render it `position: fixed` against the
+  // viewport using the trigger's measured rect, so it escapes the clip.
+  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
   const ref = useRef<HTMLDivElement | null>(null);
+
+  function toggle() {
+    if (!open && ref.current) {
+      const r = ref.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+    }
+    setOpen((o) => !o);
+  }
 
   // Close on outside click.
   useEffect(() => {
@@ -50,7 +62,7 @@ export function UserMenu({ isMobile }: { isMobile: boolean }) {
   return (
     <div ref={ref} style={{ position: "relative", flexShrink: 0 }}>
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         title={user.name || user.email}
         aria-label="Profil"
         style={{
@@ -102,13 +114,12 @@ export function UserMenu({ isMobile }: { isMobile: boolean }) {
         )}
       </button>
 
-      {open && (
+      {open && pos && (
         <div
           style={{
-            position: "absolute",
-            right: 0,
-            top: "100%",
-            marginTop: 6,
+            position: "fixed",
+            right: pos.right,
+            top: pos.top,
             minWidth: 240,
             background: C.panel,
             border: `1px solid ${C.borderStrong}`,
