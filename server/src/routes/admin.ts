@@ -20,11 +20,15 @@ import {
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { config } from "../config.js";
+import { requireAdmin } from "../middleware/auth.js";
 
 
 const exec = promisify(execFile);
 
 export const adminRoutes = new Hono();
+
+// Operator-only: system settings, vault re-clone, skill mgmt, etc.
+adminRoutes.use("*", requireAdmin);
 
 // GET /api/admin/system-settings — current state
 //

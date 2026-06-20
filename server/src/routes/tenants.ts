@@ -18,10 +18,14 @@ import {
   type McpRole,
 } from "@lokyy/core";
 import { config } from "../config.js";
+import { requireAdmin } from "../middleware/auth.js";
 
 const exec = promisify(execFile);
 
 export const tenantRoutes = new Hono();
+
+// Owner-only: provisioning, tokens, scopes, deletion are operator hoheit.
+tenantRoutes.use("*", requireAdmin);
 
 /**
  * Default folder model for a shared customer vault (Design-Doc 10.3): the
