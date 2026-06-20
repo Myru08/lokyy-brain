@@ -18,6 +18,7 @@ import { api, ApiError, type MenuItem } from "./api.js";
 import { Sidebar } from "./sidebar/Sidebar.js";
 import { VaultSwitcher } from "./VaultSwitcher.js";
 import { useTenantScope } from "./useTenantScope.js";
+import { UserMenu } from "./UserMenu.js";
 import { MenuEditor } from "./sidebar/MenuEditor.js";
 import { resolveView } from "./sidebar/views/registry.js";
 import { SplitView } from "./SplitView.js";
@@ -2251,6 +2252,8 @@ export function App() {
         >
           <SettingsIcon size={20} style={{ color: C.accent }} />
         </button>
+        {/* Profil + Ausloggen */}
+        <UserMenu isMobile={isMobile} />
         {/* Phase D Wave D1 — sync status text is informational and hidden
             on narrow viewports. The status colour-dot is still represented
             through the saving/conflict notifications elsewhere. */}
