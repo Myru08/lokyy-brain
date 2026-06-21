@@ -105,32 +105,31 @@ import { currentMcpSession } from "./sessionContext.js";
  * Keep this short. Long instructions waste tokens on every conversation
  * turn. Six trigger patterns, each one-line.
  */
-const LOKYY_BRAIN_INSTRUCTIONS = `You have access to Lokyy-Brain — the user's personal knowledge vault (git-backed, SPEC-compliant Markdown notes). Use it actively:
+const LOKYY_BRAIN_INSTRUCTIONS = `You have access to Lokyy-Brain — the user's personal knowledge vault (git-backed, SPEC-compliant Markdown notes). It is the single source of truth: prefer it over guessing, and write findings back so the vault compounds over time. There are many tools, but everyday work uses only the handful below — ignore the rest unless a task explicitly needs it.
 
-1. BEFORE answering questions about the user's projects, decisions, workflows, or past work: call \`search_vault\` first. Never speculate from memory if the vault might know.
-2. AFTER substantial conversations with new insights: call \`create_note\` to persist. Choose type carefully:
-   - note → 20_notes/ (general insights)
-   - capture → 30_captures/ (external sources, snippets, quotes)
-   - decision → 50_decisions/ (trade-offs, ADRs)
-   - intervention → 70_pai/interventions/ (proactive suggestions for the user)
-   Path pattern: \`{folder}/{YYYY-MM-DD}-{slug}\` for chronological sort.
-3. ON "save this" / "remember" / "capture": immediately \`create_note\` type=capture in 30_captures/. Don't ask, just do.
-4. ON "what do we know about X" / "have we covered Y": \`search_vault\` first, then answer citing noteIds.
-5. ON "summarize this session" / "write it all down": \`create_note\` type=note in 70_pai/sessions/{YYYY-MM-DD}-{slug} with structured Markdown (TL;DR / Decisions / Next Steps / Related notes via [[wikilink]]).
-6. While editing a note, if you notice a conceptual link to another existing note, insert \`[[Other Note Title]]\` via \`update_note\` — this builds the knowledge graph organically.
+## Which tool, when
+- LEARN THE VAULT FIRST: \`get_vault_conventions\` returns the folders, doc-types and required frontmatter of THIS specific vault. Call it before your first write — structure differs per vault, so never assume folder names or types.
+- FIND / RECALL: \`search_vault\` (keyword + semantic) for "what do we know about X"; \`list_notes\` for structured filters (type/tag/status/folder); \`list_tree\` to browse the structure.
+- READ: \`read_note\` (by path) or \`resolve_by_id\` (by 26-char ULID).
+- CREATE A NOTE → use \`create_managed_note\`. Pass ONLY the intent — { type, title, body? } — and the vault derives the path, the ULID and SPEC-valid frontmatter for you, auto-filling required fields. This is the sanctioned write path: you do NOT need to know folders or frontmatter rules to use it. This is your default for "save this", "remember", "write it down", and for persisting insights after a substantial conversation — don't ask, just do it.
+- UPDATE an existing note: \`update_note\`. While editing, add \`[[Other Note Title]]\` links to related notes — this grows the knowledge graph organically.
+- ORGANISE: \`move_note\` / \`rename_note\` to re-file; \`delete_note\` to remove (safe soft-delete by default).
+- CONTEXT BEFORE EDIT: \`get_backlinks\` ("who links here").
+Advanced / occasional (skip unless asked): history/diff, get_tags, find_broken_links, bulk create_notes/update_notes, get_graph, skills (list_skills/run_skill), URL-import pipes.
 
-Search uses Tier 1 (full-text + tags + wikilinks) and Tier 2 (semantic embeddings, when Ollama is up). Multi-token queries are supported. Empty folders appear with "(empty)" marker — they exist for the SPEC structure even before notes land there.
+## Writing correctly
+- Default to \`create_managed_note\`. Only reach for the lower-level \`create_note\` when you must control the EXACT path or attach extra frontmatter the managed path won't set — and then YOU must supply \`path\`/\`slug\` and every required field yourself.
+- If a write is rejected with \`frontmatter-validation-failed\`, the \`fields\` list names exactly what is missing or invalid (with \`allowed\` values for enums). Either fix those fields, or just switch to \`create_managed_note\`. NEVER invent facts to satisfy a field — use "—" as a placeholder for an unknown source/url/author.
 
-Permission model: your scope is defined in the vault's \`00_meta/mcp-scopes.yaml\` under your agent-id. Scope violations return a structured error — treat them as hard limits, don't retry around them.
+## Interpreting results & errors
+- An EMPTY result (\`search_vault\` → \`{ "results": [], "empty": true }\`, or an empty tree/list) means the tool RAN CORRECTLY and the vault has nothing matching. It is NOT a failure, broken tool, or connection problem. Say plainly "dazu finde ich im Vault nichts" — do not claim the tool/vault is broken.
+- On an empty search, retry 1–2× reformulated (synonyms, word stems, the German AND the English term, typo variants), then judge honestly — never fabricate or force an irrelevant match.
+- NEVER use a shell, ExecCommand or file-system access to reach the vault. EVERY vault operation goes through these tools. On an error, read the error field and adjust the arguments — don't route around it.
+- Note paths are the note id WITHOUT \`.md\` (e.g. \`00_meta/KONVENTIONEN\`, exactly as \`search_vault\` returns in \`noteId\`); a trailing \`.md\` is tolerated.
 
-Skills are reusable workflows the user has defined in the vault. To use one: call \`list_skills\` to see which skills are available, then call \`run_skill\` with the chosen skill — it returns a filled-in prompt. You then execute that returned prompt yourself, using the tools listed here (client-side execution). \`run_skill\` only renders the prompt; it does not run an LLM or write any note on your behalf.
-
-How to interpret results & errors (IMPORTANT — read carefully):
-- An EMPTY result (e.g. \`search_vault\` returns \`{ "results": [], "empty": true }\`, or \`list_tree\`/\`list_notes\` returns nothing) means the search RAN CORRECTLY and the vault simply has nothing matching. It is NOT a failure, NOT a broken tool, NOT a connection problem. Tell the user plainly "dazu finde ich im Vault nichts" — do NOT say the vault/tool isn't working.
-- When a search is empty, retry 1–2× with reformulated queries before concluding: synonyms, word stems / partial words, the German AND the English term, typo variants. Then judge honestly whether any hit truly answers the question — never fabricate or force an irrelevant match.
-- NEVER use a shell, ExecCommand, file-system access or any out-of-band method to reach the vault. EVERY vault operation goes through the tools listed here. If a tool returns an error, read the error field and adjust the arguments — don't route around it.
-- Note paths are the note id WITHOUT a \`.md\` extension (e.g. \`00_meta/KONVENTIONEN\`, exactly as \`search_vault\` returns it in \`noteId\`). A trailing \`.md\` is tolerated, but pass the bare id.
-- Before writing notes, call \`get_vault_conventions\` once to learn THIS vault's folders + doc-types, and follow them.`;
+## Permissions & skills
+- Your scope lives in \`00_meta/mcp-scopes.yaml\` under your agent-id. Scope violations are hard limits — don't retry around them.
+- A skill is a reusable vault workflow: \`list_skills\` to discover, \`run_skill\` to get a filled-in prompt which YOU then execute with the tools above. \`run_skill\` only renders the prompt; it runs no LLM and writes nothing on your behalf.`;
 
 /**
  * lokyy-brain MCP server (Story 7.1–7.7).
@@ -326,13 +325,13 @@ export function createServer(): Server {
       {
         name: "list_tree",
         description:
-          "List the Lokyy-Brain folder/note tree, filtered to your readable scope. Empty folders surface with '(empty)' marker so you can see the canonical SPEC structure (10_projects, 20_notes, 30_captures, …) even before notes land there.",
+          "List the Lokyy-Brain folder/note tree, filtered to your readable scope. Empty folders surface with an '(empty)' marker so you can see this vault's canonical structure even before notes land there. The folder names are vault-specific — call `get_vault_conventions` to learn what each folder is for.",
         inputSchema: { type: "object", properties: {} },
       },
       {
         name: "create_note",
         description:
-          "Create a new Lokyy-Brain note with SPEC-valid frontmatter (ULID, type, title, created, updated auto-filled). CALL THIS proactively whenever the user says 'save this', 'remember this', 'capture this' — don't ask, just do it. Also call after substantial conversations where insights worth preserving emerged. Choose `type` deliberately — the canonical folder is derived from it. EASIEST: pass `type` + `slug` and the server derives the path (dated '{folder}/{YYYY-MM-DD}-{slug}' for captures/tasks, plain '{folder}/{slug}' otherwise). If you pass an explicit `path` it must sit under the type's canonical folder (sub-folders like '30_captures/youtube/' are fine) or you get a type-folder-mismatch error. Either `path` or `slug` is required.",
+          "LOWER-LEVEL note creation — for most cases prefer `create_managed_note`, which takes only { type, title, body } and derives the path + required frontmatter for you. Reach for `create_note` ONLY when you must control the EXACT path/slug or attach extra frontmatter the managed path won't set. It creates a note with auto-filled ULID/created/updated and seeds the profile's required fields, but YOU must supply `path` OR `slug` (one is required) and any caller-specific frontmatter. The canonical folder is derived from `type`; an explicit `path` must sit under it (sub-folders like '30_captures/youtube/' are fine) or you get a type-folder-mismatch error.",
         inputSchema: {
           type: "object",
           properties: {
