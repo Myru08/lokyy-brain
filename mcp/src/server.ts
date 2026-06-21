@@ -118,7 +118,14 @@ Search uses Tier 1 (full-text + tags + wikilinks) and Tier 2 (semantic embedding
 
 Permission model: your scope is defined in the vault's \`00_meta/mcp-scopes.yaml\` under your agent-id. Scope violations return a structured error — treat them as hard limits, don't retry around them.
 
-Skills are reusable workflows the user has defined in the vault. To use one: call \`list_skills\` to see which skills are available, then call \`run_skill\` with the chosen skill — it returns a filled-in prompt. You then execute that returned prompt yourself, using the tools listed here (client-side execution). \`run_skill\` only renders the prompt; it does not run an LLM or write any note on your behalf.`;
+Skills are reusable workflows the user has defined in the vault. To use one: call \`list_skills\` to see which skills are available, then call \`run_skill\` with the chosen skill — it returns a filled-in prompt. You then execute that returned prompt yourself, using the tools listed here (client-side execution). \`run_skill\` only renders the prompt; it does not run an LLM or write any note on your behalf.
+
+How to interpret results & errors (IMPORTANT — read carefully):
+- An EMPTY result (e.g. \`search_vault\` returns \`{ "results": [], "empty": true }\`, or \`list_tree\`/\`list_notes\` returns nothing) means the search RAN CORRECTLY and the vault simply has nothing matching. It is NOT a failure, NOT a broken tool, NOT a connection problem. Tell the user plainly "dazu finde ich im Vault nichts" — do NOT say the vault/tool isn't working.
+- When a search is empty, retry 1–2× with reformulated queries before concluding: synonyms, word stems / partial words, the German AND the English term, typo variants. Then judge honestly whether any hit truly answers the question — never fabricate or force an irrelevant match.
+- NEVER use a shell, ExecCommand, file-system access or any out-of-band method to reach the vault. EVERY vault operation goes through the tools listed here. If a tool returns an error, read the error field and adjust the arguments — don't route around it.
+- Note paths are the note id WITHOUT a \`.md\` extension (e.g. \`00_meta/KONVENTIONEN\`, exactly as \`search_vault\` returns it in \`noteId\`). A trailing \`.md\` is tolerated, but pass the bare id.
+- Before writing notes, call \`get_vault_conventions\` once to learn THIS vault's folders + doc-types, and follow them.`;
 
 /**
  * lokyy-brain MCP server (Story 7.1–7.7).
@@ -812,6 +819,22 @@ export function createServer(): Server {
           const provider = getMemoryProvider(vaultId);
           const hits = await provider.search(query, { limit });
           const filtered = hits.filter((h) => canRead(`${h.noteId}.md`));
+          // Self-explaining empty result: a small model must NOT read `[]` as a
+          // tool failure (and must not reach for a shell). Tell it the search
+          // ran fine and how to retry — without inviting it to fabricate hits.
+          if (filtered.length === 0) {
+            return text({
+              results: [],
+              empty: true,
+              hint:
+                `Keine Treffer für "${query}". Das ist KEIN Fehler — die Suche lief korrekt, ` +
+                `der Vault enthält zu diesem Begriff (noch) nichts. Bevor du aufgibst, formuliere ` +
+                `die Suche 1–2× um: Synonyme, Wortstamm/Teilwort, deutscher UND englischer Begriff, ` +
+                `Tippfehler-Varianten. Hilft das nicht, nutze list_tree (Struktur) oder list_notes ` +
+                `(vorhandene Notizen). Erfinde KEINE Treffer; gib nur Notizen zurück, die wirklich ` +
+                `zur Frage passen. Nutze für den Vault NIE eine Shell/ExecCommand.`,
+            });
+          }
           return text({ results: filtered });
         }
         case "list_tree": {
