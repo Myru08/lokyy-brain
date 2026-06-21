@@ -40,6 +40,7 @@ import {
   // MCP `notes.create_managed` tool and the HTTP POST /api/notes/create-managed
   // route share DIESELBE Quelle (ISC-59 — no parallel write/path logic).
   resolveManagedCreate,
+  defaultRequiredFields,
   // Story 10.3 — delete_note (soft via trashEntry, hard via deleteEntry).
   trashEntry,
   deleteEntry,
@@ -1188,9 +1189,15 @@ export function createServer(): Server {
 
           if (!canWrite(`${path}.md`)) throw new ScopeViolation("write", path);
 
-          // Tags (when supplied) flow through as extra frontmatter, exactly as
-          // create_note threads its `frontmatter` arg.
-          const extra = tags.length > 0 ? { tags } : undefined;
+          // Server owns the frontmatter (ADR-004): seed the per-type REQUIRED
+          // fields the active profile demands (e.g. karpathy wiki-article needs
+          // status+stand) so SPEC validation passes — without this, a strict
+          // profile makes create_managed_note unusable for an agent. Tags (when
+          // supplied) merge on top.
+          const extra = {
+            ...defaultRequiredFields(type, title, new Date()),
+            ...(tags.length > 0 ? { tags } : {}),
+          };
 
           try {
             const note = await createNote(path, args.body as string | undefined, {

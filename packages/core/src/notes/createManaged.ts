@@ -106,6 +106,50 @@ export type ManagedCreateInput =
  * Pure + side-effect-free so it is unit-testable without a live DB/git server.
  * `now` is injectable for deterministic tests of the dated pattern.
  */
+/**
+ * Per-type REQUIRED-field defaults for the managed write path (ADR-004:
+ * "the server owns the frontmatter"). Some profiles — notably `karpathy` —
+ * have doc-types with required fields BEYOND the base id/type/title/created/
+ * updated (e.g. `wiki-article` needs `status`+`stand`). `create_managed_note`
+ * only gets an intent (title/body/type), so without these defaults the SPEC
+ * validation would always reject the note and the agent can't write at all.
+ *
+ * These are SENSIBLE STARTING VALUES a human/agent refines later — not
+ * fabricated facts: a fresh wiki-article is "im Aufbau", a raw-source has an
+ * unknown author until filled in, a frage-report's question seeds from the
+ * title. Only fields the caller did NOT supply are defaulted (caller wins).
+ */
+export function defaultRequiredFields(
+  type: AnyDocType,
+  title: string,
+  now: Date = new Date(),
+): Record<string, unknown> {
+  const today = now.toISOString().slice(0, 10); // YYYY-MM-DD (ajv `format: date`)
+  switch (type) {
+    // `status: These` is the only status that does NOT require `sources` (an
+    // unsourced hypothesis) — the right starting point for an agent-written
+    // article that has no citations yet. The curator later sets it to
+    // "im Aufbau"/"gesichert" and adds sources.
+    case "wiki-article":
+      return { status: "These", stand: today };
+    // Strings are minLength≥1 and `source_type` is an enum — fill with honest
+    // placeholders the curator replaces once the real source is known.
+    case "raw-source":
+      return {
+        author: "—",
+        source_url: "—",
+        date_added: today,
+        date_published: today,
+        source_type: "note",
+      };
+    // `sources` is minItems≥1; seed with one placeholder + the question.
+    case "frage-report":
+      return { question: title, sources: ["—"] };
+    default:
+      return {};
+  }
+}
+
 export function resolveManagedCreate(
   args: Record<string, unknown>,
   now: Date = new Date(),

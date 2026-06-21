@@ -190,6 +190,7 @@ export { TypeFolderMismatchError } from "./errors/TypeFolderMismatchError.js";
 export {
   createManaged,
   resolveManagedCreate,
+  defaultRequiredFields,
   slugifyTitle,
   type NoteCreateIntent,
   type ManagedCreateInput,
