@@ -767,6 +767,22 @@ export function createServer(): Server {
     // Postgres/stacktrace text to the client (it is logged server-side).
     try {
       const args = (req.params.arguments ?? {}) as Record<string, unknown>;
+      // Robustness (client-tolerance): many LLM clients append `.md` to a note
+      // id even though the API expects it WITHOUT the extension (search_vault
+      // returns ids without `.md`). Strip a trailing `.md` on note-path args so
+      // read/update/move/… don't 404 on `<id>.md`. Folder + skill tools have
+      // their own path semantics and are deliberately excluded.
+      const NOTE_PATH_TOOLS = new Set([
+        "read_note", "update_note", "delete_note", "move_note", "rename_note",
+        "get_backlinks", "get_history", "get_note_diff", "validate_note",
+      ]);
+      if (NOTE_PATH_TOOLS.has(name)) {
+        for (const k of ["path", "from", "to"]) {
+          if (typeof args[k] === "string") {
+            args[k] = (args[k] as string).replace(/\.md$/i, "");
+          }
+        }
+      }
       try {
         switch (name) {
         case "read_note": {
