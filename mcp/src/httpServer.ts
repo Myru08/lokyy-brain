@@ -1,5 +1,4 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { handleOAuthRoute, verifyToken, deriveBase } from "./oauth.js";
@@ -38,8 +37,6 @@ import {
  *   - Self-hosted lokyy-brain on a server, multiple clients per user
  *   - Docker-deployed instance with public ingress
  */
-
-const sessions = new Map<string, StreamableHTTPServerTransport>();
 
 /**
  * Resolve a per-customer registry bearer token (`mcp_tokens`) to its request
@@ -140,7 +137,7 @@ export async function handleMcpHttpRequest(
 
   if (req.url === "/mcp/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, sessions: sessions.size }));
+    res.end(JSON.stringify({ ok: true, stateless: true }));
     return;
   }
 
@@ -168,44 +165,44 @@ export async function handleMcpHttpRequest(
     return;
   }
 
-  // The full session/transport/handleRequest dance. Bound to the request's
-  // vault + scope when a registry token is in play; the legacy singleton path
-  // otherwise. createServer() (inside serverFactory) reads the active session,
-  // so a customer session captures ITS vault; every tool call runs scoped.
+  // STATELESS transport (one fresh Server+Transport per request, torn down when
+  // the response closes). There is no session map and no `Mcp-Session-Id`, so a
+  // client can never hold an id that goes stale across a redeploy — the failure
+  // we hit before, where every deploy wiped the in-memory sessions and clients
+  // then got "400 Bad Request: Server not initialized" on every call until they
+  // manually reconnected. With `sessionIdGenerator: undefined` the SDK disables
+  // session validation entirely (validateSession → undefined), so each POST is
+  // self-contained. The SDK FORBIDS reusing a stateless transport, hence one per
+  // request; createServer() is synchronous and cheap (the heavy core/db/repo/
+  // scopes init already ran once in initServerDeps), and the request's vault is
+  // bound per-request via withCoreConfig/withMcpSession below — nothing was ever
+  // kept on the session itself.
   const run = async (): Promise<void> => {
-    const sessionId = req.headers["mcp-session-id"] as string | undefined;
-    let transport: StreamableHTTPServerTransport;
-
-    if (sessionId && sessions.has(sessionId)) {
-      transport = sessions.get(sessionId)!;
-    } else if (req.method === "POST") {
-      // New session — build a FRESH Server for this session. The MCP SDK
-      // forbids one Server/Protocol instance from connecting to more than one
-      // transport, so every session gets its own instance. The heavy global
-      // init (core/db/repo/scopes) already ran once via initServerDeps.
-      const sessionServer = await serverFactory();
-      transport = new StreamableHTTPServerTransport({
-        sessionIdGenerator: () => randomUUID(),
-        onsessioninitialized: (sid) => {
-          sessions.set(sid, transport);
-          console.error(`[lokyy-mcp-http] session opened: ${sid}`);
-        },
-      });
-      transport.onclose = () => {
-        if (transport.sessionId) {
-          sessions.delete(transport.sessionId);
-          console.error(`[lokyy-mcp-http] session closed: ${transport.sessionId}`);
-        }
-      };
-      await sessionServer.connect(transport);
-    } else {
-      res.writeHead(400, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "no-session", hint: "POST to initialize" }));
+    // Streamable HTTP uses GET to open a server→client SSE stream and DELETE to
+    // terminate a session. Stateless has neither (no session to stream from or
+    // tear down), and this server emits no server-initiated messages — so reject
+    // both cleanly instead of letting the transport 400 with a cryptic message.
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "method-not-allowed", hint: "POST /mcp (stateless)" }));
       return;
     }
 
+    const sessionServer = await serverFactory();
+    const transport = new StreamableHTTPServerTransport({
+      // Stateless: no session tracking, no Mcp-Session-Id, no stale-session 400.
+      sessionIdGenerator: undefined,
+    });
+    // One transport is single-use in stateless mode — discard transport + server
+    // once the response is done so connections don't leak.
+    res.on("close", () => {
+      void transport.close().catch(() => {});
+      void sessionServer.close().catch(() => {});
+    });
+    await sessionServer.connect(transport);
+
     try {
-      const body = req.method === "POST" ? await readBody(req) : undefined;
+      const body = await readBody(req);
       await transport.handleRequest(req, res, body);
     } catch (err) {
       console.error("[lokyy-mcp-http] request handling failed:", err);
