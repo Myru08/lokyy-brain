@@ -26,6 +26,10 @@ import {
   derivePathForType,
   folderForType,
   TypeFolderMismatchError,
+  // Schema-validation failure carrying the exact failing fields — surfaced to
+  // the agent as a self-explaining user-error (which field, allowed values, how
+  // to heal) instead of an opaque "see server logs".
+  FrontmatterValidationError,
   // Story S7 (demo subset) — active SPEC-profile resolution for the MCP layer.
   // The server resolves the vault's profile ONCE at boot (env-driven, Default
   // `para`) and threads it through the create / validate / conventions paths so
@@ -865,10 +869,22 @@ export function createServer(): Server {
           // AC#6 — pass extra frontmatter through so a typed note with extra
           // required fields (skill_name/description, peer_type, …) is valid
           // and listable in ONE call (no create→update workaround).
-          const extra =
+          //
+          // Strategy A (buffer): seed the profile's per-type REQUIRED fields
+          // FIRST (karpathy wiki-article needs status+stand, etc.), then let any
+          // caller-supplied `frontmatter` win on top. Without this, an agent
+          // calling create_note with only { type, title } gets a validation
+          // rejection it has no way to anticipate — the same trap that drove an
+          // external agent to fall back to the shell. The managed path already
+          // did this; create_note now matches it.
+          const callerExtra =
             args.frontmatter && typeof args.frontmatter === "object"
               ? (args.frontmatter as Record<string, unknown>)
-              : undefined;
+              : {};
+          const extra = {
+            ...defaultRequiredFields(type, String(args.title ?? ""), new Date()),
+            ...callerExtra,
+          };
 
           try {
             const note = await createNote(
@@ -1267,6 +1283,37 @@ export function createServer(): Server {
             action: err.action,
             path: err.path,
             error_class: "user-error",
+          });
+        }
+        if (err instanceof FrontmatterValidationError) {
+          // A schema-validation failure is the caller's to fix AND is safe to
+          // explain in full — the failing fields/allowed values ARE the
+          // self-documentation an agent needs (no backend internals leak). This
+          // replaces the opaque "see server logs" for every write/validate tool.
+          const fields = err.errors.map((e) => {
+            const missing = e.params?.["missingProperty"];
+            const allowed = e.params?.["allowedValues"];
+            return {
+              field: missing
+                ? String(missing)
+                : (e.instancePath || "(root)").replace(/^\//, ""),
+              problem: e.message,
+              ...(Array.isArray(allowed) ? { allowed } : {}),
+            };
+          });
+          return text({
+            error: "frontmatter-validation-failed",
+            error_class: "user-error",
+            note: err.noteId,
+            fields,
+            hint:
+              "Pflicht-Frontmatter fehlt oder ist ungültig (siehe `fields`). " +
+              "EINFACHSTER Weg: rufe stattdessen `create_managed_note` mit { type, title, body } auf — " +
+              "Lokyy-Brain füllt die Pflichtfelder selbst. Bei `create_note`/`update_note` ergänze die " +
+              "genannten Felder unter `frontmatter` mit gültigen Werten (bei `allowed` nur einen dieser Werte). " +
+              "Erfinde KEINE Fakten: ist eine Quelle/URL/ein Autor unbekannt, nutze den Platzhalter \"—\". " +
+              "Nutze NIEMALS eine Shell, ExecCommand oder das lokale Dateisystem, um die Notiz zu schreiben — " +
+              "der einzige Schreibweg ist dieses MCP.",
           });
         }
         // Anything else reaching here is an unclassified handler throw; route it
