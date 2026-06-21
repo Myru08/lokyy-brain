@@ -150,6 +150,16 @@ How to interpret results & errors (IMPORTANT — read carefully):
 let activeVaultId = "";
 
 /**
+ * The singleton/personal vault id captured at boot by `initServerDeps`. The
+ * HTTP layer needs it to detect when a registry token points at THIS vault
+ * (which lives at `VAULT_DIR`, not `vaultsRoot/<id>`) and must therefore NOT be
+ * rebound onto the customer-vault path.
+ */
+export function getActiveVaultId(): string {
+  return activeVaultId;
+}
+
+/**
  * Module-level vault working-copy dir captured by `initServerDeps`. The skills
  * handlers (`list_skills`/`run_skill`) read it; captured here so `createServer()`
  * can close over it the same way it does `activeVaultId`.

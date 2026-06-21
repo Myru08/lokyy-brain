@@ -7,9 +7,11 @@ import {
   lookupMcpToken,
   vaultConfigFor,
   withCoreConfig,
+  coreConfig,
   getVaultById,
   type CoreConfig,
 } from "@lokyy/core";
+import { getActiveVaultId } from "./server.js";
 import { resolveScopeFor } from "./scopes.js";
 import {
   withMcpSession,
@@ -52,18 +54,24 @@ async function resolveRegistrySession(
   if (!ctx) return null;
   const vault = await getVaultById(ctx.vaultId);
   if (!vault) return null;
-  const coreConfig = vaultConfigFor({
-    vaultId: ctx.vaultId,
-    gitRemote: vault.gitRemote,
-    gitBranch: vault.gitBranch,
-  });
+  // A token that points at the SINGLETON/personal vault must NOT be rebound to
+  // `vaultsRoot/<id>` — that path doesn't exist; the personal vault lives at the
+  // boot `VAULT_DIR`. Only real customer vaults live under `vaultsRoot/<id>`.
+  const isSingleton = ctx.vaultId === getActiveVaultId();
+  const cfg: CoreConfig = isSingleton
+    ? coreConfig()
+    : vaultConfigFor({
+        vaultId: ctx.vaultId,
+        gitRemote: vault.gitRemote,
+        gitBranch: vault.gitBranch,
+      });
   const role = ctx.role as McpSessionRole; // registry role: "read" | "write"
-  const scope = await resolveScopeFor(coreConfig.vaultDir, ctx.agentId, role);
+  const scope = await resolveScopeFor(cfg.vaultDir, ctx.agentId, role);
   return {
-    coreConfig,
+    coreConfig: cfg,
     mcp: {
       vaultId: ctx.vaultId,
-      vaultDir: coreConfig.vaultDir,
+      vaultDir: cfg.vaultDir,
       agentId: ctx.agentId,
       role,
       scope,
