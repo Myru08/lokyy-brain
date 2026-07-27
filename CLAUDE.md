@@ -31,6 +31,30 @@ Verstoß gegen diese Disziplin = Risiko für das Gesamtprojekt. Diese Regeln gel
 - **`/goal` per Dev-Story.** When driving a story, set a `/goal` whose condition is: story acceptance criteria + `pnpm -r build` green. Include a hard turn-cap in the condition.
 - **Definition of Done:** `pnpm -r build` passes, story acceptance criteria met, QA sign-off, `.env.example` updated. Verification (build + Interceptor screenshot where UI is involved) is the Orchestrator's job; implementation is the agent's.
 
+## Deploy-Disziplin — Verbindlich (verhindert GitHub-Spam-Flag)
+
+> Am 2026-06-19 wurde das GitHub-Konto `oliverhees` nach ~25 schnellen
+> Auto-Deploys als **„spammy"** markiert; Coolify-Deploys brachen danach ab mit
+> `The owner of this application has been marked as spammy`. Ursache: Coolify
+> auto-deployt bei JEDEM Push auf `main` → jeder Push = GitHub-App-API-Calls →
+> zu viele in kurzer Zeit triggern GitHubs Abuse-Detection. Das ist tarif-
+> unabhängig (Pro/Team hilft NICHT) und nur per Reinstatement-Appeal lösbar.
+
+- **Sammeln statt sprühen.** Änderungen LOKAL committen und bündeln; erst am
+  Ende eines zusammenhängenden Arbeitsblocks **einmal** pushen + deployen.
+  Richtwert: **max ~3–4 Deploys/Stunde**, NIE ein Deploy pro Einzelcommit.
+- **Lokal verifizieren VOR dem Push** (`pnpm -r build` + `tsc --noEmit` + Tests,
+  bei DB/Migration Cold-Start gegen ein Wegwerf-Postgres). Nie durch
+  wiederholtes „deploy-and-see" debuggen — genau das löst das Flag aus.
+- **Bypass / Off-GitHub-Mirrors (GitHub-unabhängig).** Zwei Remotes, beide
+  aktuell halten solange GitHub geflaggt ist (sonst min. `forgejo-hr`):
+    - `forgejo-hr` → `https://forgejo.hr-applab.de/Oliver/lokyy-brain` — primäre
+      Off-GitHub-Arbeitskopie/Backup (`git push forgejo-hr main`).
+    - `forgejo` → `https://forgejo.kimiboca.de/kunden/lokyy-brain` — Demo-Infra-
+      Mirror, mögliche Coolify-Deploy-Quelle (`git push forgejo main`).
+  Coolify-Source-Switch auf einen dieser Mirrors = bewusster UI-Schritt mit
+  Reuse der externen Volumes (sonst Datenverlust) — NICHT blind an der Live-Demo.
+
 ## Commands
 
 ```bash
@@ -116,7 +140,7 @@ MCP scoping comes from `00_meta/mcp-scopes.yaml` in the vault — MCP server rea
 2. ⏳ **lokyy-vault hosting location + Forgejo instance** — still open. Architecture mandates a Docker-deployed Forgejo (port 3000 HTTP / 22 SSH) and the Setup Wizard validates the connection at install (architecture.md:303–314). Concrete host URL is chosen per deployment.
 3. ✅ **ULID + frontmatter libraries** — `ulid@3.0.2`, `gray-matter@4.0.3`, `ajv@8.20.0`, all in `@lokyy/core`. Source: architecture.md:122–124.
 4. ✅ **MCP client identity / scope assignment** — scope resolver in `@lokyy/mcp` reads `00_meta/mcp-scopes.yaml` **at startup** (no runtime expansion). Identity per server instance via env/CLI. Source: architecture.md:213–214, 354.
-5. ⏸️ **Tier 3 tool choice** — deliberately deferred until Tier 1+2 are in production. Graphiti is the current candidate (CLAUDE.md Memory Model).
+5. ⏸️ **Tier 3 tool choice** — deliberately deferred until Tier 1+2 are in production (both now `done` per sprint-status.yaml — the gate is met). Graphiti and **cognee** are the current candidates; concept + rationale in `_bmad-output/planning-artifacts/tier-3-memory-concept.md` (stand-in for a vault ADR — port to `50_decisions/` when vault access is available). No tool chosen, no code shipped.
 
 ## Epic Sequence
 
@@ -127,3 +151,13 @@ MCP scoping comes from `00_meta/mcp-scopes.yaml` in the vault — MCP server rea
 5. MCP Server workspace (`@lokyy/mcp`, scoped tools, stdio transport)
 6. Tier 3 Graph — optional, deferrable
 7. Remaining PWA (react-force-graph frontend, IndexedDB offline layer)
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues (`origin` → github.com/oliverhees/lokyy-brain), via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context; `CLAUDE.md` is the primary technical doc. ADRs live in the external lokyy-vault (`50_decisions/`), not locally in this repo — see `docs/agents/domain.md`.
