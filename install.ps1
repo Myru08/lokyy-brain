@@ -5,7 +5,10 @@
 #
 # Was passiert hier, der Reihe nach:
 #   1. Betriebssystem prüfen (dieses Script ist für Windows gedacht)
-#   2. Prüfen, ob Docker installiert ist
+#   2. Prüfen, ob Docker installiert ist — und es bei Bedarf automatisch
+#      installieren (über winget; fehlt winget selbst, wird zuerst der
+#      "App Installer" von Microsoft nachgerüstet). Klappt das nicht,
+#      bleibt es beim Link zum Selbermachen.
 #   3. Prüfen, ob der Docker-Daemon wirklich LÄUFT (nicht nur installiert ist)
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
@@ -24,10 +27,13 @@
 #
 # Exit-Codes:
 #   0  alles gut
-#   1  Docker ist nicht installiert
+#   1  Docker fehlt und konnte nicht automatisch installiert werden
 #   2  Docker-Daemon läuft nicht
 #   3  "docker compose" (v2) fehlt
 #   4  der Stack konnte nicht gestartet werden
+#   5  Es wurde etwas installiert, aber EIN manueller Schritt fehlt noch:
+#      Windows neu starten (WSL2) bzw. ein neues PowerShell-Fenster öffnen.
+#      Danach dieses Script einfach erneut aufrufen. Kein echter Fehler.
 
 # Fehler von PowerShell-Cmdlets sollen das Script nicht sofort abbrechen —
 # wir prüfen jeden Schritt selbst und geben dazu eine verständliche Meldung aus.
@@ -49,13 +55,16 @@ $PortsToCheck = @(
     @{ Port = 8787; Label = 'Server-API' },
     @{ Port = 8095; Label = 'Web-UI (PWA)' },
     @{ Port = 8788; Label = 'MCP-Server' },
-    @{ Port = 3001; Label = 'Forgejo Web-UI' },
-    @{ Port = 2222; Label = 'Forgejo SSH' }
+    @{ Port = 3001; Label = 'Forgejo Web-UI' }
 )
 
 # Wie lange warten wir maximal, bis die Web-UI antwortet?
 $MaxWaitSeconds      = 90
 $PollIntervalSeconds = 2
+
+# Wie lange warten wir maximal, bis Docker Desktop nach einer frischen
+# Installation hochgefahren ist?
+$DockerStartWaitSeconds = 60
 
 # Doku-Link, falls Docker fehlt
 $DocsWindows = 'https://docs.docker.com/desktop/setup/install/windows-install/'
@@ -109,18 +118,17 @@ if (-not $runningOnWindows) {
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schritt 2 — Ist Docker überhaupt installiert?
-# Wir installieren Docker BEWUSST nicht selbst: das braucht Admin-Rechte,
-# meist einen Neustart und WSL2 im Hintergrund. Das machst du einmal von Hand,
-# danach funktioniert dieses Script.
+# Fehlt Docker, installieren wir es selbst — über winget, das Paket-Werkzeug
+# von Microsoft. Fehlt winget seinerseits, rüsten wir es vorher nach.
+# Zwei Dinge kann ein Script prinzipbedingt NICHT übernehmen: den UAC-Dialog
+# bestätigen und den Rechner neu starten. Beides sagen wir deshalb klar an.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 2/9 — Docker-Installation prüfen'
-
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Write-Fail 'Docker ist auf diesem Rechner nicht installiert.'
+# Der klassische "mach es bitte von Hand"-Hinweis — überall dieselbe Meldung.
+function Write-DockerManualHint {
     Write-Line ''
     Write-Line '  Lokyy Brain läuft komplett in Docker-Containern — ohne Docker geht nichts.'
-    Write-Line '  Bitte installiere Docker Desktop einmalig und starte dieses Script danach erneut:'
+    Write-Line '  Bitte installiere Docker Desktop einmalig von Hand und starte dieses Script danach erneut:'
     Write-Line ''
     Write-Host "      $DocsWindows" -ForegroundColor White
     Write-Line ''
@@ -128,7 +136,203 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Write-Line '  für Linux). Der Installer richtet das in der Regel automatisch ein und'
     Write-Line '  verlangt danach einen Neustart — den bitte wirklich durchführen.'
     Write-Line ''
-    exit 1
+}
+
+# Antwortet der Docker-Daemon? "docker" ist ein externes Programm; fehlt es
+# ganz, wirft PowerShell einen abbrechenden Fehler — den fangen wir hier ab,
+# damit die Warteschleife weiterlaufen kann.
+function Test-DockerReady {
+    try {
+        docker info 2>&1 | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+# Wartet auf den Docker-Daemon. Jeder Punkt = ein Versuch.
+function Wait-DockerReady {
+    param([int]$TimeoutSeconds)
+
+    $waited = 0
+    Write-Host '    ' -NoNewline
+    while ($waited -lt $TimeoutSeconds) {
+        if (Test-DockerReady) {
+            Write-Line ''
+            return $true
+        }
+        Write-Host '.' -NoNewline
+        Start-Sleep -Seconds $PollIntervalSeconds
+        $waited += $PollIntervalSeconds
+    }
+    Write-Line ''
+    return $false
+}
+
+# Ist WSL2 einsatzbereit? Docker Desktop setzt es zwingend voraus.
+# Wir werten bewusst nur die Exit-Codes aus: die Textausgabe von wsl.exe ist
+# UTF-16 und wird in Windows PowerShell 5.1 gern als Kauderwelsch dargestellt —
+# darauf kann man keine Prüfung aufbauen.
+function Test-Wsl2Ready {
+    if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) {
+        return $false
+    }
+    wsl --status 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        return $true
+    }
+    # Ältere Windows-Builds kennen "--status" noch nicht — dann fragen wir
+    # ersatzweise die Liste der installierten Distributionen ab.
+    wsl -l -v 2>&1 | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+Write-Step 'Schritt 2/9 — Docker-Installation prüfen'
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Write-Warn 'Docker ist auf diesem Rechner nicht installiert.'
+
+    # ── 2a) winget vorhanden? Sonst zuerst den "App Installer" nachrüsten ──
+    if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+        Write-Line ''
+        Write-Line '  Es fehlt auch winget — das ist Microsofts Paket-Werkzeug (Teil des'
+        Write-Line '  "App Installers"). Wir rüsten es zuerst nach und installieren damit'
+        Write-Line '  anschließend Docker Desktop.'
+        Write-Line ''
+
+        # Ältere Windows-Installationen verhandeln von sich aus noch TLS 1.0/1.1.
+        # GitHub und Microsoft nehmen das nicht mehr an — deshalb hier explizit.
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        } catch {
+            Write-Warn 'TLS 1.2 konnte nicht gesetzt werden — wir versuchen es trotzdem.'
+        }
+
+        $vcLibsPath = Join-Path $env:TEMP 'lokyy-vclibs.appx'
+        $bundlePath = Join-Path $env:TEMP 'lokyy-appinstaller.msixbundle'
+
+        # Voraussetzung VCLibs. Ist das Paket bereits vorhanden, meldet Windows
+        # einen Fehler — das ist kein Abbruchgrund, wir machen einfach weiter.
+        # Bewusste Vereinfachung: Microsoft.UI.Xaml holen wir NICHT extra. Alle
+        # aktuellen Windows-10/11-Builds bringen es mit; nur sehr alte Systeme
+        # bräuchten es, und die sind hier ohnehin der Fall für den Handbetrieb.
+        try {
+            Write-Line '  Lade Voraussetzung (VCLibs) ...'
+            Invoke-WebRequest -Uri 'https://aka.ms/Microsoft.VCLibs.x64.14.00.Desktop.appx' -OutFile $vcLibsPath -UseBasicParsing -ErrorAction Stop
+            Add-AppxPackage -Path $vcLibsPath -ErrorAction Stop
+        } catch {
+            Write-Warn 'VCLibs wurde nicht neu installiert — vermutlich ist es bereits vorhanden.'
+        }
+
+        $appInstallerOk = $false
+        try {
+            Write-Line '  Suche die aktuelle Version des App Installers ...'
+            $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/microsoft/winget-cli/releases/latest' -UseBasicParsing -ErrorAction Stop
+            $asset = $release.assets | Where-Object { $_.name -like '*.msixbundle' } | Select-Object -First 1
+            if (-not $asset) {
+                throw 'Im aktuellen Release ist kein .msixbundle enthalten.'
+            }
+
+            Write-Line "  Lade $($asset.name) ..."
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $bundlePath -UseBasicParsing -ErrorAction Stop
+            Add-AppxPackage -Path $bundlePath -ErrorAction Stop
+            $appInstallerOk = $true
+        } catch {
+            Write-Fail 'Der App Installer (winget) konnte nicht automatisch nachgerüstet werden.'
+            Write-Line "    Grund: $($_.Exception.Message)"
+        }
+
+        if (-not $appInstallerOk) {
+            Write-DockerManualHint
+            exit 1
+        }
+
+        # Frisch registrierte Appx-Pakete landen im PATH einer BEREITS laufenden
+        # PowerShell nicht zuverlässig. Ein neues Fenster ist hier der ehrliche
+        # Weg — daran mitten in der Sitzung herumzubiegen ist unzuverlässig.
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
+            Write-Ok 'winget wurde installiert — in diesem Fenster ist es aber noch nicht verfügbar.'
+            Write-Line ''
+            Write-Line '  Bitte öffne ein NEUES PowerShell-Fenster und rufe dort erneut auf:'
+            Write-Line ''
+            Write-Host '      .\install.ps1' -ForegroundColor White
+            Write-Line ''
+            Write-Line '  Das ist kein Fehler — es fehlt nur dieser eine Handgriff.'
+            Write-Line ''
+            exit 5
+        }
+
+        Write-Ok 'winget wurde installiert.'
+    }
+
+    # ── 2b) Docker Desktop über winget installieren ──
+    Write-Line ''
+    Write-Line '  Docker Desktop wird jetzt automatisch über winget installiert.'
+    Write-Line '  Windows fragt dabei sehr wahrscheinlich per UAC-Fenster nach deiner'
+    Write-Line '  Zustimmung ("Möchten Sie zulassen, dass diese App Änderungen an Ihrem'
+    Write-Line '  Gerät vornimmt?"). Das ist normal und für jede Installation nötig —'
+    Write-Line '  bitte mit "Ja" bestätigen. Der Download dauert ein paar Minuten.'
+    Write-Line ''
+
+    winget install -e --id Docker.DockerDesktop --silent --accept-package-agreements --accept-source-agreements
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Die automatische Installation von Docker Desktop ist fehlgeschlagen (winget Exit-Code $LASTEXITCODE)."
+        Write-DockerManualHint
+        exit 1
+    }
+
+    Write-Ok 'Docker Desktop wurde installiert.'
+
+    # Der PATH dieser laufenden Sitzung kennt das frisch installierte docker.exe
+    # noch nicht — Windows aktualisiert ihn nur für NEU gestartete Prozesse.
+    # Also holen wir ihn uns direkt aus der Registry-Umgebung.
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath    = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    $env:Path = (@($machinePath, $userPath) | Where-Object { $_ }) -join ';'
+
+    # ── 2c) WSL2 — ohne das läuft Docker Desktop unter Windows nicht ──
+    if (-not (Test-Wsl2Ready)) {
+        Write-Line ''
+        Write-Warn 'Docker Desktop ist installiert — Windows braucht jetzt aber einen Neustart.'
+        Write-Line ''
+        Write-Line '  Grund: Docker Desktop läuft unter Windows auf WSL2 (Windows-Subsystem'
+        Write-Line '  für Linux). Das wird beim ersten Mal eingerichtet und ist erst nach'
+        Write-Line '  einem Neustart wirklich einsatzbereit.'
+        Write-Line ''
+        Write-Line '  Bitte starte den Rechner neu und rufe danach erneut auf:'
+        Write-Line ''
+        Write-Host '      .\install.ps1' -ForegroundColor White
+        Write-Line ''
+        Write-Line '  Das ist kein Fehler — es fehlt nur dieser eine Schritt.'
+        Write-Line ''
+        exit 5
+    }
+
+    # ── 2d) Docker Desktop starten und warten, bis es bereit ist ──
+    Write-Line ''
+    Write-Line '  Wir starten Docker Desktop jetzt.'
+    Write-Line ''
+
+    # Der Installationspfad kann abweichen — deshalb try/catch statt Test-Path
+    # allein. -ErrorAction Stop, damit ein Fehlschlag wirklich im catch landet.
+    $dockerDesktopExe = Join-Path $env:ProgramFiles 'Docker\Docker\Docker Desktop.exe'
+    try {
+        Start-Process -FilePath $dockerDesktopExe -ErrorAction Stop
+    } catch {
+        Write-Warn 'Docker Desktop konnte nicht automatisch gestartet werden — bitte einmal über das Startmenü öffnen.'
+    }
+
+    Write-Line "  Warten, bis Docker bereit ist (max. $DockerStartWaitSeconds Sekunden):"
+    if (-not (Wait-DockerReady -TimeoutSeconds $DockerStartWaitSeconds)) {
+        Write-Warn 'Docker Desktop ist noch nicht bereit.'
+        Write-Line '    Beim allerersten Start dauert das manchmal länger.'
+        Write-Line '    Bitte starte Docker Desktop einmal manuell (Startmenü), warte auf'
+        Write-Line '    "Engine running" — und führe dieses Script danach erneut aus.'
+        Write-Line ''
+        exit 1
+    }
+
+    Write-Ok 'Docker Desktop läuft.'
 }
 
 $dockerVersion = (docker --version 2>$null)
@@ -197,7 +401,7 @@ Write-Ok "Compose gefunden: $composeVersion"
 # einer Sprache, die man erst mal übersetzen muss.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 3001, 2222)'
+Write-Step 'Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 3001)'
 
 # Prüft, ob auf einem Port bereits etwas lauscht.
 # Wir nehmen bewusst einen direkten TCP-Verbindungsversuch statt

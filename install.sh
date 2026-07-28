@@ -6,7 +6,10 @@
 #
 # Was passiert hier, der Reihe nach:
 #   1. Betriebssystem erkennen (macOS oder Linux)
-#   2. Prüfen, ob Docker installiert ist
+#   2. Prüfen, ob Docker installiert ist — und es bei Bedarf automatisch
+#      installieren (Linux: offizielles get.docker.com-Script per sudo,
+#      macOS: Homebrew-Cask). Wo das nicht sicher automatisierbar ist
+#      (macOS ohne Homebrew, unbekanntes System), bleibt es beim Link.
 #   3. Prüfen, ob der Docker-Daemon wirklich LÄUFT (nicht nur installiert ist)
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
@@ -21,10 +24,12 @@
 #
 # Exit-Codes:
 #   0  alles gut
-#   1  Docker ist nicht installiert
+#   1  Docker fehlt und konnte nicht automatisch installiert werden
 #   2  Docker-Daemon läuft nicht
 #   3  "docker compose" (v2) fehlt
 #   4  der Stack konnte nicht gestartet werden
+#   5  Docker installiert, aber ein Neustart ist nötig (nur install.ps1 unter
+#      Windows/WSL2 — dieses Script gibt 5 nie zurück)
 
 # -u  = Zugriff auf nicht gesetzte Variablen ist ein Fehler (fängt Tippfehler).
 # -o pipefail = eine fehlgeschlagene Pipe-Stufe macht die ganze Pipe rot.
@@ -46,11 +51,29 @@ FORGEJO_URL="http://localhost:3001"
 # Format "Port:Beschriftung" — bewusst eine einfache Liste statt eines
 # assoziativen Arrays, weil macOS noch mit bash 3.2 ausgeliefert wird und
 # assoziative Arrays dort nicht existieren.
-PORTS_TO_CHECK="8787:Server-API 8095:Web-UI-(PWA) 8788:MCP-Server 3001:Forgejo-Web-UI 2222:Forgejo-SSH"
+PORTS_TO_CHECK="8787:Server-API 8095:Web-UI-(PWA) 8788:MCP-Server 3001:Forgejo-Web-UI"
 
 # Wie lange warten wir maximal, bis die Web-UI antwortet?
 MAX_WAIT_SECONDS=90
 POLL_INTERVAL_SECONDS=2
+
+# Wie lange warten wir maximal, bis Docker Desktop nach einer frischen
+# Installation (macOS) hochgefahren ist?
+DOCKER_START_WAIT_SECONDS=60
+
+# Wird in Schritt 2 auf "sudo" gesetzt, falls Docker gerade erst installiert
+# wurde und die neue docker-Gruppe in DIESER Shell noch nicht greift.
+# Normalfall: leer — dann verschwindet die Variable bei der Expansion einfach.
+DOCKER_SUDO=""
+
+# Wie lange warten wir maximal auf die Xcode Command Line Tools (macOS)?
+# Die installiert macOS in einem eigenen Fenster — das kann dauern.
+XCODE_CLT_WAIT_SECONDS=600
+XCODE_POLL_SECONDS=5
+
+# Ablageorte für die offiziellen Installations-Scripte (Schritt 2).
+DOCKER_INSTALL_SCRIPT="/tmp/lokyy-get-docker.sh"
+BREW_INSTALL_SCRIPT="/tmp/lokyy-install-homebrew.sh"
 
 # Doku-Links (OS-spezifisch), falls Docker fehlt
 DOCS_MAC="https://docs.docker.com/desktop/setup/install/mac-install/"
@@ -89,6 +112,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 if [ -z "${SCRIPT_DIR}" ] || ! cd "${SCRIPT_DIR}"; then
   fail "Konnte nicht in den Script-Ordner wechseln. Bitte das Repo neu herunterladen."
   exit 4
+fi
+
+# Absoluter Pfad auf dieses Script plus die übergebenen Argumente.
+# Beides brauchen wir nur an einer Stelle: wenn wir uns unter Linux nach der
+# Docker-Installation über "sg docker" selbst neu starten (siehe Schritt 2).
+# Absichtlich absolut — nach dem cd oben wäre "$0" sonst womöglich relativ zum
+# ursprünglichen Arbeitsverzeichnis und ins Leere gelaufen.
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_ARGS=""
+if [ "$#" -gt 0 ]; then
+  for _arg in "$@"; do
+    SCRIPT_ARGS="${SCRIPT_ARGS} '${_arg}'"
+  done
 fi
 
 say ""
@@ -130,18 +166,19 @@ ok "System erkannt: ${OS_NAME}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schritt 2 — Ist Docker überhaupt installiert?
-# Wir installieren Docker BEWUSST nicht selbst: das braucht Admin-Rechte,
-# teils einen Neustart und läuft auf jedem Rechner anders. Das machst du einmal
-# von Hand, danach funktioniert dieses Script.
+# Fehlt Docker, versuchen wir es SELBST zu installieren — mit dem jeweils
+# offiziellen Weg des Systems (Linux: get.docker.com, macOS: Homebrew-Cask).
+# Automatisch geht das aber nur so weit, wie das Betriebssystem es zulässt:
+# Passwort-Abfragen und System-Dialoge muss der Mensch bedienen. Wo gar nichts
+# Verlässliches möglich ist, bleibt es bei der Anleitung zum Selbermachen.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 2/9 — Docker-Installation prüfen"
-
-if ! command -v docker >/dev/null 2>&1; then
-  fail "Docker ist auf diesem Rechner nicht installiert."
+# Der klassische "mach es bitte von Hand"-Hinweis. Wird von allen
+# Fehlerpfaden unten wiederverwendet, damit die Meldung überall gleich ist.
+docker_manual_hint() {
   say ""
   say "  Lokyy Brain läuft komplett in Docker-Containern — ohne Docker geht nichts."
-  say "  Bitte installiere Docker einmalig und starte dieses Script danach erneut:"
+  say "  Bitte installiere Docker einmalig von Hand und starte dieses Script danach erneut:"
   say ""
   say "      ${C_BOLD}${DOCS_URL}${C_RESET}"
   if [ "${OS_KERNEL}" = "Darwin" ]; then
@@ -153,10 +190,284 @@ if ! command -v docker >/dev/null 2>&1; then
     say "  (Unter Linux ist das die \"Docker Engine\" inklusive Compose-Plugin.)"
   fi
   say ""
-  exit 1
+}
+
+# Wartet, bis der Docker-Daemon antwortet. Jeder Punkt = ein Versuch.
+# Rückgabe: 0 = Daemon antwortet, 1 = Zeit abgelaufen.
+wait_for_docker_daemon() {
+  local waited
+  waited=0
+  printf '    '
+  while [ "${waited}" -lt "${DOCKER_START_WAIT_SECONDS}" ]; do
+    if ${DOCKER_SUDO} docker info >/dev/null 2>&1; then
+      printf '\n'
+      return 0
+    fi
+    printf '.'
+    sleep "${POLL_INTERVAL_SECONDS}"
+    waited=$((waited + POLL_INTERVAL_SECONDS))
+  done
+  printf '\n'
+  return 1
+}
+
+# ── Linux: Docker Engine über das offizielle Script von Docker installieren ──
+install_docker_linux() {
+  # Zweiter Durchlauf nach dem sg-Neustart (siehe unten) und Docker fehlt
+  # IMMER noch? Dann NICHT erneut installieren — sonst dreht sich das Script
+  # im Kreis. Lieber ehrlich abbrechen.
+  if [ -n "${LOKYY_DOCKER_INSTALL_ATTEMPTED:-}" ]; then
+    fail "Docker wurde installiert, ist in dieser Shell aber weiterhin nicht auffindbar."
+    say "    Bitte melde dich einmal ab und wieder an und starte dieses Script erneut."
+    docker_manual_hint
+    exit 1
+  fi
+
+  say ""
+  say "  Wir installieren Docker jetzt automatisch — mit dem offiziellen"
+  say "  Installations-Script von Docker (${C_BOLD}https://get.docker.com${C_RESET})."
+  say "  Dafür sind Administrator-Rechte nötig: gleich fragt ${C_BOLD}sudo${C_RESET} nach deinem"
+  say "  Passwort. Das ist normal — beim Tippen bleibt die Zeile sichtbar leer."
+  say ""
+
+  if ! command -v curl >/dev/null 2>&1; then
+    fail "Für die automatische Installation wird curl gebraucht — es fehlt auf diesem System."
+    docker_manual_hint
+    exit 1
+  fi
+
+  if ! curl -fsSL https://get.docker.com -o "${DOCKER_INSTALL_SCRIPT}"; then
+    fail "Das Installations-Script konnte nicht heruntergeladen werden (Internetverbindung?)."
+    docker_manual_hint
+    exit 1
+  fi
+
+  if ! sudo sh "${DOCKER_INSTALL_SCRIPT}"; then
+    fail "Die automatische Docker-Installation ist fehlgeschlagen."
+    say "    Die Meldung des Installers steht direkt darüber."
+    docker_manual_hint
+    exit 1
+  fi
+
+  rm -f "${DOCKER_INSTALL_SCRIPT}"
+  # bash merkt sich gefundene Programme — nach einer frischen Installation
+  # muss dieser Merkzettel geleert werden, sonst "gibt es" docker noch nicht.
+  hash -r 2>/dev/null || true
+
+  if ! command -v docker >/dev/null 2>&1; then
+    fail "Der Installer lief durch, trotzdem ist docker nicht auffindbar."
+    docker_manual_hint
+    exit 1
+  fi
+
+  ok "Docker wurde installiert: $(docker --version 2>/dev/null)"
+
+  # Ohne Mitgliedschaft in der Gruppe "docker" bräuchte jeder docker-Aufruf
+  # ein sudo davor. Also: Benutzer eintragen.
+  CURRENT_USER="${USER:-$(id -un)}"
+  if ! sudo usermod -aG docker "${CURRENT_USER}"; then
+    warn "Konnte ${CURRENT_USER} nicht zur Gruppe \"docker\" hinzufügen."
+    warn "Wir arbeiten in diesem Durchlauf ersatzweise mit sudo weiter."
+    DOCKER_SUDO="sudo"
+    return 0
+  fi
+  ok "Benutzer ${CURRENT_USER} zur Gruppe \"docker\" hinzugefügt."
+
+  # Der Haken: die neue Gruppe gilt erst für NEU gestartete Prozesse — diese
+  # Shell hier kennt sie noch nicht. "sg docker -c ..." startet eine Shell
+  # MIT der Gruppe, also starten wir uns darin einfach selbst neu. Beim
+  # zweiten Durchlauf findet Schritt 2 dann ein funktionierendes docker vor
+  # und läuft ganz normal weiter zu Schritt 3.
+  export LOKYY_DOCKER_INSTALL_ATTEMPTED=1
+
+  if command -v sg >/dev/null 2>&1; then
+    say ""
+    say "  Damit die neue Gruppe sofort greift, starten wir dieses Script einmal neu."
+    say ""
+    exec sg docker -c "bash '${SCRIPT_PATH}'${SCRIPT_ARGS}"
+  fi
+
+  # Kein sg vorhanden: für DIESEN Durchlauf mit sudo weiterarbeiten.
+  DOCKER_SUDO="sudo"
+  say ""
+  warn "Für diesen Durchlauf rufen wir docker mit sudo auf."
+  say "    Damit du künftig ohne sudo arbeiten kannst, melde dich einmal ab und"
+  say "    wieder an — oder öffne ein neues Terminal und rufe dort einmal"
+  say "    ${C_BOLD}newgrp docker${C_RESET} auf."
+  say ""
+}
+
+# ── macOS: Homebrew nachinstallieren (Voraussetzung für Docker Desktop) ──
+install_homebrew_macos() {
+  say ""
+  say "  Für die automatische Installation brauchen wir ${C_BOLD}Homebrew${C_RESET} — den"
+  say "  Paketmanager für macOS. Den installieren wir zuerst, danach Docker."
+  say "  Der offizielle Homebrew-Installer fragt dabei über sudo nach deinem"
+  say "  Mac-Passwort. Das ist normal."
+  say ""
+
+  if ! command -v curl >/dev/null 2>&1; then
+    fail "Für die automatische Installation wird curl gebraucht — es fehlt auf diesem System."
+    docker_manual_hint
+    exit 1
+  fi
+
+  # Homebrew setzt die Xcode Command Line Tools voraus. Fehlen sie, öffnet
+  # macOS ein eigenes Fenster zum Installieren. Dieses Fenster kann ein
+  # Script NICHT bedienen — das ist eine Sicherheitsgrenze von macOS, kein
+  # Fehler. Wir sagen ehrlich Bescheid und warten dann darauf.
+  if ! xcode-select -p >/dev/null 2>&1; then
+    say "  Es fehlen noch die ${C_BOLD}Xcode Command Line Tools${C_RESET}."
+    say "  macOS öffnet dafür gleich ein eigenes Fenster — bitte dort auf"
+    say "  ${C_BOLD}\"Installieren\"${C_RESET} klicken. Dieses Fenster kann dir ein Script nicht"
+    say "  abnehmen (so ist macOS gebaut). Wir warten hier so lange."
+    say ""
+    xcode-select --install >/dev/null 2>&1 || true
+
+    xcode_waited=0
+    printf '    '
+    while [ "${xcode_waited}" -lt "${XCODE_CLT_WAIT_SECONDS}" ]; do
+      if xcode-select -p >/dev/null 2>&1; then
+        break
+      fi
+      printf '.'
+      sleep "${XCODE_POLL_SECONDS}"
+      xcode_waited=$((xcode_waited + XCODE_POLL_SECONDS))
+    done
+    printf '\n'
+
+    if ! xcode-select -p >/dev/null 2>&1; then
+      fail "Die Xcode Command Line Tools sind noch nicht fertig installiert."
+      say "    Bitte warte, bis das macOS-Fenster fertig ist, und führe dieses"
+      say "    Script danach einfach erneut aus."
+      say ""
+      exit 1
+    fi
+    ok "Xcode Command Line Tools sind da."
+  fi
+
+  # Bewusst erst herunterladen, dann ausführen: bei der verbreiteten
+  # Kurzform  /bin/bash -c "$(curl …)"  bliebe ein fehlgeschlagener Download
+  # unbemerkt — bash würde einfach eine leere Zeichenkette ausführen und 0
+  # zurückgeben. So sehen wir jeden Fehlschlag einzeln.
+  if ! curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "${BREW_INSTALL_SCRIPT}"; then
+    fail "Der Homebrew-Installer konnte nicht heruntergeladen werden (Internetverbindung?)."
+    docker_manual_hint
+    exit 1
+  fi
+
+  if ! NONINTERACTIVE=1 /bin/bash "${BREW_INSTALL_SCRIPT}"; then
+    fail "Die automatische Homebrew-Installation ist fehlgeschlagen."
+    say "    Die Meldung des Installers steht direkt darüber."
+    docker_manual_hint
+    exit 1
+  fi
+
+  rm -f "${BREW_INSTALL_SCRIPT}"
+
+  # Frisch installiertes Homebrew liegt je nach Mac woanders und ist in
+  # DIESER Shell noch nicht im PATH: Apple Silicon /opt/homebrew,
+  # Intel /usr/local. Wir holen es aktiv dazu, damit der nächste Schritt
+  # nicht an einem fehlenden "brew" scheitert.
+  for brew_bin in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [ -x "${brew_bin}" ]; then
+      eval "$("${brew_bin}" shellenv)"
+      break
+    fi
+  done
+  hash -r 2>/dev/null || true
+
+  if ! command -v brew >/dev/null 2>&1; then
+    fail "Homebrew wurde installiert, ist in dieser Shell aber nicht auffindbar."
+    say "    Bitte öffne ein neues Terminal und führe dieses Script dort erneut aus."
+    say ""
+    exit 1
+  fi
+
+  ok "Homebrew installiert: $(brew --version 2>/dev/null | head -n 1)"
+}
+
+# ── macOS: Docker Desktop über Homebrew installieren und starten ──
+install_docker_macos() {
+  if ! command -v brew >/dev/null 2>&1; then
+    install_homebrew_macos
+  fi
+
+  say ""
+  say "  Docker Desktop wird jetzt über Homebrew installiert."
+  say "  Das lädt ein großes Paket — je nach Leitung dauert das ein paar Minuten."
+  say ""
+
+  if ! brew install --cask docker; then
+    fail "Die automatische Installation von Docker Desktop ist fehlgeschlagen."
+    say "    Die Meldung von Homebrew steht direkt darüber."
+    docker_manual_hint
+    exit 1
+  fi
+
+  ok "Docker Desktop wurde installiert."
+
+  say ""
+  say "  Wir starten Docker Desktop jetzt."
+  say ""
+  say "  ${C_BOLD}Wichtig:${C_RESET} Beim allerersten Start zeigt macOS in der Regel ein"
+  say "  Systemfenster und fragt nach deinem Mac-Passwort (Docker richtet dabei"
+  say "  einen Hilfsdienst ein). Bitte dort auf ${C_BOLD}\"OK\"${C_RESET} klicken bzw. das"
+  say "  Passwort eingeben. Ein Script kann diesen Dialog nicht für dich"
+  say "  wegklicken — das ist eine Sicherheitsgrenze von macOS, kein Fehler."
+  say ""
+
+  open -a Docker >/dev/null 2>&1 || warn "Docker Desktop konnte nicht automatisch gestartet werden."
+
+  say "  Warten, bis Docker bereit ist (max. ${DOCKER_START_WAIT_SECONDS} Sekunden):"
+  if ! wait_for_docker_daemon; then
+    warn "Docker Desktop ist noch nicht bereit."
+    say "    Bitte starte Docker Desktop einmal manuell (Programme-Ordner oder"
+    say "    Spotlight), warte auf \"Engine running\" — und führe dieses Script"
+    say "    danach erneut aus."
+    say ""
+    exit 1
+  fi
+
+  hash -r 2>/dev/null || true
+
+  if ! command -v docker >/dev/null 2>&1; then
+    fail "Docker Desktop läuft, der Befehl docker ist hier aber nicht auffindbar."
+    say "    Bitte öffne ein neues Terminal und führe dieses Script dort erneut aus."
+    say ""
+    exit 1
+  fi
+
+  ok "Docker Desktop läuft."
+}
+
+step "Schritt 2/9 — Docker-Installation prüfen"
+
+if ! command -v docker >/dev/null 2>&1; then
+  warn "Docker ist auf diesem Rechner nicht installiert."
+
+  case "${OS_KERNEL}" in
+    Linux)
+      install_docker_linux
+      ;;
+    Darwin)
+      install_docker_macos
+      ;;
+    *)
+      # Git Bash unter Windows und alles Unbekannte: hier gibt es keinen
+      # verlässlichen automatischen Weg. Unter Windows macht das install.ps1.
+      fail "Für dieses System gibt es hier keine automatische Installation."
+      if [ "${OS_KERNEL}" != "${OS_KERNEL#MINGW}" ] || [ "${OS_KERNEL}" != "${OS_KERNEL#MSYS}" ] || [ "${OS_KERNEL}" != "${OS_KERNEL#CYGWIN}" ]; then
+        say "    Unter Windows bitte PowerShell benutzen:  .\\install.ps1"
+        say "    Das Script installiert Docker Desktop dort automatisch."
+      fi
+      docker_manual_hint
+      exit 1
+      ;;
+  esac
 fi
 
-ok "Docker gefunden: $(docker --version 2>/dev/null)"
+ok "Docker gefunden: $(${DOCKER_SUDO} docker --version 2>/dev/null)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schritt 3 — Läuft der Docker-Daemon wirklich?
@@ -167,7 +478,7 @@ ok "Docker gefunden: $(docker --version 2>/dev/null)"
 
 step "Schritt 3/9 — Docker-Daemon prüfen (läuft Docker gerade?)"
 
-if ! docker info >/dev/null 2>&1; then
+if ! ${DOCKER_SUDO} docker info >/dev/null 2>&1; then
   fail "Docker ist installiert, aber der Docker-Daemon antwortet nicht."
   say ""
   if [ "${OS_KERNEL}" = "Darwin" ]; then
@@ -201,7 +512,7 @@ ok "Docker-Daemon läuft."
 
 step "Schritt 4/9 — Compose-Plugin prüfen (docker compose v2)"
 
-if ! docker compose version >/dev/null 2>&1; then
+if ! ${DOCKER_SUDO} docker compose version >/dev/null 2>&1; then
   fail "Der Unterbefehl \"docker compose\" ist nicht verfügbar."
   say ""
   say "  Lokyy Brain braucht Compose v2 — also ${C_BOLD}docker compose${C_RESET} (mit Leerzeichen),"
@@ -215,7 +526,7 @@ if ! docker compose version >/dev/null 2>&1; then
   exit 3
 fi
 
-ok "Compose gefunden: $(docker compose version 2>/dev/null | head -n 1)"
+ok "Compose gefunden: $(${DOCKER_SUDO} docker compose version 2>/dev/null | head -n 1)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schritt 5 — Sind die benötigten Ports frei?
@@ -225,7 +536,7 @@ ok "Compose gefunden: $(docker compose version 2>/dev/null | head -n 1)"
 # einer Sprache, die man erst mal übersetzen muss.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 3001, 2222)"
+step "Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 3001)"
 
 # Prüft, ob auf einem Port bereits etwas lauscht.
 # Rückgabe: 0 = belegt, 1 = frei.
@@ -289,7 +600,7 @@ if [ ! -f "${COMPOSE_FILE}" ]; then
 fi
 
 say ""
-docker compose -f "${COMPOSE_FILE}" up -d --build
+${DOCKER_SUDO} docker compose -f "${COMPOSE_FILE}" up -d --build
 COMPOSE_EXIT=$?
 say ""
 

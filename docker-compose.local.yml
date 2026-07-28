@@ -21,7 +21,8 @@
 #   • PWA        → http://localhost:8095
 #   • Server-API → http://localhost:8787
 #   • MCP        → http://localhost:8788/mcp   (Bearer = LOKYY_MCP_TOKEN)
-#   • Forgejo-UI → http://localhost:3001       (SSH: localhost:2222)
+#   • Forgejo-UI → http://localhost:3001       (kein SSH-Port veröffentlicht —
+#     der Wizard spricht Forgejo nur per HTTP an, s.u.)
 #   • postgres / ollama bleiben intern (kein `ports:`) — wie in der Coolify-Datei.
 #
 # Start:
@@ -93,7 +94,9 @@ services:
     restart: unless-stopped
     ports:
       - "3001:3000"   # Web-UI  → http://localhost:3001
-      - "2222:22"     # SSH
+    # Kein Host-SSH-Port: der Wizard/GIT_REMOTE sprechen Forgejo intern per
+    # HTTP an (Port 3000, container-only). SSH-Zugriff wird für den lokalen
+    # Flow nicht gebraucht und war eine unnötige Port-2222-Konfliktquelle.
     environment:
       - USER_UID=1000
       - USER_GID=1000
