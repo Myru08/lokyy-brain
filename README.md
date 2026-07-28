@@ -81,24 +81,28 @@ anbindest, über dieselbe Wahrheit.
 
 ## Quickstart — lokale Installation
 
-Zwei Voraussetzungen, beide einmalig:
+Eine Voraussetzung, einmalig:
 
-1. **[Git](https://git-scm.com/downloads)** — zum Herunterladen des Repos.
-   Kein Umweg über einen ZIP-Download: du brauchst Git ohnehin, sobald du
-   später remote auf Coolify deployst (siehe [Remote-Deployment](#remote-deployment)),
-   also lernst du es gleich hier.
-2. **[Docker](https://docs.docker.com/get-docker/)** — Desktop auf
-   Mac/Windows, Docker Engine auf Linux. Lokyy Brain läuft komplett in
-   Containern.
+**[Git](https://git-scm.com/downloads)** — zum Herunterladen des Repos.
+Kein Umweg über einen ZIP-Download: du brauchst Git ohnehin, sobald du
+später remote auf Coolify deployst (siehe [Remote-Deployment](#remote-deployment)),
+also lernst du es gleich hier.
 
 ```bash
 git clone https://github.com/oliverhees/lokyy-brain.git
 cd lokyy-brain
 ```
 
-Dann den passenden Installer starten — er prüft Docker (Installation,
-laufender Daemon, Compose-Plugin), warnt bei Port-Konflikten, baut und
-startet den Stack, wartet auf die Web-UI und öffnet den Browser:
+Dann den passenden Installer starten. Er prüft **Docker** (Installation,
+laufender Daemon, Compose-Plugin) und **installiert es bei Bedarf automatisch
+mit**: unter Linux vollautomatisch (offizielles Docker-Skript), unter macOS
+über Homebrew (wird bei Bedarf ebenfalls mitinstalliert) und unter Windows
+über winget (wird bei Bedarf ebenfalls mitinstalliert). Nur wenn dabei ein
+System-Neustart nötig ist (Windows/WSL2) oder ein neues Terminal-Fenster
+(frisch installiertes `brew`/`winget`), sagt das Skript das klar an — das ist
+kein Fehler, einfach einmal neu starten und den Befehl erneut aufrufen.
+Danach warnt der Installer bei Port-Konflikten, baut und startet den Stack,
+wartet auf die Web-UI und öffnet den Browser:
 
 ```bash
 # macOS / Linux
