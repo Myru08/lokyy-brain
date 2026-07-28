@@ -81,13 +81,37 @@ anbindest, über dieselbe Wahrheit.
 
 ## Quickstart — lokale Installation
 
-Voraussetzung: [Docker](https://docs.docker.com/get-docker/) (Desktop auf
-Mac/Windows, Docker Engine auf Linux). Sonst nichts.
+Zwei Voraussetzungen, beide einmalig:
+
+1. **[Git](https://git-scm.com/downloads)** — zum Herunterladen des Repos.
+   Kein Umweg über einen ZIP-Download: du brauchst Git ohnehin, sobald du
+   später remote auf Coolify deployst (siehe [Remote-Deployment](#remote-deployment)),
+   also lernst du es gleich hier.
+2. **[Docker](https://docs.docker.com/get-docker/)** — Desktop auf
+   Mac/Windows, Docker Engine auf Linux. Lokyy Brain läuft komplett in
+   Containern.
 
 ```bash
 git clone https://github.com/oliverhees/lokyy-brain.git
 cd lokyy-brain
-docker compose -f docker-compose.local.yml up -d
+```
+
+Dann den passenden Installer starten — er prüft Docker (Installation,
+laufender Daemon, Compose-Plugin), warnt bei Port-Konflikten, baut und
+startet den Stack, wartet auf die Web-UI und öffnet den Browser:
+
+```bash
+# macOS / Linux
+./install.sh
+
+# Windows (PowerShell)
+.\install.ps1
+```
+
+Alternativ manuell, ohne den Installer:
+
+```bash
+docker compose -f docker-compose.local.yml up -d --build
 ```
 
 Das startet sechs Container: `lokyy-brain` (API), `lokyy-pwa` (Web-UI),
@@ -104,7 +128,7 @@ MCP     → http://localhost:8788/mcp
 ```
 
 Öffne `http://localhost:8095` im Browser — der Setup-Wizard startet
-automatisch.
+automatisch. (Der Installer öffnet den Browser automatisch für dich.)
 
 ## Der Setup-Wizard im Detail
 
