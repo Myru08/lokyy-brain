@@ -42,6 +42,9 @@ export {
   move,
   lastModified,
   setupVaultFromForgejo,
+  // Local-only vault provisioning (setup wizard "Ohne Forgejo fortfahren"):
+  // same empty-repo bootstrap as setupVaultFromForgejo, minus remote + push.
+  initLocalVault,
   // Story 10.17 — read-only note version-history + diff. Consumed by the MCP
   // get_history / get_note_diff tools (Epic 10 Wave 4).
   noteHistory,

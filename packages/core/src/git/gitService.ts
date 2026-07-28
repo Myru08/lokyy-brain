@@ -261,6 +261,66 @@ export async function setupVaultFromForgejo(opts: {
   });
 }
 
+/**
+ * Bootstrap a purely LOCAL vault working-copy — no remote, no push.
+ *
+ * The counterpart to `setupVaultFromForgejo` for users who complete the setup
+ * wizard WITHOUT connecting a Forgejo instance. It performs exactly the
+ * empty-repo bootstrap half of that function (clear → init → branch → .gitkeep
+ * → commit) and deliberately stops there: no `git remote add`, no `push`.
+ *
+ * "No remote" is not a degraded state — it is a documented, first-class one:
+ * `hasRemote()` probes the actual `.git/config`, and every write path
+ * (`runSave`, `saveBinary`) already returns right after `git commit` when no
+ * `origin` exists ("local commit only"), while `pull`/`sync`/`ensureRepo`
+ * no-op. The only thing that was missing was a way to CREATE that repo; this
+ * is it. A remote can be attached later (Settings / `POST /api/admin/...`)
+ * without touching the commits made in the meantime.
+ *
+ * Directory handling mirrors `setupVaultFromForgejo`: we clear the CONTENTS of
+ * `vaultDir` in place and never rmdir the directory itself, because it is a
+ * Docker volume mount point (removing the mount fails with `EBUSY`).
+ *
+ * Runs inside the shared `serialize()` FIFO lock like every other git op, so
+ * provisioning can never interleave with an in-flight save/pull.
+ */
+export async function initLocalVault(): Promise<void> {
+  return serialize(async () => {
+    const c = config();
+
+    // Fresh-setup: wipe the directory contents (incl. a stale .git) in place.
+    await mkdir(c.vaultDir, { recursive: true });
+    for (const entry of await readdir(c.vaultDir)) {
+      await rm(join(c.vaultDir, entry), { recursive: true, force: true });
+    }
+
+    await exec("git", ["-C", c.vaultDir, "init"]);
+    // Unborn HEAD → `checkout -b` just points the symref at the configured
+    // branch, so the first commit lands on `gitBranch` regardless of the
+    // host's `init.defaultBranch`. Same call the empty-repo path above makes.
+    await exec("git", ["-C", c.vaultDir, "checkout", "-b", c.gitBranch]);
+
+    // A repo with zero commits has no HEAD, which several read paths
+    // (`rev-parse HEAD`, `git log`) treat as an error — so we anchor it with
+    // the same placeholder commit the Forgejo bootstrap uses.
+    await writeFile(join(c.vaultDir, ".gitkeep"), "", "utf8");
+
+    const env = {
+      ...process.env,
+      GIT_AUTHOR_NAME: c.gitAuthorName,
+      GIT_AUTHOR_EMAIL: c.gitAuthorEmail,
+      GIT_COMMITTER_NAME: c.gitAuthorName,
+      GIT_COMMITTER_EMAIL: c.gitAuthorEmail,
+    };
+    await exec("git", ["-C", c.vaultDir, "add", "--", ".gitkeep"], { env });
+    await exec(
+      "git",
+      ["-C", c.vaultDir, "commit", "-m", "chore: initialize lokyy vault (local-only)"],
+      { env },
+    );
+  });
+}
+
 /** `https://forgejo.example.com` → `forgejo.example.com`. */
 function stripScheme(url: string): string {
   return url.replace(/^https?:\/\//, "").replace(/\/+$/, "");

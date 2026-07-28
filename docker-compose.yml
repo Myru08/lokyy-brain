@@ -64,7 +64,10 @@ services:
     # pgvector. Required for Phase A Wave A1 / Story 2 hybrid retrieval.
     # Falls back gracefully at runtime if you swap back to a plain pgvector
     # image, but BM25 ranking will degrade.
-    image: paradedb/paradedb:latest
+    # latest-pg17: PG17-Daten-Layout (kein PG18-Migrationsproblem — "latest"
+    # ist inzwischen PG18 und erwartet ein pg_ctlcluster-Layout, das mit dem
+    # einzelnen /var/lib/postgresql/data-Volume unten nicht funktioniert).
+    image: paradedb/paradedb:latest-pg17
     container_name: lokyy-postgres
     restart: unless-stopped
     environment:

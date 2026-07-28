@@ -1,0 +1,227 @@
+# lokyy-brain — LOKALE Compose (Mac / Windows / Linux, plain `docker compose`).
+#
+# Das ist die Local-Run-Adaption von docker-compose.coolify.yml — gleicher Stack,
+# aber ohne Coolify. Unterschiede (bewusst, nur diese):
+#   • KEINE SERVICE_FQDN_* Vars (Coolifys Domain-Automatik gibt es hier nicht) →
+#     stattdessen explizite `ports:`-Mappings auf den Host.
+#   • KEIN ${SERVICE_PASSWORD_POSTGRES} (Coolify-Auto-Secret) → ${POSTGRES_PASSWORD:-lokyylocal},
+#     überall identisch (postgres-Service UND alle DATABASE_URL/LOKYY_DB_URL).
+#   • FORGEJO__security__INSTALL_LOCK=true → Forgejo überspringt den interaktiven
+#     Web-Installer beim ersten Boot.
+#   • GIT_REMOTE hat einen lauffähigen Default (container-intern, Port 3000).
+#   • `exclude_from_hc` (Coolify-only Compose-Key) ist an ollama-init entfernt —
+#     plain docker compose kennt den Key nicht und würde die Datei ablehnen.
+# Alles andere (Build-Targets, Env, Volumes, Healthchecks, depends_on, Image-Pins)
+# ist bewusst 1:1 wie in docker-compose.coolify.yml.
+#
+# ⚠️ SYNC-PFLICHT: Ändert sich docker-compose.coolify.yml, muss diese Datei
+# nachgezogen werden — sie ist eine Kopie, kein Include.
+#
+# Host-Ports (nur diese sind von außen erreichbar):
+#   • PWA        → http://localhost:8095
+#   • Server-API → http://localhost:8787
+#   • MCP        → http://localhost:8788/mcp   (Bearer = LOKYY_MCP_TOKEN)
+#   • Forgejo-UI → http://localhost:3001       (SSH: localhost:2222)
+#   • postgres / ollama bleiben intern (kein `ports:`) — wie in der Coolify-Datei.
+#
+# Start:
+#   docker compose -f docker-compose.local.yml up -d
+#
+# ⚠️ EINMALIGER FORGEJO-BOOTSTRAP nach dem ersten `up`: Forgejo ist frisch und
+# leer — es gibt weder Admin-User noch das lokyy-vault-Repo. Solange das fehlt,
+# kommen `lokyy-brain` und `lokyy-mcp` nicht sauber hoch (git clone/push läuft
+# ins Leere). Der Bootstrap (Admin-User anlegen + Repo + Initial-Commit) läuft
+# als eigener, separater Schritt/Script NACH dem Boot — nicht Teil dieser Datei.
+
+services:
+  # ── Postgres (ParadeDB: pgvector + pg_search) ──────────────────────────
+  # latest-pg17: PG17-Daten-Layout (kein PG18-Migrationsproblem). Intern only.
+  postgres:
+    image: paradedb/paradedb:latest-pg17
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      # Lokal: frei wählbar via .env / Shell-Env, sonst Default.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-lokyylocal}
+      - POSTGRES_DB=lokyy_brain
+    volumes:
+      # ParadeDB latest-pg17 nutzt das klassische PG-Datenlayout unter
+      # /var/lib/postgresql/data.
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready existiert im Postgres-Image — kein curl nötig.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d lokyy_brain"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s
+
+  # ── Ollama (embeddings + optional local chat) ──────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      # ollama-CLI ist im Image vorhanden — kein curl nötig.
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  # One-shot: Embedding-Modell ziehen (optional Chat-Modell).
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_EMBED_MODEL:-nomic-embed-text} && \
+        if [ "${OLLAMA_PULL_CHAT:-false}" = "true" ]; then \
+          OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_CHAT_MODEL:-llama3.1:8b}; \
+        fi && \
+        echo "[ollama-init] models ready"
+    restart: "no"
+
+  # ── Forgejo (Vault git remote + OAuth-Provider) ────────────────────────
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:9
+    restart: unless-stopped
+    ports:
+      - "3001:3000"   # Web-UI  → http://localhost:3001
+      - "2222:22"     # SSH
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__database__DB_TYPE=sqlite3
+      # Ohne INSTALL_LOCK zeigt Forgejo beim ersten Boot den interaktiven
+      # Web-Installer und die API bleibt für den Bootstrap unbrauchbar.
+      - FORGEJO__security__INSTALL_LOCK=true
+    volumes:
+      - forgejo-data:/data
+    healthcheck:
+      # Forgejo-Image enthält wget (busybox) → /api/healthz prüfen.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/healthz >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # ── Server (Hono REST API + Setup-Wizard-Backend) ──────────────────────
+  lokyy-brain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      forgejo:
+        condition: service_started
+    environment:
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD:-lokyylocal}@postgres:5432/lokyy_brain
+      - VAULT_DIR=/var/lokyy/vault
+      # WICHTIG: 'para' als Default — 'karpathy' killt den Server ~30s nach Start.
+      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
+      - FORGEJO_BASE_URL=${FORGEJO_BASE_URL:-}
+      - FORGEJO_OAUTH_CLIENT_ID=${FORGEJO_OAUTH_CLIENT_ID:-}
+      - FORGEJO_OAUTH_CLIENT_SECRET=${FORGEJO_OAUTH_CLIENT_SECRET:-}
+      # Container-intern Port 3000 (NICHT der Host-Port 3001).
+      - GIT_REMOTE=${GIT_REMOTE:-http://forgejo:3000/oliver/lokyy-vault}
+      - GIT_BRANCH=${GIT_BRANCH:-main}
+      - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-lokyy-brain}
+      - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-lokyy-brain@localhost}
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      - SUPADATA_API_KEY=${SUPADATA_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - COHERE_API_KEY=${COHERE_API_KEY:-}
+      - PORT=8787
+      - NODE_ENV=production
+    volumes:
+      - vault-data:/var/lokyy/vault
+    healthcheck:
+      # node-eigener TCP-Port-Check: hängt nicht an curl/wget, funktioniert in
+      # JEDEM node-Image (auch ohne curl). Bindet :8787 = up.
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8787,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ── PWA (nginx/wget-served static build) ───────────────────────────────
+  lokyy-pwa:
+    build:
+      context: .
+      dockerfile: pwa/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8095:80"
+    depends_on:
+      lokyy-brain:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ── MCP HTTP transport (claude.ai Custom-Connector-Endpoint) ───────────
+  lokyy-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: mcp             # WICHTIG: explizit mcp-Stage.
+    restart: unless-stopped
+    ports:
+      - "8788:8788"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lokyy-brain:
+        condition: service_started
+    environment:
+      - LOKYY_DB_URL=postgres://postgres:${POSTGRES_PASSWORD:-lokyylocal}@postgres:5432/lokyy_brain
+      - LOKYY_VAULT_DIR=/var/lokyy/vault
+      - LOKYY_GIT_REMOTE=${GIT_REMOTE:-http://forgejo:3000/oliver/lokyy-vault}
+      - LOKYY_GIT_BRANCH=${GIT_BRANCH:-main}
+      - LOKYY_VAULT_ID=${LOKYY_VAULT_ID:-}
+      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
+      - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
+      # Bearer-Token, das du in claude.ai einträgst. EIN klares Env (kein
+      # Auto-Secret, weil du den Wert woanders — im Connector — brauchst).
+      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN:-local_dev_token_change_me_32_chars_min}
+      - LOKYY_MCP_HTTP_PORT=8788
+      - LOKYY_BRAIN_URL=http://lokyy-brain:8787
+      - NODE_ENV=production
+    volumes:
+      - vault-data:/var/lokyy/vault
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8788,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  postgres-data:
+  ollama-data:
+  forgejo-data:
+  vault-data:

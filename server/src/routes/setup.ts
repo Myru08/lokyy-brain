@@ -10,6 +10,7 @@ import {
   database,
   generateUlid,
   setupVaultFromForgejo,
+  initLocalVault,
   getValidForgejoToken,
   loadToken,
 } from "@lokyy/core";
@@ -246,20 +247,31 @@ setupRoutes.post("/admin", async (c) => {
   return c.json({ userId: id });
 });
 
-// POST /api/setup/vault  { name, slug, gitRemote, gitBranch?, ownerUserId }
+// POST /api/setup/vault  { name, slug, gitRemote?, gitBranch?, ownerUserId }
+//
+// `gitRemote` is OPTIONAL. Omitted/empty = the wizard's "Ohne Forgejo
+// fortfahren (nur lokal)" bypass: we provision a local-only git repo at
+// VAULT_DIR via `initLocalVault()` and persist `git_remote = ''`. That empty
+// value is the same first-class "no remote configured" state `coreConfig` /
+// `ensureRepo` / `hasRemote()` already handle everywhere else (see also
+// routes/auth.ts and routes/tenants.ts, which both store `''`): writes commit
+// locally, pull/push/sync no-op, and a remote can be attached later via
+// Settings without losing the commits made in the meantime.
 setupRoutes.post("/vault", async (c) => {
   if (await isSetupComplete()) return c.json({ error: "already setup" }, 400);
   const { name, slug, gitRemote, gitBranch = "main", ownerUserId } =
     await c.req.json<{
       name: string;
       slug: string;
-      gitRemote: string;
+      gitRemote?: string;
       gitBranch?: string;
       ownerUserId: string;
     }>();
-  if (!name || !slug || !gitRemote || !ownerUserId) {
-    return c.json({ error: "name, slug, gitRemote, ownerUserId required" }, 400);
+  if (!name || !slug || !ownerUserId) {
+    return c.json({ error: "name, slug, ownerUserId required" }, 400);
   }
+  // Normalize once: everything downstream branches on "" vs. a real remote.
+  const remote = (gitRemote ?? "").trim();
   const id = generateUlid();
   await database().insert(vaults).values({
     id,
@@ -267,7 +279,7 @@ setupRoutes.post("/vault", async (c) => {
     slug,
     kind: "personal",
     ownerId: ownerUserId,
-    gitRemote,
+    gitRemote: remote,
     gitBranch,
   });
   await database().insert(vaultMemberships).values({
@@ -276,6 +288,14 @@ setupRoutes.post("/vault", async (c) => {
     role: "admin",
   });
 
+  // Provisioning of the working-copy at `VAULT_DIR`, two mutually exclusive
+  // paths:
+  //
+  //   remote === ""  → local-only bypass: `initLocalVault()` clears the dir,
+  //                    `git init`s it and lands one `.gitkeep` commit. No
+  //                    remote, no push. The vault row keeps `git_remote = ''`.
+  //   remote !== ""  → the existing Forgejo path (unchanged, below).
+  //
   // If the owner completed the Forgejo OAuth flow, run the actual clone via
   // `setupVaultFromForgejo` so the working-copy at `VAULT_DIR` is provisioned
   // before the wizard finishes. Then UPSERT the vault row to lock in the
@@ -292,44 +312,54 @@ setupRoutes.post("/vault", async (c) => {
   // at all" check we use to decide whether to attempt the clone path.
   let cloneError: string | null = null;
   try {
-    const tokenRow = await loadToken(ownerUserId, config.forgejoBaseUrl);
-    const repoFullName = tokenRow ? parseRepoFullName(gitRemote) : null;
+    if (!remote) {
+      // Local-only: no OAuth token to look up, nothing to clone, nothing to
+      // push — just make VAULT_DIR a git repo so every write path works. The
+      // row already carries `git_remote = ''`, so there is nothing to UPSERT.
+      await initLocalVault();
+      console.log(
+        `[setup/vault] vault ${id} provisioned local-only (no git remote).`,
+      );
+    } else {
+      const tokenRow = await loadToken(ownerUserId, config.forgejoBaseUrl);
+      const repoFullName = tokenRow ? parseRepoFullName(remote) : null;
 
-    if (tokenRow && repoFullName) {
-      const accessToken = await getValidForgejoToken(ownerUserId, {
-        forgejoBaseUrl: config.forgejoBaseUrl,
-        clientId: config.forgejoOauthClientId,
-        clientSecret: config.forgejoOauthClientSecret,
-      });
-      if (!accessToken) {
-        throw new Error(
-          "forgejo OAuth token expired and could not be refreshed — reconnect required",
-        );
+      if (tokenRow && repoFullName) {
+        const accessToken = await getValidForgejoToken(ownerUserId, {
+          forgejoBaseUrl: config.forgejoBaseUrl,
+          clientId: config.forgejoOauthClientId,
+          clientSecret: config.forgejoOauthClientSecret,
+        });
+        if (!accessToken) {
+          throw new Error(
+            "forgejo OAuth token expired and could not be refreshed — reconnect required",
+          );
+        }
+        const result = await setupVaultFromForgejo({
+          vaultId: id,
+          forgejoBaseUrl: tokenRow.forgejoBaseUrl,
+          accessToken,
+          repoFullName,
+          branch: gitBranch,
+        });
+
+        // Persist the canonical (untokenised) URL the wizard picked — NOT the
+        // tokenised URL `setupVaultFromForgejo` baked into `.git/config`. The
+        // tokenised URL would leak the OAuth token to anyone reading the
+        // `vaults` row (Settings UI, MCP config snippets, future audits).
+        await database()
+          .update(vaults)
+          .set({
+            gitRemote: remote,
+            gitBranch: result.gitBranch,
+          })
+          .where(eq(vaults.id, id));
       }
-      const result = await setupVaultFromForgejo({
-        vaultId: id,
-        forgejoBaseUrl: tokenRow.forgejoBaseUrl,
-        accessToken,
-        repoFullName,
-        branch: gitBranch,
-      });
-
-      // Persist the canonical (untokenised) URL the wizard picked — NOT the
-      // tokenised URL `setupVaultFromForgejo` baked into `.git/config`. The
-      // tokenised URL would leak the OAuth token to anyone reading the
-      // `vaults` row (Settings UI, MCP config snippets, future audits).
-      await database()
-        .update(vaults)
-        .set({
-          gitRemote,
-          gitBranch: result.gitBranch,
-        })
-        .where(eq(vaults.id, id));
     }
   } catch (err) {
     cloneError = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[setup/vault] setupVaultFromForgejo failed for vault ${id}: ${cloneError}`,
+      `[setup/vault] vault provisioning failed for vault ${id}: ${cloneError}`,
     );
   }
 
@@ -338,6 +368,11 @@ setupRoutes.post("/vault", async (c) => {
   // Skills nicht. Best-effort — ein Seed-Fehler darf den Wizard nicht
   // blockieren (die Vault-Row steht bereits), wird aber gemeldet. Übersprungen,
   // wenn das Provisioning selbst fehlschlug (kein nutzbares Working-Copy).
+  //
+  // Läuft auch im Local-only-Modus: `seedSkills` schreibt über `gitService.save`,
+  // und dessen Write-Pfad committet ohne Remote lokal (`hasRemote()` → return
+  // nach dem commit, kein pull/push). Das `try/catch` bleibt trotzdem die
+  // Absicherung — ein Seed-Fehler darf die Response nie blockieren.
   let seedError: string | null = null;
   if (!cloneError) {
     try {

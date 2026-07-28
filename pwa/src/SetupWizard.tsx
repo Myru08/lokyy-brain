@@ -43,6 +43,15 @@ type WizardState = {
   forgejo: {
     gitRemote: FieldState;
     gitBranch: string;
+    /**
+     * "Ohne Forgejo fortfahren (nur lokal)" — the user skipped the remote
+     * entirely. `completeSetup()` then POSTs an EMPTY `gitRemote`, which the
+     * server treats as its first-class "no remote configured" state: it
+     * provisions a local git repo at VAULT_DIR (`initLocalVault`) and stores
+     * `git_remote = ''`. Writes commit locally; pull/push/sync no-op. Picking a
+     * repo later in this session clears the flag (see `pickForgejoRepo`).
+     */
+    localOnly: boolean;
   };
   admin: {
     email: string;
@@ -66,6 +75,7 @@ const initialState: WizardState = {
   forgejo: {
     gitRemote: { value: "", testStatus: "idle" },
     gitBranch: "main",
+    localOnly: false,
   },
   admin: { email: "", password: "", name: "", submitState: "idle" },
   vault: { name: "Mein Vault", slug: "mein-vault", submitState: "idle" },
@@ -241,6 +251,28 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         ...p.forgejo,
         gitRemote: { value: repo.clone_url, testStatus: "ok", testMessage: repo.full_name },
         gitBranch: repo.default_branch || "main",
+        // Picking a repo overrides an earlier local-only choice — the user
+        // came back and wired a remote after all.
+        localOnly: false,
+      },
+    }));
+  }
+
+  /**
+   * Bypass: finish setup WITHOUT a Forgejo remote. Marks the wizard local-only
+   * and clears any half-picked remote so `completeSetup()` sends an empty
+   * `gitRemote`; the server then provisions a local-only git repo at VAULT_DIR.
+   * Purely additive — the OAuth connect path above is untouched.
+   */
+  function continueWithoutForgejo() {
+    setForgejoSelected(null);
+    setS((p) => ({
+      ...p,
+      step: "postgres",
+      forgejo: {
+        ...p.forgejo,
+        gitRemote: { value: "", testStatus: "idle" },
+        localOnly: true,
       },
     }));
   }
@@ -437,10 +469,14 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     // if the vault is truly missing.
     if (s.admin.userId) {
       try {
+        // Local-only ("Ohne Forgejo fortfahren") sends an EMPTY gitRemote — the
+        // server's documented "no remote configured" state, which makes it
+        // provision a local-only repo instead of cloning from Forgejo.
+        const gitRemote = s.forgejo.localOnly ? "" : s.forgejo.gitRemote.value;
         const res = await postJson<{ vaultId?: string; error?: string }>("/vault", {
           name: s.vault.name,
           slug: s.vault.slug,
-          gitRemote: s.forgejo.gitRemote.value,
+          gitRemote,
           gitBranch: s.forgejo.gitBranch,
           ownerUserId: s.admin.userId,
         });
@@ -556,6 +592,35 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
               />
             )}
 
+            {/*
+              Bypass — available in EVERY phase (not configured, not connected,
+              connected, error), because "I don't want a Forgejo at all" is a
+              valid answer to all of them. Deliberately styled as a secondary
+              action so the OAuth path above stays the obvious default.
+            */}
+            <div
+              style={{
+                marginTop: 20,
+                paddingTop: 16,
+                borderTop: `1px solid ${C.border}`,
+              }}
+            >
+              <button
+                type="button"
+                onClick={continueWithoutForgejo}
+                style={btnStyle}
+              >
+                Ohne Forgejo fortfahren (nur lokal)
+              </button>
+              <p style={{ color: C.textFaint, marginTop: 10, marginBottom: 0, fontSize: 12, lineHeight: 1.5 }}>
+                Der Vault wird dann als lokales Git-Repo im Container angelegt —
+                Notizen werden weiterhin versioniert und committet, aber nirgends
+                hin gepusht. Ein Forgejo-Remote lässt sich später in den
+                Einstellungen nachrüsten; die bis dahin gemachten Commits bleiben
+                erhalten.
+              </p>
+            </div>
+
             <NextRow
               enabled={forgejoPhase === "connected" && s.forgejo.gitRemote.testStatus === "ok"}
               onNext={() => setStep("postgres")}
@@ -661,7 +726,21 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         )}
 
         {s.step === "done" && (
-          <StepShell title="Setup abschließen" description="Alle Vorbedingungen erfüllt. Letzter Schritt: Vault an das Forgejo-Repo binden, Setup-Flag setzen und das System scharf schalten.">
+          <StepShell
+            title="Setup abschließen"
+            description={
+              s.forgejo.localOnly
+                ? "Alle Vorbedingungen erfüllt. Letzter Schritt: lokalen Vault anlegen, Setup-Flag setzen und das System scharf schalten."
+                : "Alle Vorbedingungen erfüllt. Letzter Schritt: Vault an das Forgejo-Repo binden, Setup-Flag setzen und das System scharf schalten."
+            }
+          >
+            {s.forgejo.localOnly && (
+              <Note color={C.gold}>
+                Modus: <strong>nur lokal</strong> — kein Forgejo-Remote. Der Vault
+                wird als lokales Git-Repo angelegt; Commits bleiben im Container,
+                bis du später ein Remote hinterlegst.
+              </Note>
+            )}
             <button
               onClick={completeSetup}
               style={{
