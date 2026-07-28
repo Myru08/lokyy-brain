@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg">
+  <img alt="License: Proprietary" src="https://img.shields.io/badge/license-proprietary-red.svg">
   <img alt="Status" src="https://img.shields.io/badge/status-beta-orange.svg">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-29%20tools-6f42c1.svg">
   <img alt="Stack" src="https://img.shields.io/badge/stack-Hono%20%C2%B7%20Vite%20%C2%B7%20Postgres%20%C2%B7%20Ollama-333.svg">
@@ -241,8 +241,9 @@ eingeladene Personen. Wenn du Zugriff möchtest, wende dich an
 
 ## Lizenz
 
-[GNU AGPL-3.0](LICENSE). Kurz gesagt: du darfst den Code einsehen, ausführen
-und verändern (sofern dir Zugriff gewährt wurde) — aber jede modifizierte
-Version, die als Netzwerkdienst läuft, muss ihren Quellcode ebenfalls unter
-AGPL-3.0 offenlegen. Kommerzielle stille Weiterverwertung ohne
-Quellcode-Offenlegung ist damit ausgeschlossen.
+**Proprietär** — [LICENSE](LICENSE). Kurz gesagt: als eingeladene Person
+darfst du die Software installieren, ausführen und für eigene Zwecke nutzen
+(auch mit deinen eigenen KI-Systemen über MCP), aber nicht weitergeben,
+weiterverbreiten oder ohne ausdrückliche schriftliche Zustimmung des
+Rechteinhabers weiterverkaufen. Alle Rechte, die hier nicht explizit
+eingeräumt werden, bleiben beim Rechteinhaber.
