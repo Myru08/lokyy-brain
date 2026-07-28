@@ -29,9 +29,9 @@ Model Context Protocol.
 
 | | |
 |---|---|
-| **MCP-Endpoint** | `https://lokyy-brain.kimiboca.de/mcp` |
+| **MCP-Endpoint** | Lokal (`docker-compose.local.yml`): `http://localhost:8788/mcp`. Remote (Coolify): deine eigene Domain, z. B. `https://mcp.deine-domain.tld/mcp`. |
 | **Transport** | Streamable HTTP (MCP-Spec). POST `/mcp` für JSON-RPC; Antworten als JSON **oder** SSE (`text/event-stream`). |
-| **Health** | `GET https://lokyy-brain.kimiboca.de/mcp/health` → `{"ok":true,...}` (keine Auth) |
+| **Health** | `GET <MCP-Endpoint>/health` → `{"ok":true,...}` (keine Auth) |
 | **Protokoll-Version** | `2024-11-05` |
 | **Session** | Der `initialize`-Response liefert den Header `Mcp-Session-Id`; bei allen Folge-Requests mitsenden. |
 
@@ -136,7 +136,7 @@ sollte sie als System-Prompt-Addendum übernehmen. Kernregeln:
 
 **1) Initialisieren** (liefert `Mcp-Session-Id` + `instructions`):
 ```bash
-curl -s https://lokyy-brain.kimiboca.de/mcp \
+curl -s http://localhost:8788/mcp \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -178,7 +178,7 @@ MCP-SDK) verbinden sich mit denselben drei Angaben: **URL `/mcp` + Bearer-Token*
 
 - [ ] Token vom Lokyy-Brain-Dashboard besorgen (Owner-Token ODER eigener
       Mandanten-Token mit passendem Scope).
-- [ ] MCP-Client auf `https://lokyy-brain.kimiboca.de/mcp` + Bearer-Token zeigen
+- [ ] MCP-Client auf `http://localhost:8788/mcp` + Bearer-Token zeigen
       lassen (oder die 3 HTTP-Schritte oben implementieren).
 - [ ] Die `initialize`-`instructions` in den eigenen System-Prompt übernehmen.
 - [ ] Read-first/Write-always als Verhaltensregel verankern.

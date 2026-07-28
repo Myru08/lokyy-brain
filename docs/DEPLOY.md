@@ -6,22 +6,18 @@ ParadeDB + Ollama.
 
 ---
 
-## Deploy-Pattern wählen
+## Deploy-Pattern
 
-Es gibt zwei unterstützte Wege:
+**Empfohlen: All-in-one** (`docker-compose.coolify.yml`, dieses Dokument) —
+alle sechs Services in einer Coolify-Application, ein Netz, native
+Docker-DNS-Auflösung. Braucht einen Build-Host mit ≥6 GB freiem RAM; bei
+kleineren Hosts gibt's gerne OOM-Kills (Exit 255) — dann Build-Ressourcen in
+Coolify hochsetzen, statt auf ein Split-Resource-Pattern auszuweichen (das
+bringt eigene Cross-Resource-DNS-Fallen mit, siehe `docker-compose.local.yml`s
+Kommentare zum selben Thema).
 
-1. **All-in-one** (`docker-compose.coolify.yml`, dieses Dokument): alle sechs
-   Services in einer Coolify-Application. Einfacher (ein Resource-Item), aber
-   RAM-intensiv beim Build — geeignet wenn dein Coolify-Build-Server ≥6 GB
-   freien RAM hat. Bei kleineren Build-Hosts gibt's gerne OOM-Kills
-   (Exit 255).
-2. **Resources + App** (`docker-compose.coolify-app.yml`, **empfohlen**):
-   Postgres + Ollama + Forgejo als separate Coolify-Resources, nur die drei
-   Lokyy-Services (`lokyy-brain`, `lokyy-pwa`, `lokyy-mcp`) als Application.
-   Vermeidet Build-OOM, bietet saubere Lifecycles und separate Backups pro
-   Service. Schritt-für-Schritt in [DEPLOY-RESOURCES.md](DEPLOY-RESOURCES.md).
-
-Der Rest dieses Dokuments beschreibt das **All-in-one-Pattern**.
+Für eine schlanke Einzelservice-Demo statt des vollen Stacks siehe
+`docker-compose.coolify-demo.yml` im Repo-Root.
 
 ---
 
@@ -52,8 +48,10 @@ Coolify's Traefik needs working DNS to fetch Let's Encrypt certificates.
 
 1. Coolify UI → **Projects** → **+ Add**.
 2. Resource type: **Docker Compose**.
-3. Source: **Public Git Repository** (or your fork).
-   - Repository URL: `https://github.com/oliverhees/lokyy-brain`
+3. Source: this repo is **private** — in Coolify, connect it as a **Private
+   Git Repository** (via GitHub App or Deploy Key), not a public URL. Use your
+   own fork if you don't have direct push access.
+   - Repository: `oliverhees/lokyy-brain`
    - Branch: `main`
    - Compose File Path: `docker-compose.coolify.yml`
 4. Save. Don't deploy yet.

@@ -1,121 +1,248 @@
-# lokyy-brain
+<p align="center">
+  <img src="lokyy-brain-new-logo-transparent.png" alt="Lokyy Brain" width="220">
+</p>
 
-Eigenständiges, Obsidian-nahes Knowledge-Tool. Läuft als Web-App **und** als
-installierbare PWA. **Forgejo ist die Wahrheit** — der Server hält die einzige
-echte Git-Working-Copy, die Clients machen selbst kein Git.
+<h1 align="center">Lokyy Brain</h1>
 
-> Umbenannt aus dem Arbeitstitel "Sternwarte" auf `lokyy-brain` mit
-> Package-Scope `@lokyy/*`. Historische Verweise auf den alten Namen finden sich
-> nur noch in den BMAD-Planning-Artefakten unter `_bmad-output/` und in dieser
-> Rename-Note.
+<p align="center">
+  <strong>Ein git-versionierter Wissensvault, der jede KI verstehen kann.</strong><br>
+  Single Source of Truth für dich UND für jeden Agenten, der über MCP anfragt.
+</p>
+
+<p align="center">
+  <img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg">
+  <img alt="Status" src="https://img.shields.io/badge/status-beta-orange.svg">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-29%20tools-6f42c1.svg">
+  <img alt="Stack" src="https://img.shields.io/badge/stack-Hono%20%C2%B7%20Vite%20%C2%B7%20Postgres%20%C2%B7%20Ollama-333.svg">
+</p>
+
+---
+
+## Inhaltsverzeichnis
+
+- [Was Lokyy Brain ist](#was-lokyy-brain-ist)
+- [Warum Lokyy Brain](#warum-lokyy-brain)
+- [Features](#features)
+- [Quickstart — lokale Installation](#quickstart--lokale-installation)
+- [Der Setup-Wizard im Detail](#der-setup-wizard-im-detail)
+- [Architektur](#architektur)
+- [Memory-Modell](#memory-modell)
+- [MCP-Integration — KI-Agenten anbinden](#mcp-integration--ki-agenten-anbinden)
+- [Vault-Contract (SPEC)](#vault-contract-spec)
+- [Remote-Deployment](#remote-deployment)
+- [Projekt-Status](#projekt-status)
+- [Zugriff & Mitwirken](#zugriff--mitwirken)
+- [Lizenz](#lizenz)
+
+---
+
+## Was Lokyy Brain ist
+
+Lokyy Brain ist ein **git-gestützter Wissensvault** aus SPEC-konformen
+Markdown-Notizen (Karpathy-Second-Brain-Pattern, PARA-Ordnerstruktur). Er läuft
+als Web-App **und** als installierbare PWA, wird über eine REST-API bedient und
+macht denselben Vault gleichzeitig über das **Model Context Protocol (MCP)**
+für jede angeschlossene KI verfügbar — Claude Code, Claude Desktop, eigene
+Agenten, alles, was MCP spricht.
+
+**Kernidee:** Deine Notizen sind nicht in einer App gefangen. Sie sind
+Klartext-Markdown mit striktem Frontmatter, in einem Git-Repo versioniert —
+lesbar, durchsuchbar und beschreibbar von dir *und* von jeder KI, die du
+anbindest, über dieselbe Wahrheit.
+
+## Warum Lokyy Brain
+
+| | Lokyy Brain | Obsidian & Co. | Reiner Vector-Store / "KI-Memory" |
+|---|---|---|---|
+| **Speicherformat** | Klartext-Markdown + Frontmatter, git-versioniert | Klartext-Markdown, kein Server | Proprietäres DB-Format |
+| **KI-Zugriff** | Nativ über MCP, 29 Tools, modell-agnostisch | Nur über Community-Plugins | Meist an einen Anbieter gebunden |
+| **Wahrheit** | Git (Forgejo lokal oder remote) — volle Historie, Diffs, Rollback | Lokale Datei, kein eingebautes Sync | Kein Diff, keine Historie |
+| **Selbst hostbar** | Ja, komplett — ein `docker compose up` | Teilweise (Sync-Server kostenpflichtig) | Selten |
+| **Multi-Tenant** | Ja — isolierte Kundenvaults, gescopte Tokens | Nein | Variiert |
+| **Semantische Suche** | Eingebaut (pgvector + Ollama, lokal) | Nur via Plugin | Kern-Feature, aber Cloud-only üblich |
+
+## Features
+
+- **CM6-Editor** mit Live-Preview, Wikilinks (`[[Notiz]]`) und Backlinks
+- **Wissensgraph** aus Wikilinks, automatisch abgeleitet
+- **Zwei-Stufen-Suche**: Volltext (Tier 1) + semantische Embeddings (Tier 2,
+  `nomic-embed-text` via Ollama + pgvector), gemerged
+- **MCP-Server** mit 29 Tools — Lesen, Suchen, Schreiben, Skills, Health,
+  Import — für jeden MCP-fähigen Client
+- **Skills-System**: wiederverwendbare Prompt-Workflows als Notizen, über MCP
+  auflist- und ausführbar
+- **Import-Pipes**: YouTube-Transkripte, einzelne Webseiten, ganze Websites —
+  landen automatisch als Notiz im Vault
+- **PWA**: installierbar, Offline-Editing mit IndexedDB-Cache, Web-Share-Target
+- **Multi-Tenant**: isolierte Kundenvaults mit eigenem Git-Remote, eigener
+  Rolle (`read`/`write`) und Ordner-Scope pro MCP-Token
+- **Lokal oder remote** — derselbe Stack läuft auf deinem Laptop und auf einem
+  Coolify-VPS
+
+## Quickstart — lokale Installation
+
+Voraussetzung: [Docker](https://docs.docker.com/get-docker/) (Desktop auf
+Mac/Windows, Docker Engine auf Linux). Sonst nichts.
+
+```bash
+git clone https://github.com/oliverhees/lokyy-brain.git
+cd lokyy-brain
+docker compose -f docker-compose.local.yml up -d
+```
+
+Das startet sechs Container: `lokyy-brain` (API), `lokyy-pwa` (Web-UI),
+`lokyy-mcp` (MCP-Server), `postgres` (ParadeDB — pgvector + BM25), `ollama`
+(lokale Embeddings) und `forgejo` (optionaler Git-Remote — siehe unten).
+
+Sobald alle Container laufen (`docker compose -f docker-compose.local.yml ps`
+zeigt überall `healthy`):
+
+```
+Web-UI  → http://localhost:8095
+API     → http://localhost:8787
+MCP     → http://localhost:8788/mcp
+```
+
+Öffne `http://localhost:8095` im Browser — der Setup-Wizard startet
+automatisch.
+
+## Der Setup-Wizard im Detail
+
+Fünf Schritte, geführt:
+
+1. **Admin** — Account anlegen (Email, Passwort, Name). Wird sofort eingeloggt.
+2. **Forgejo (Vault-Remote)** — zwei Wege:
+   - **Mit Forgejo verbinden** (OAuth) — falls du Git-Sync/Backup willst. Der
+     mitgelieferte Forgejo-Container läuft schon unter
+     `http://localhost:3001`, kein externer Account nötig.
+   - **"Ohne Forgejo fortfahren (nur lokal)"** — der empfohlene Standardweg.
+     Der Vault wird als lokales Git-Repo im Container angelegt (versioniert,
+     mit voller Commit-Historie), nur eben ohne Remote. Ein Forgejo-Remote
+     lässt sich jederzeit später in den Einstellungen nachrüsten, ohne dass
+     bisherige Commits verloren gehen.
+3. **Postgres** — Verbindung wird automatisch geprüft (läuft schon im Stack).
+4. **Ollama** — Embedding-Modell-Status wird geprüft (`nomic-embed-text` wird
+   beim ersten Start automatisch gezogen).
+5. **Fertig** — Setup-Flag wird gesetzt, das System ist scharf.
+
+Danach landest du im Dashboard: Notiz-Baum links, Editor in der Mitte, Graph
+und Suche über die Kommandopalette (`⌘/Ctrl K`).
 
 ## Architektur
 
 ```
-┌─────────────┐   HTTP/JSON    ┌──────────────┐   git pull/commit/push   ┌─────────┐
-│  PWA (Vite) │ ─────────────▶ │ Server (Hono)│ ───────────────────────▶ │ Forgejo │
-│  CM6 Editor │ ◀───────────── │ Working-Copy │ ◀─────────────────────── │  (Wahr- │
-│  Graph      │                │  + Pipes     │                          │   heit) │
-└─────────────┘                └──────────────┘                          └─────────┘
-   IndexedDB                    .md auf Disk
-   (Offline-Cache)              (Source of Truth lokal)
+┌─────────────┐   HTTP/JSON    ┌──────────────┐   git init/commit(/push)  ┌─────────┐
+│  PWA (Vite) │ ─────────────▶ │ Server (Hono)│ ────────────────────────▶ │ Forgejo │
+│  CM6 Editor │ ◀───────────── │ Working-Copy │ ◀──────────────────────── │(optional│
+│  Graph      │                │  + Pipes     │                           │ Remote) │
+└─────────────┘                └──────┬───────┘                           └─────────┘
+   IndexedDB                          │
+   (Offline-Cache)              ┌─────┴──────┐        ┌────────────────┐
+                                 │  Postgres  │        │     Ollama     │
+                                 │ (pgvector  │        │ (Embeddings,   │
+                                 │  + BM25)   │        │  lokal)        │
+                                 └────────────┘        └────────────────┘
+                                        ▲
+                                        │
+                                 ┌──────┴───────┐
+                                 │  MCP-Server  │  ← Claude Code, Claude Desktop,
+                                 │  (29 Tools)  │    eigene Agenten, jeder MCP-Client
+                                 └──────────────┘
 ```
 
-Drei Schichten, je eine klare Aufgabe:
+Vier Bausteine, klare Verantwortung:
 
-1. **PWA** — UI, CM6-Editor mit Live-Preview, Graph. Hält einen Offline-Cache
-   in IndexedDB, queued Saves bei fehlender Verbindung.
-2. **Server** — die einzige Git-Working-Copy. Stellt Notizen, Graph und Pipes
-   als JSON-API bereit. Beim Speichern: `add → commit → pull --rebase → push`.
-3. **Forgejo** — Remote, Versionierung, Wahrheit.
+1. **PWA** — UI, CM6-Editor mit Live-Preview, Graph. Offline-Cache in
+   IndexedDB, queued Saves bei fehlender Verbindung.
+2. **Server (Hono)** — hält die einzige Git-Working-Copy, stellt Notizen,
+   Graph und Pipes als JSON-API bereit. Git ist dabei immer ein first-class
+   State: mit Remote committet & pusht jeder Save, ohne Remote committet er
+   trotzdem lokal — nie ein Datenverlust-Risiko.
+3. **Postgres (ParadeDB) + Ollama** — semantische Suche, lokal, ohne
+   Cloud-API-Abhängigkeit.
+4. **MCP-Server** — macht denselben Vault für jeden KI-Agenten verfügbar,
+   scope-gated pro Token.
 
-### Der Sync-Flow
+## Memory-Modell
 
-- **Notiz öffnen / Tab wieder aktiv** → Server macht `git pull --rebase`.
-- **Speichern** → Server schreibt die `.md`, dann `add` · `commit` · `pull --rebase` · `push`.
-- **Konflikt** entsteht nur bei gleichzeitiger Änderung *derselben Zeilen* — als
-  Einzelnutzer über mehrere Geräte praktisch nie.
-- **Offline** → PWA editiert gegen den IndexedDB-Cache, queued Saves, spielt sie
-  beim Reconnect über denselben commit/rebase/push-Pfad ein.
+Drei Stufen hinter einem gemeinsamen Interface:
 
-## Datei-Baum & Struktur
+- **Tier 1 — Struktur** (fertig): Wikilinks, Tags, Volltext.
+- **Tier 2 — Semantik** (fertig): `nomic-embed-text` (Ollama) + pgvector HNSW —
+  Suche findet Notizen auch ohne exakte Wikilinks.
+- **Tier 3 — Temporaler Knowledge Graph** (offen, optional): Kandidaten sind
+  [Graphiti](https://github.com/getzep/graphiti) und
+  [cognee](https://github.com/topoteretes/cognee) — beide selbst-hostbare
+  Knowledge-Graph-Engines für Agenten-Memory. Noch keine Wahl getroffen, kein
+  Code geschrieben. Löst das, was ein flacher Wikilink-Graph nicht kann:
+  benannte Beziehungstypen zwischen Entitäten und eine Zeitachse.
 
-Der Vault *ist* die Ordnerstruktur — eine Notiz-id wie `pai/hermes` ist
-schlicht ihr Pfad. Der Datei-Baum links bildet das ab und kann es
-verändern: Notizen und Ordner **anlegen**, **umbenennen**, per
-Drag & Drop **verschieben**, **löschen**. Jede Operation läuft über den
-Git-Service, also direkt nach Forgejo. Leere Ordner bekommen eine
-`.gitkeep`, weil Git keine leeren Verzeichnisse trackt.
+## MCP-Integration — KI-Agenten anbinden
 
-API dafür unter `/api/vault` (`tree`, `note`, `folder`, `move`, `entry`).
+Der MCP-Server exponiert **29 Tools** — Lesen, Suchen, Schreiben, Skills,
+Health, Import — für jeden MCP-fähigen Client: Claude Code, Claude Desktop,
+den claude.ai Custom Connector, oder einen eigenen Agenten.
 
-## Pipes & Import
+**Lokal (Standard):**
 
-Eine kleine getypte Job-Queue (`server/src/pipes/`). Zwei Eingänge:
-
-- **Web Share Target** — die PWA registriert sich im Manifest, geteilte
-  URLs / Sprachnachrichten landen am `POST /api/pipes/share`.
-- **Import-Panel** — das Slide-over von rechts: URL einfügen, Typ wählen
-  (YouTube, Website-Seite, ganze Website crawlen, oder automatisch
-  erkennen), `POST /api/pipes/import`. Es pollt die Queue und zeigt jeden
-  Job bis zur fertigen Notiz.
-
-Beide nutzen dieselbe Queue und dieselben Handler. Mitgeliefert:
-`youtube` (Transkript via Supadata), `url` (einzelne Seite scrapen),
-`crawl` (ganze Website). Importe landen im `inbox/`-Ordner — erst
-capturen, später einsortieren. Ein neuer Pipe = ein neuer Handler.
-
-> Hinweis: **Web Share Target funktioniert nicht auf iOS** — dort braucht
-> es einen Fallback (Shortcut, der ans Backend postet). Auf
-> Android/Chrome/Desktop läuft es nativ. Das Import-Panel funktioniert
-> überall.
-
-## Workspaces
-
-| Paket              | Zweck                                                  |
-|--------------------|--------------------------------------------------------|
-| `packages/shared`  | Geteilte Typen (Note, TreeNode, GraphData, PipeJob).   |
-| `server`           | Hono-API, Git-Service, Vault-Struktur, Pipes.          |
-| `pwa`              | Vite-SPA + PWA, CM6-Editor, Datei-Baum, Import-Panel.  |
-
-## Setup
-
-```bash
-pnpm install
-
-# Server
-cp server/.env.example server/.env   # VAULT_DIR, GIT_REMOTE, SUPADATA_API_KEY ...
-pnpm --filter server dev
-
-# PWA
-pnpm --filter pwa dev
+```
+MCP-Endpoint: http://localhost:8788/mcp
+Auth:         Bearer-Token (siehe LOKYY_MCP_TOKEN in docker-compose.local.yml
+              — Default zum Testen, für echten Einsatz ändern)
 ```
 
-Beim ersten Start klont der Server `GIT_REMOTE` nach `VAULT_DIR` (falls leer).
+Claude Code oder jeder andere MCP-Client verbindet sich mit genau diesen zwei
+Angaben; Tools werden automatisch entdeckt.
 
-## Deployment
+Vollständige Tool-Referenz, Auth-Modell (Owner- vs. Mandanten-Token),
+Scope-Regeln und ein Minimal-Beispiel per `curl`:
+**[→ MCP-INTEGRATION.md](MCP-INTEGRATION.md)**
 
-Server + PWA laufen auf jedem kleinen Linux-VPS. Server braucht ein
-installiertes `git` und SSH-Key/Token-Zugriff auf das Forgejo-Repo. PWA als
-statisches Build hinter dem Server oder einem Reverse-Proxy.
+## Vault-Contract (SPEC)
 
-Für Coolify gibt es drei dokumentierte Pfade:
+Jede `.md`-Datei im Vault braucht valides Frontmatter: `id` (ULID, 26 Zeichen,
+überlebt Umbenennen), `type`, `title`, `created` (unveränderlich), `updated`
+(wird automatisch gesetzt). Doc-Types sind eine geschlossene Liste (`note`,
+`capture`, `project`, `task`, `decision`, `meeting`, `skill`, u. a.). Ein
+Pre-Commit-Hook blockt Commits mit ungültigem Frontmatter — der Vault kann
+strukturell nicht verrotten.
 
-| Pfad | Wann nehmen | Doc |
-|------|-------------|-----|
-| **Lean** | Forgejo läuft extern (anderer Host) — nur App + Postgres + Ollama auf der Coolify-Box | [docs/DEPLOY-LEAN.md](docs/DEPLOY-LEAN.md) |
-| **Resources + App** | Alles auf einer Box, aber Postgres/Ollama/Forgejo als separate Coolify-Resources (saubere Backups, getrennte Lifecycles) | [docs/DEPLOY-RESOURCES.md](docs/DEPLOY-RESOURCES.md) |
-| **All-in-One** | Sechs Services in einer Coolify-Application (braucht Build-Host ≥6 GB RAM) | [docs/DEPLOY.md](docs/DEPLOY.md) |
+## Remote-Deployment
 
-## Status
+Für den produktiven Einsatz auf einem eigenen Server (z. B.
+[Coolify](https://coolify.io)) gibt es zwei dokumentierte Wege:
 
-Gerüst, typgeprüft, PWA baut sauber durch. Funktional angelegt:
+| Datei | Wann nehmen |
+|---|---|
+| `docker-compose.coolify.yml` | **Empfohlen.** Alle sechs Services in einer Coolify-Application — ein Netz, native Docker-DNS-Auflösung, keine Cross-Resource-Fallen. |
+| `docker-compose.coolify-demo.yml` | Minimal-Variante für eine schnelle Einzelservice-Demo (nur Postgres + Brain, PWA/API auf einer Domain). |
 
-- Git-Service (clone, pull, save, move/rename, remove) — Forgejo als Wahrheit
-- Notes- & Graph-Service, Datei-Baum mit voller Struktur-Bearbeitung
+Details: **[→ docs/DEPLOY.md](docs/DEPLOY.md)**
+
+## Projekt-Status
+
+**Beta.** Produktiv im Einsatz, aktiv weiterentwickelt. Fertig & getestet:
+
+- Git-Service (lokal *und* remote, mit/ohne Forgejo) als first-class State
+- Notes-, Graph- und Pipes-Service, voller Datei-Baum mit Struktur-Bearbeitung
 - CM6-Editor mit Live-Preview + Wikilink-Parsing
-- Pipes-Queue mit YouTube-, Scrape- und Crawl-Handler
-- Import-Panel (Slide-over) + Web-Share-Target-Manifest
+- Setup-Wizard inkl. lokalem Vault ohne externe Abhängigkeit
+- MCP-Server mit 29 Tools, Multi-Tenant-Token-Scoping
+- Semantische Suche (Tier 1 + Tier 2)
 
-Offen: Graph-Frontend (react-force-graph), IndexedDB-Offline-Layer,
-Auth, Whisper-Handler für Sprachnachrichten, Bundle-Splitting.
+Offen: Tier-3-Knowledge-Graph (siehe oben), Graph-Frontend
+(react-force-graph), Whisper-Handler für Sprachnachrichten.
+
+## Zugriff & Mitwirken
+
+Dieses Repo ist **privat mit gezielter Freigabe** — Zugriff nur für
+eingeladene Personen. Wenn du Zugriff möchtest, wende dich an
+[@oliverhees](https://github.com/oliverhees).
+
+## Lizenz
+
+[GNU AGPL-3.0](LICENSE). Kurz gesagt: du darfst den Code einsehen, ausführen
+und verändern (sofern dir Zugriff gewährt wurde) — aber jede modifizierte
+Version, die als Netzwerkdienst läuft, muss ihren Quellcode ebenfalls unter
+AGPL-3.0 offenlegen. Kommerzielle stille Weiterverwertung ohne
+Quellcode-Offenlegung ist damit ausgeschlossen.
