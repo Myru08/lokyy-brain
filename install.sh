@@ -47,13 +47,13 @@ COMPOSE_FILE="docker-compose.local.yml"
 PWA_URL="http://localhost:8095"
 API_URL="http://localhost:8787"
 MCP_URL="http://localhost:8788/mcp"
-FORGEJO_URL="http://localhost:3001"
+FORGEJO_URL="http://localhost:8790"
 
 # Ports, die docker-compose.local.yml auf dem Host belegt.
 # Format "Port:Beschriftung" — bewusst eine einfache Liste statt eines
 # assoziativen Arrays, weil macOS noch mit bash 3.2 ausgeliefert wird und
 # assoziative Arrays dort nicht existieren.
-PORTS_TO_CHECK="8787:Server-API 8095:Web-UI-(PWA) 8788:MCP-Server 3001:Forgejo-Web-UI"
+PORTS_TO_CHECK="8787:Server-API 8095:Web-UI-(PWA) 8788:MCP-Server 8790:Forgejo-Web-UI"
 
 # Wie lange warten wir maximal, bis die Web-UI antwortet?
 MAX_WAIT_SECONDS=90
@@ -538,7 +538,7 @@ ok "Compose gefunden: $(${DOCKER_SUDO} docker compose version 2>/dev/null | head
 # einer Sprache, die man erst mal übersetzen muss.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 3001)"
+step "Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 8790)"
 
 # Prüft, ob auf einem Port bereits etwas lauscht.
 # Rückgabe: 0 = belegt, 1 = frei.

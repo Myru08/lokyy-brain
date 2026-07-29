@@ -50,14 +50,14 @@ $ComposeFile = 'docker-compose.local.yml'
 $PwaUrl      = 'http://localhost:8095'
 $ApiUrl      = 'http://localhost:8787'
 $McpUrl      = 'http://localhost:8788/mcp'
-$ForgejoUrl  = 'http://localhost:3001'
+$ForgejoUrl  = 'http://localhost:8790'
 
 # Ports, die docker-compose.local.yml auf dem Host belegt.
 $PortsToCheck = @(
     @{ Port = 8787; Label = 'Server-API' },
     @{ Port = 8095; Label = 'Web-UI (PWA)' },
     @{ Port = 8788; Label = 'MCP-Server' },
-    @{ Port = 3001; Label = 'Forgejo Web-UI' }
+    @{ Port = 8790; Label = 'Forgejo Web-UI' }
 )
 
 # Wie lange warten wir maximal, bis die Web-UI antwortet?
@@ -403,7 +403,7 @@ Write-Ok "Compose gefunden: $composeVersion"
 # einer Sprache, die man erst mal übersetzen muss.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 3001)'
+Write-Step 'Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 8790)'
 
 # Prüft, ob auf einem Port bereits etwas lauscht.
 # Wir nehmen bewusst einen direkten TCP-Verbindungsversuch statt

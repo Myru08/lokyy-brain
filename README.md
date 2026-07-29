@@ -142,7 +142,7 @@ Fünf Schritte, geführt:
 2. **Forgejo (Vault-Remote)** — zwei Wege:
    - **Mit Forgejo verbinden** (OAuth) — falls du Git-Sync/Backup willst. Der
      mitgelieferte Forgejo-Container läuft schon unter
-     `http://localhost:3001`, kein externer Account nötig.
+     `http://localhost:8790`, kein externer Account nötig.
    - **"Ohne Forgejo fortfahren (nur lokal)"** — der empfohlene Standardweg.
      Der Vault wird als lokales Git-Repo im Container angelegt (versioniert,
      mit voller Commit-Historie), nur eben ohne Remote. Ein Forgejo-Remote
