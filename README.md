@@ -24,6 +24,7 @@
 - [Warum Lokyy Brain](#warum-lokyy-brain)
 - [Features](#features)
 - [Quickstart — lokale Installation](#quickstart--lokale-installation)
+- [Befehle im Überblick](#befehle-im-überblick)
 - [Der Setup-Wizard im Detail](#der-setup-wizard-im-detail)
 - [Architektur](#architektur)
 - [Memory-Modell](#memory-modell)
@@ -118,9 +119,12 @@ Alternativ manuell, ohne den Installer:
 docker compose -f docker-compose.local.yml up -d --build
 ```
 
-Das startet sechs Container: `lokyy-brain` (API), `lokyy-pwa` (Web-UI),
+Das startet sieben Container: `lokyy-brain` (API), `lokyy-pwa` (Web-UI),
 `lokyy-mcp` (MCP-Server), `postgres` (ParadeDB — pgvector + BM25), `ollama`
-(lokale Embeddings) und `forgejo` (optionaler Git-Remote — siehe unten).
+(lokale Embeddings), `forgejo` (optionaler Git-Remote — siehe unten) und
+`ollama-init` — ein einmaliger Init-Container, der das Embedding-Modell lädt
+und sich danach beendet (`Exited (0)` ist bei ihm der Normalzustand, kein
+Fehler).
 
 Sobald alle Container laufen (`docker compose -f docker-compose.local.yml ps`
 zeigt überall `healthy`):
@@ -134,20 +138,24 @@ MCP     → http://localhost:8788/mcp
 Öffne `http://localhost:8095` im Browser — der Setup-Wizard startet
 automatisch. (Der Installer öffnet den Browser automatisch für dich.)
 
-### Alltag: starten, anhalten, Diagnose
+## Befehle im Überblick
 
 `install.sh`/`install.ps1` sind für die einmalige Erst-Installation da (Docker
-installieren, Images bauen). Für danach gibt es `lokyy.sh` / `lokyy.ps1`:
+prüfen/installieren, Images bauen). Für den Alltag danach gibt es
+`lokyy.sh`/`lokyy.ps1` — kein Rebuild, entsprechend schnell:
 
-```bash
-./lokyy.sh start     # Stack starten (schnell, kein Rebuild), Browser öffnen
-./lokyy.sh stop      # Stack anhalten (Container bleiben erhalten)
-./lokyy.sh restart   # Container neu starten
-./lokyy.sh status    # Kurzer Überblick: läuft alles, ist es erreichbar?
-./lokyy.sh doctor    # Ausführliche Diagnose bei Problemen (rein lesend)
-```
+| Befehl (macOS/Linux) | Befehl (Windows) | Wann | Was passiert |
+|---|---|---|---|
+| `./install.sh` | `.\install.ps1` | Einmalig, beim ersten Mal | Docker prüfen/installieren, Stack bauen & starten, Browser öffnen |
+| `./lokyy.sh start` | `.\lokyy.ps1 start` | Alltag, nach Neustart falls nötig | Stack starten (kein Rebuild), Browser öffnen |
+| `./lokyy.sh stop` | `.\lokyy.ps1 stop` | Feierabend | Stack anhalten, Container bleiben erhalten (nächster Start ist schnell) |
+| `./lokyy.sh restart` | `.\lokyy.ps1 restart` | Bei komischem Verhalten | Container neu starten |
+| `./lokyy.sh status` | `.\lokyy.ps1 status` | Schnellcheck | Läuft alles, ist es erreichbar? (rein lesend) |
+| `./lokyy.sh doctor` | `.\lokyy.ps1 doctor` | Bei Problemen | Ausführliche Diagnose — Docker, Ports, Container-Health (rein lesend, ändert nichts) |
+| `docker compose -f docker-compose.local.yml logs -f` | *(identisch)* | Debugging | Live-Logs aller Container |
+| `docker compose -f docker-compose.local.yml down` | *(identisch)* | Komplett aufräumen | Container + Netzwerk entfernen (Vault/Daten bleiben in Volumes erhalten) |
 
-Nach einem Neustart des Rechners musst du in der Regel gar nichts aufrufen:
+Nach einem Neustart des Rechners musst du in der Regel **gar nichts** aufrufen:
 alle Container laufen mit `restart: unless-stopped` und fahren von selbst
 wieder hoch, sobald Docker (Desktop) läuft. Wichtig für die PWA: ein
 gepinntes Icon öffnet nur den Browser auf `localhost:8095` — es kann Docker
