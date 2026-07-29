@@ -521,7 +521,9 @@ $composeExit = Invoke-ComposeUp -LogPath $composeLog
 $composeOutput = Get-ComposeLogText -LogPath $composeLog
 Write-Line ''
 
-# Der selbstheilende Fall: Port-Rest aus einem früheren Lauf.
+# Zwei bekannte, selbstheilbare Fehlerbilder. Alles andere (kein Internet,
+# kein Speicherplatz, ein echter Build-Fehler) wird NICHT wiederholt -- das
+# würde nur einen mehrminütigen Build umsonst kosten.
 if ($composeExit -ne 0 -and $composeOutput -match 'port is already allocated') {
     Write-Warn 'Ein Port ist noch belegt — das sieht nach einem Rest aus einem früheren Start aus.'
     Write-Line '    Wir räumen den alten Stack automatisch ab und versuchen es genau einmal erneut.'
@@ -551,6 +553,21 @@ if ($composeExit -ne 0 -and $composeOutput -match 'port is already allocated') {
         Start-Sleep -Seconds 1
         $portsWaited++
     }
+
+    $composeExit = Invoke-ComposeUp -LogPath $composeLog
+    $composeOutput = Get-ComposeLogText -LogPath $composeLog
+    Write-Line ''
+} elseif ($composeExit -ne 0 -and $composeOutput -match 'lease does not exist|unable to lease content') {
+    # Bekannter BuildKit/containerd-Aussetzer: der Build-Content-Store ist
+    # durcheinander (meist nach vielen Builds hintereinander oder einem
+    # abgebrochenen vorherigen Build). "docker builder prune" räumt nur den
+    # Cache auf -- Container, Volumes und der Vault bleiben unangetastet.
+    Write-Warn 'Der Docker-Build-Cache scheint durcheinander zu sein (bekannter BuildKit-Aussetzer).'
+    Write-Line '    Wir räumen den Cache automatisch auf und versuchen es genau einmal erneut.'
+    Write-Line '    Der nächste Build lädt dadurch ein paar Layer neu — das dauert etwas länger.'
+    Write-Line ''
+
+    docker builder prune -f 2>&1 | Out-Null
 
     $composeExit = Invoke-ComposeUp -LogPath $composeLog
     $composeOutput = Get-ComposeLogText -LogPath $composeLog

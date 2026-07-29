@@ -629,7 +629,9 @@ compose_up
 COMPOSE_EXIT=$?
 say ""
 
-# Der selbstheilende Fall: Port-Rest aus einem früheren Lauf.
+# Zwei bekannte, selbstheilbare Fehlerbilder. Alles andere (kein Internet,
+# kein Speicherplatz, ein echter Build-Fehler) wird NICHT wiederholt — das
+# würde nur einen mehrminütigen Build umsonst kosten.
 if [ "${COMPOSE_EXIT}" -ne 0 ] && grep -q "port is already allocated" "${COMPOSE_LOG}" 2>/dev/null; then
   warn "Ein Port ist noch belegt — das sieht nach einem Rest aus einem früheren Start aus."
   say "    Wir räumen den alten Stack automatisch ab und versuchen es genau einmal erneut."
@@ -659,6 +661,19 @@ if [ "${COMPOSE_EXIT}" -ne 0 ] && grep -q "port is already allocated" "${COMPOSE
     ports_waited=$((ports_waited + 1))
   done
 
+  compose_up
+  COMPOSE_EXIT=$?
+  say ""
+elif [ "${COMPOSE_EXIT}" -ne 0 ] && grep -qE "lease does not exist|unable to lease content" "${COMPOSE_LOG}" 2>/dev/null; then
+  # Bekannter BuildKit/containerd-Aussetzer: der Build-Content-Store ist
+  # durcheinander (meist nach vielen Builds hintereinander oder einem
+  # abgebrochenen vorherigen Build). "docker builder prune" räumt nur den
+  # Cache auf — Container, Volumes und der Vault bleiben unangetastet.
+  warn "Der Docker-Build-Cache scheint durcheinander zu sein (bekannter BuildKit-Aussetzer)."
+  say "    Wir räumen den Cache automatisch auf und versuchen es genau einmal erneut."
+  say "    Der nächste Build lädt dadurch ein paar Layer neu — das dauert etwas länger."
+  say ""
+  ${DOCKER_SUDO} docker builder prune -f >/dev/null 2>&1
   compose_up
   COMPOSE_EXIT=$?
   say ""
