@@ -58,9 +58,14 @@ const lockTails = new Map<string, Promise<unknown>>();
  * vault this is exactly the old behaviour (a single key). The tail is advanced
  * synchronously (before any await yields) so the very next `serialize()` in
  * this tick queues behind us, never onto a stale tail.
+ *
+ * Story 1.13: `targetDir` makes that key explicit for callers that operate on a
+ * directory OTHER than the singleton (`provisionVaultDir` provisioning a tenant
+ * working copy). Omitting it resolves to `config().vaultDir` — synchronously,
+ * exactly as before — so every pre-existing call site is unchanged.
  */
-function serialize<T>(fn: () => Promise<T>): Promise<T> {
-  const key = config().vaultDir;
+function serialize<T>(fn: () => Promise<T>, targetDir?: string): Promise<T> {
+  const key = targetDir ?? config().vaultDir;
   const prev = lockTails.get(key) ?? Promise.resolve();
   // Both branches run `fn` regardless of whether the previous op fulfilled or
   // rejected — a failed predecessor must not cancel its successor (FIFO).
@@ -198,47 +203,70 @@ export async function setupVaultFromForgejo(opts: {
   const hostNoScheme = stripScheme(forgejoBaseUrl);
   const remoteUrl = `https://oauth2:${accessToken}@${hostNoScheme}/${repoFullName}.git`;
 
+  return provisionVaultDir({
+    targetDir: config().vaultDir,
+    remote: { url: remoteUrl, branch },
+  });
+}
+
+/** An already-credentialed remote to provision against. */
+export interface ProvisionRemote {
+  /** Full clone URL INCLUDING any auth (`https://oauth2:<token>@host/org/repo.git`). */
+  url: string;
+  /** Branch to check out / bootstrap. */
+  branch: string;
+}
+
+export interface ProvisionVaultOpts {
+  /** Directory to provision. May be any path — not necessarily `config().vaultDir`. */
+  targetDir: string;
+  /** Omit for a purely local repo (no `remote add`, no push). */
+  remote?: ProvisionRemote;
+}
+
+/**
+ * Provision a git working copy in ANY directory (Story 1.13).
+ *
+ * This is the single git-mechanics primitive behind every vault provisioning:
+ * the setup wizard's primary vault (`setupVaultFromForgejo` / `initLocalVault`,
+ * both now thin wrappers around this) AND the multi-tenant `POST /api/tenants`
+ * route, which provisions `<vaultsRoot>/<vaultId>`. It exists because the two
+ * used to be duplicated — the wizard path hardwired to the `config().vaultDir`
+ * singleton, the tenant path hand-rolled as raw `exec("git", …)` in the route.
+ *
+ * Sequence:
+ *   1. Clear `targetDir`'s CONTENTS in place (see the mount-point note below).
+ *   2. `git init` (+ `remote add origin <url>` when a remote is given).
+ *   3. With a remote: fetch + `checkout -B <branch> FETCH_HEAD` + set upstream.
+ *   4. Empty remote (ref doesn't exist yet) or no remote at all: bootstrap —
+ *      `checkout -b <branch>`, `.gitkeep`, initial commit, and `push -u` when
+ *      a remote exists.
+ *
+ * Mount-point constraint (do not "simplify" this): we delete the directory's
+ * entries but NEVER rmdir `targetDir` itself, because in the Docker deployment
+ * it is a volume mount point and removing the mount fails with `EBUSY`. That is
+ * also why we clone IN PLACE via init+fetch+checkout — plain
+ * `git clone <url> <dir>` refuses a pre-existing directory.
+ *
+ * Branch without a remote falls back to `config().gitBranch`. Git identity is
+ * process-wide (`config().gitAuthorName`/`…Email`) and deliberately NOT
+ * parameterized — only the directory and the remote are per-vault.
+ *
+ * Runs inside the shared `serialize()` FIFO lock keyed by `targetDir`, so a
+ * provisioning never interleaves with a save/pull on the SAME directory, while
+ * two different directories provision concurrently without blocking each other.
+ *
+ * Errors follow the provisioning convention of this file: plain `Error`, not
+ * the `classifyGitError` typed errors used by the ongoing-write functions.
+ */
+export async function provisionVaultDir(
+  opts: ProvisionVaultOpts,
+): Promise<{ gitRemote: string; gitBranch: string }> {
+  const { targetDir, remote } = opts;
+
   return serialize(async () => {
     const c = config();
-
-    // Fresh-setup: clear the vault directory CONTENTS in place. We must NOT
-    // rmdir `vaultDir` itself — it is a Docker volume mount point, and removing
-    // the mount fails with `EBUSY: resource busy or locked, rmdir`. So we keep
-    // the dir and delete everything inside it (incl. a stale .git), then clone
-    // IN PLACE via init+fetch+checkout (plain `git clone <url> <dir>` refuses a
-    // pre-existing dir and we cannot recreate the mount).
-    await mkdir(c.vaultDir, { recursive: true });
-    for (const entry of await readdir(c.vaultDir)) {
-      await rm(join(c.vaultDir, entry), { recursive: true, force: true });
-    }
-    await exec("git", ["-C", c.vaultDir, "init"]);
-    await exec("git", ["-C", c.vaultDir, "remote", "add", "origin", remoteUrl]);
-
-    // Attempt 1: fetch + check out the existing branch.
-    try {
-      await exec("git", ["-C", c.vaultDir, "fetch", "origin", branch]);
-      await exec("git", ["-C", c.vaultDir, "checkout", "-B", branch, "FETCH_HEAD"]);
-      await exec("git", [
-        "-C", c.vaultDir, "branch", `--set-upstream-to=origin/${branch}`, branch,
-      ]).catch(() => {});
-      return { gitRemote: remoteUrl, gitBranch: branch };
-    } catch (err) {
-      // Empty repo (branch/ref doesn't exist yet) → bootstrap below. Any other
-      // failure (network, auth) re-throws.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (
-        !/couldn't find remote ref|remote branch .* not found|not found in upstream|empty repository|no such ref|did not match any/i.test(
-          msg,
-        )
-      ) {
-        throw new Error(`git clone failed: ${msg}`);
-      }
-    }
-
-    // Attempt 2: empty-repo bootstrap (init + origin already done above).
-    await exec("git", ["-C", c.vaultDir, "checkout", "-b", branch]);
-
-    await writeFile(join(c.vaultDir, ".gitkeep"), "", "utf8");
+    const branch = remote?.branch ?? c.gitBranch;
 
     const env = {
       ...process.env,
@@ -246,19 +274,84 @@ export async function setupVaultFromForgejo(opts: {
       GIT_AUTHOR_EMAIL: c.gitAuthorEmail,
       GIT_COMMITTER_NAME: c.gitAuthorName,
       GIT_COMMITTER_EMAIL: c.gitAuthorEmail,
+      // Force C locale so stderr is stable English — the empty-repo probe below
+      // pattern-matches git's "couldn't find remote ref" message and must not
+      // depend on the host's LANG (a German "Konnte Remote-Referenz … nicht
+      // finden" would otherwise dodge the parser and turn a brand-new empty
+      // Forgejo repo into a hard failure). Same reason as in `git()` above.
+      LC_ALL: "C",
+      LANG: "C",
     };
-    await exec("git", ["-C", c.vaultDir, "add", "--", ".gitkeep"], { env });
+
+    // Fresh-setup: clear the directory CONTENTS in place (incl. a stale .git),
+    // keeping the directory itself — see the mount-point note above.
+    await mkdir(targetDir, { recursive: true });
+    for (const entry of await readdir(targetDir)) {
+      await rm(join(targetDir, entry), { recursive: true, force: true });
+    }
+    await exec("git", ["-C", targetDir, "init"], { env });
+
+    if (remote) {
+      await exec("git", ["-C", targetDir, "remote", "add", "origin", remote.url], {
+        env,
+      });
+
+      // Attempt 1: fetch + check out the existing branch.
+      try {
+        await exec("git", ["-C", targetDir, "fetch", "origin", branch], { env });
+        await exec("git", ["-C", targetDir, "checkout", "-B", branch, "FETCH_HEAD"], {
+          env,
+        });
+        await exec(
+          "git",
+          ["-C", targetDir, "branch", `--set-upstream-to=origin/${branch}`, branch],
+          { env },
+        ).catch(() => {});
+        return { gitRemote: remote.url, gitBranch: branch };
+      } catch (err) {
+        // Empty repo (branch/ref doesn't exist yet) → bootstrap below. Any other
+        // failure (network, auth) re-throws.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (
+          !/couldn't find remote ref|remote branch .* not found|not found in upstream|empty repository|no such ref|did not match any/i.test(
+            msg,
+          )
+        ) {
+          throw new Error(`git clone failed: ${msg}`);
+        }
+      }
+    }
+
+    // Attempt 2 (and the only attempt without a remote): empty-repo bootstrap.
+    // Unborn HEAD → `checkout -b` just points the symref at `branch`, so the
+    // first commit lands there regardless of the host's `init.defaultBranch`.
+    await exec("git", ["-C", targetDir, "checkout", "-b", branch], { env });
+
+    // A repo with zero commits has no HEAD, which several read paths
+    // (`rev-parse HEAD`, `git log`) treat as an error — anchor it with a
+    // placeholder commit.
+    await writeFile(join(targetDir, ".gitkeep"), "", "utf8");
+
+    await exec("git", ["-C", targetDir, "add", "--", ".gitkeep"], { env });
     await exec(
       "git",
-      ["-C", c.vaultDir, "commit", "-m", "chore: initialize lokyy vault"],
+      [
+        "-C",
+        targetDir,
+        "commit",
+        "-m",
+        remote
+          ? "chore: initialize lokyy vault"
+          : "chore: initialize lokyy vault (local-only)",
+      ],
       { env },
     );
-    await exec("git", ["-C", c.vaultDir, "push", "-u", "origin", branch], {
-      env,
-    });
+    if (remote) {
+      await exec("git", ["-C", targetDir, "push", "-u", "origin", branch], { env });
+    }
 
-    return { gitRemote: remoteUrl, gitBranch: branch };
-  });
+    return { gitRemote: remote?.url ?? "", gitBranch: branch };
+  }, targetDir);
 }
 
 /**
@@ -285,40 +378,7 @@ export async function setupVaultFromForgejo(opts: {
  * provisioning can never interleave with an in-flight save/pull.
  */
 export async function initLocalVault(): Promise<void> {
-  return serialize(async () => {
-    const c = config();
-
-    // Fresh-setup: wipe the directory contents (incl. a stale .git) in place.
-    await mkdir(c.vaultDir, { recursive: true });
-    for (const entry of await readdir(c.vaultDir)) {
-      await rm(join(c.vaultDir, entry), { recursive: true, force: true });
-    }
-
-    await exec("git", ["-C", c.vaultDir, "init"]);
-    // Unborn HEAD → `checkout -b` just points the symref at the configured
-    // branch, so the first commit lands on `gitBranch` regardless of the
-    // host's `init.defaultBranch`. Same call the empty-repo path above makes.
-    await exec("git", ["-C", c.vaultDir, "checkout", "-b", c.gitBranch]);
-
-    // A repo with zero commits has no HEAD, which several read paths
-    // (`rev-parse HEAD`, `git log`) treat as an error — so we anchor it with
-    // the same placeholder commit the Forgejo bootstrap uses.
-    await writeFile(join(c.vaultDir, ".gitkeep"), "", "utf8");
-
-    const env = {
-      ...process.env,
-      GIT_AUTHOR_NAME: c.gitAuthorName,
-      GIT_AUTHOR_EMAIL: c.gitAuthorEmail,
-      GIT_COMMITTER_NAME: c.gitAuthorName,
-      GIT_COMMITTER_EMAIL: c.gitAuthorEmail,
-    };
-    await exec("git", ["-C", c.vaultDir, "add", "--", ".gitkeep"], { env });
-    await exec(
-      "git",
-      ["-C", c.vaultDir, "commit", "-m", "chore: initialize lokyy vault (local-only)"],
-      { env },
-    );
-  });
+  await provisionVaultDir({ targetDir: config().vaultDir });
 }
 
 /** `https://forgejo.example.com` → `forgejo.example.com`. */

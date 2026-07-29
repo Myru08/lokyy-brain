@@ -15,6 +15,7 @@ import {
   createMcpToken,
   listMcpTokens,
   revokeMcpToken,
+  provisionVaultDir,
   type McpRole,
 } from "@lokyy/core";
 import { config } from "../config.js";
@@ -115,12 +116,14 @@ tenantRoutes.post("/", async (c) => {
   const git = (args: string[]) =>
     exec("git", ["-C", vaultDir, ...args], { env: gitEnv });
 
-  // 1) Working copy. With a Forgejo admin token + tenants-org configured, the
-  // customer gets a REAL private Forgejo repo `<org>/<slug>` that we clone (the
-  // token-URL stays in .git/config so push/pull work). Otherwise we fall back
-  // to a local-only repo (demo / not yet configured). gitRemote stored in the
-  // DB is ALWAYS untokenised — no credential at rest in the registry.
+  // 1) Forgejo repo. With a Forgejo admin token + tenants-org configured, the
+  // customer gets a REAL private Forgejo repo `<org>/<slug>`; otherwise we fall
+  // back to a local-only working copy (demo / not yet configured). This block
+  // ONLY talks to the Forgejo API — it produces the remote URL that the git
+  // provisioning below needs. gitRemote stored in the DB is ALWAYS untokenised
+  // — no credential at rest in the registry.
   let gitRemote = "";
+  let tokenUrl = "";
   const useForgejo = Boolean(
     config.forgejoAdminToken && config.forgejoTenantsOrg && config.forgejoBaseUrl,
   );
@@ -168,17 +171,22 @@ tenantRoutes.post("/", async (c) => {
       );
     }
     gitRemote = `${baseOrigin}/${org}/${slug}.git`;
-    const tokenUrl = gitRemote.replace(
-      "://",
-      `://oauth2:${config.forgejoAdminToken}@`,
-    );
-    await exec("git", ["clone", "--branch", "main", tokenUrl, vaultDir], { env: gitEnv });
-  } else {
-    await mkdir(vaultDir, { recursive: true });
-    await git(["init", "-b", "main"]);
+    tokenUrl = gitRemote.replace("://", `://oauth2:${config.forgejoAdminToken}@`);
   }
 
-  // 2) Baseline folders + customer folder-scope (Design 10.3). Owner unscoped.
+  // 2) Working copy — provisioned through the SHARED gitService primitive
+  // (Story 1.13), never raw exec: clear-in-place → init → remote add →
+  // fetch/checkout-or-bootstrap → initial commit → push. Identical mechanics to
+  // the setup wizard's own vault, just pointed at this tenant's directory. The
+  // token-URL stays in .git/config so push/pull keep working.
+  const provisioned = useForgejo
+    ? await provisionVaultDir({
+        targetDir: vaultDir,
+        remote: { url: tokenUrl, branch: "main" },
+      })
+    : await provisionVaultDir({ targetDir: vaultDir });
+
+  // 3) Baseline folders + customer folder-scope (Design 10.3). Owner unscoped.
   for (const dir of ["00_meta", "Freigabe", "RAW/kunde", "RAW/intern", "Wiki"]) {
     await mkdir(join(vaultDir, dir), { recursive: true });
     await writeFile(join(vaultDir, dir, ".gitkeep"), "", "utf8");
@@ -191,14 +199,18 @@ tenantRoutes.post("/", async (c) => {
     `    commit_prefix: "[agent:${agentId}]"\n`;
   await writeFile(join(vaultDir, "00_meta", "mcp-scopes.yaml"), scopesYaml, "utf8");
 
-  // 3) Commit, and push to Forgejo when a remote was provisioned.
+  // 4) Follow-up commit for the scaffolding written above — the tenant-specific
+  // half that provisioning does not own (analogous to `seedSkills()` running
+  // after the primary vault's provisioning in routes/setup.ts).
   await git(["add", "-A"]);
   await git(["commit", "-m", "chore: provision tenant vault"]);
   if (useForgejo) {
     await git(["push", "origin", "main"]);
   }
 
-  // 4) Registry: vault row + owner membership + customer MCP token (once).
+  // 5) Registry: vault row + owner membership + customer MCP token (once).
+  // `gitRemote` is the UNTOKENISED URL — never `provisioned.gitRemote`, which
+  // carries the admin token.
   await database().insert(vaults).values({
     id: vaultId,
     name,
@@ -206,7 +218,7 @@ tenantRoutes.post("/", async (c) => {
     kind,
     ownerId: admin.id,
     gitRemote,
-    gitBranch: "main",
+    gitBranch: provisioned.gitBranch,
   });
   await database().insert(vaultMemberships).values({
     userId: admin.id,

@@ -1,12 +1,21 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile, mkdir, stat } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 import { initCore } from "../util/coreConfig.js";
-import { save, pull, move, noteHistory, noteDiff, vaultActivity } from "./gitService.js";
+import {
+  save,
+  pull,
+  move,
+  noteHistory,
+  noteDiff,
+  vaultActivity,
+  provisionVaultDir,
+} from "./gitService.js";
 import { MergeConflictError, GitBackendError } from "../errors/GitError.js";
 
 const exec = promisify(execFile);
@@ -546,5 +555,166 @@ describe("gitService — vault-wide activity / streak (Story 11.11 / K-3)", () =
     const activity = await vaultActivity(1);
     expect(activity.days).toHaveLength(1);
     expect(activity.days[0].date).toBe(new Date().toISOString().slice(0, 10));
+  });
+});
+
+// ─── Story 1.13: parameterized provisioning (provisionVaultDir) ────────────
+//
+// The primary vault (`config().vaultDir`) is deliberately a DIFFERENT directory
+// in every test here: that is the whole point of the parameterization — the
+// multi-tenant caller provisions `<vaultsRoot>/<vaultId>`, never the singleton.
+
+async function setupProvisionFixture(): Promise<{
+  base: string;
+  primaryVault: string;
+  seededRemote: string;
+  emptyRemote: string;
+  cleanup: () => Promise<void>;
+}> {
+  const base = await mkdtemp(join(tmpdir(), "lokyy-provision-"));
+
+  // The singleton vault — must stay byte-identical across every provisioning.
+  const primaryVault = join(base, "primary");
+  await g(base, ["init", "--initial-branch=main", primaryVault]);
+  await writeFile(join(primaryVault, "keep.md"), "primary\n", "utf8");
+  await g(primaryVault, ["add", "--", "keep.md"]);
+  await g(primaryVault, ["commit", "-m", "primary seed"]);
+
+  // Remote #1: already carries a `main` with content → fetch+checkout path.
+  const seededRemote = join(base, "seeded.git");
+  await g(base, ["init", "--bare", "--initial-branch=main", seededRemote]);
+  const seedClone = join(base, "seed-clone");
+  await g(base, ["clone", seededRemote, seedClone]);
+  await mkdir(join(seedClone, "20_notes"), { recursive: true });
+  await writeFile(join(seedClone, "20_notes/from-remote.md"), "remote body\n", "utf8");
+  await g(seedClone, ["add", "-A"]);
+  await g(seedClone, ["commit", "-m", "seed remote"]);
+  await g(seedClone, ["push", "origin", "main"]);
+
+  // Remote #2: bare, zero commits → empty-repo bootstrap path.
+  const emptyRemote = join(base, "empty.git");
+  await g(base, ["init", "--bare", "--initial-branch=main", emptyRemote]);
+
+  return {
+    base,
+    primaryVault,
+    seededRemote,
+    emptyRemote,
+    cleanup: async () => {
+      await rm(base, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("gitService.provisionVaultDir — arbitrary target directory (Story 1.13)", () => {
+  let f: Awaited<ReturnType<typeof setupProvisionFixture>>;
+
+  beforeEach(async () => {
+    f = await setupProvisionFixture();
+    useVault(f.primaryVault, ""); // singleton points somewhere ELSE entirely
+  });
+  afterEach(async () => {
+    if (f) await f.cleanup();
+  });
+
+  /** The primary vault must be untouched by every provisioning below. */
+  async function expectPrimaryUntouched(): Promise<void> {
+    expect(await readFile(join(f.primaryVault, "keep.md"), "utf8")).toBe("primary\n");
+    expect(await g(f.primaryVault, ["log", "--pretty=%s"])).toBe("primary seed");
+  }
+
+  it("checks out an existing remote branch into a target dir that is NOT config().vaultDir", async () => {
+    const target = join(f.base, "tenant-a");
+
+    const result = await provisionVaultDir({
+      targetDir: target,
+      remote: { url: f.seededRemote, branch: "main" },
+    });
+
+    expect(result).toEqual({ gitRemote: f.seededRemote, gitBranch: "main" });
+    expect(await readFile(join(target, "20_notes/from-remote.md"), "utf8")).toBe(
+      "remote body\n",
+    );
+    expect(await g(target, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+    expect(await g(target, ["remote", "get-url", "origin"])).toBe(f.seededRemote);
+    await expectPrimaryUntouched();
+  });
+
+  it("bootstraps an EMPTY remote (.gitkeep → commit → push -u) in the target dir", async () => {
+    const target = join(f.base, "tenant-b");
+
+    const result = await provisionVaultDir({
+      targetDir: target,
+      remote: { url: f.emptyRemote, branch: "main" },
+    });
+
+    expect(result).toEqual({ gitRemote: f.emptyRemote, gitBranch: "main" });
+    expect(existsSync(join(target, ".gitkeep"))).toBe(true);
+    expect(await g(target, ["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+    // The bootstrap commit actually reached the (previously commit-less) remote.
+    expect(await g(f.emptyRemote, ["log", "--pretty=%s", "main"])).toBe(
+      "chore: initialize lokyy vault",
+    );
+    await expectPrimaryUntouched();
+  });
+
+  it("provisions a LOCAL-ONLY target dir (no remote add, no push)", async () => {
+    const target = join(f.base, "tenant-local");
+
+    const result = await provisionVaultDir({ targetDir: target });
+
+    expect(result).toEqual({ gitRemote: "", gitBranch: "main" });
+    expect(existsSync(join(target, ".gitkeep"))).toBe(true);
+    expect(await g(target, ["log", "--pretty=%s"])).toBe(
+      "chore: initialize lokyy vault (local-only)",
+    );
+    await expect(g(target, ["remote", "get-url", "origin"])).rejects.toBeTruthy();
+    await expectPrimaryUntouched();
+  });
+
+  it("clears the target dir CONTENTS in place — never rmdir's the mount point itself", async () => {
+    const target = join(f.base, "tenant-mount");
+    await mkdir(join(target, "stale", "nested"), { recursive: true });
+    await writeFile(join(target, "stale/nested/junk.md"), "junk\n", "utf8");
+    await g(target, ["init", "--initial-branch=main"]); // a stale .git too
+    const inoBefore = (await stat(target)).ino;
+
+    await provisionVaultDir({ targetDir: target });
+
+    // Same directory object (inode preserved) = the mount was never removed.
+    expect((await stat(target)).ino).toBe(inoBefore);
+    expect(existsSync(join(target, "stale"))).toBe(false);
+    expect(existsSync(join(target, ".gitkeep"))).toBe(true);
+  });
+
+  it("provisions two DIFFERENT target dirs concurrently, each independently correct (AC#3)", async () => {
+    const a = join(f.base, "par-a");
+    const b = join(f.base, "par-b");
+
+    const [ra, rb] = await Promise.all([
+      provisionVaultDir({ targetDir: a, remote: { url: f.seededRemote, branch: "main" } }),
+      provisionVaultDir({ targetDir: b }),
+    ]);
+
+    expect(ra.gitRemote).toBe(f.seededRemote);
+    expect(rb.gitRemote).toBe("");
+    expect(await readFile(join(a, "20_notes/from-remote.md"), "utf8")).toBe(
+      "remote body\n",
+    );
+    // The local-only vault must NOT have inherited the other's remote content.
+    expect(existsSync(join(b, "20_notes/from-remote.md"))).toBe(false);
+    expect(existsSync(join(b, ".gitkeep"))).toBe(true);
+    await expectPrimaryUntouched();
+  });
+
+  it("surfaces a non-empty-repo remote failure as an error (unchanged provisioning convention)", async () => {
+    const target = join(f.base, "tenant-bad-remote");
+
+    await expect(
+      provisionVaultDir({
+        targetDir: target,
+        remote: { url: join(f.base, "does-not-exist.git"), branch: "main" },
+      }),
+    ).rejects.toThrow();
   });
 });

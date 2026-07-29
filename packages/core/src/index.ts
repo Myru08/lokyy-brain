@@ -45,6 +45,11 @@ export {
   // Local-only vault provisioning (setup wizard "Ohne Forgejo fortfahren"):
   // same empty-repo bootstrap as setupVaultFromForgejo, minus remote + push.
   initLocalVault,
+  // Story 1.13 — the parameterized git-mechanics primitive BOTH of the two
+  // wrappers above delegate to. Takes an explicit target directory (+ optional
+  // credentialed remote), so the multi-tenant POST /api/tenants route can
+  // provision `<vaultsRoot>/<vaultId>` through gitService instead of raw exec.
+  provisionVaultDir,
   // Story 10.17 — read-only note version-history + diff. Consumed by the MCP
   // get_history / get_note_diff tools (Epic 10 Wave 4).
   noteHistory,
@@ -54,6 +59,8 @@ export {
   // touches gitService (R-4).
   vaultActivity,
   type GitConfig,
+  type ProvisionRemote,
+  type ProvisionVaultOpts,
   type NoteHistoryEntry,
   type NoteDiff,
   type SyncResult,
