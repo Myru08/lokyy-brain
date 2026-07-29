@@ -635,6 +635,30 @@ if [ "${COMPOSE_EXIT}" -ne 0 ] && grep -q "port is already allocated" "${COMPOSE
   say "    Wir räumen den alten Stack automatisch ab und versuchen es genau einmal erneut."
   say ""
   ${DOCKER_SUDO} docker compose -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1
+
+  # "down" kehrt zurück, sobald Docker die Container entfernt hat — der
+  # dazugehörige docker-proxy-Prozess gibt den Host-Port dabei aber nicht
+  # IMMER synchron frei. Ein sofortiger Retry kann deshalb genau denselben
+  # "port is already allocated"-Fehler nochmal auslösen, obwohl in Wahrheit
+  # nur unser eigener alter Prozess noch beim Aufräumen ist. Deshalb hier
+  # aktiv warten, bis alle benötigten Ports laut TCP-Check wirklich frei sind
+  # (max. 10 Sekunden) — statt blind sofort neu zu versuchen.
+  ports_wait_deadline=10
+  ports_waited=0
+  while [ "${ports_waited}" -lt "${ports_wait_deadline}" ]; do
+    still_busy=0
+    for entry in ${PORTS_TO_CHECK}; do
+      port="${entry%%:*}"
+      if is_port_in_use "${port}"; then
+        still_busy=1
+        break
+      fi
+    done
+    [ "${still_busy}" -eq 0 ] && break
+    sleep 1
+    ports_waited=$((ports_waited + 1))
+  done
+
   compose_up
   COMPOSE_EXIT=$?
   say ""

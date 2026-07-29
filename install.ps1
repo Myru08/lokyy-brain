@@ -531,6 +531,27 @@ if ($composeExit -ne 0 -and $composeOutput -match 'port is already allocated') {
     # Exit-Code bewusst ignorieren.
     docker compose -f $ComposeFile down --remove-orphans 2>&1 | Out-Null
 
+    # "down" kehrt zurück, sobald Docker die Container entfernt hat -- der
+    # Host-Port wird dabei aber nicht IMMER synchron wieder freigegeben. Ein
+    # sofortiger Retry kann deshalb denselben Fehler nochmal auslösen, obwohl
+    # nur unser eigener alter Prozess noch beim Aufräumen ist. Deshalb aktiv
+    # warten, bis alle benötigten Ports laut TCP-Check wirklich frei sind
+    # (max. 10 Sekunden) -- statt blind sofort neu zu versuchen.
+    $portsWaitDeadline = 10
+    $portsWaited = 0
+    while ($portsWaited -lt $portsWaitDeadline) {
+        $stillBusy = $false
+        foreach ($entry in $PortsToCheck) {
+            if (Test-PortInUse -Port $entry.Port) {
+                $stillBusy = $true
+                break
+            }
+        }
+        if (-not $stillBusy) { break }
+        Start-Sleep -Seconds 1
+        $portsWaited++
+    }
+
     $composeExit = Invoke-ComposeUp -LogPath $composeLog
     $composeOutput = Get-ComposeLogText -LogPath $composeLog
     Write-Line ''
