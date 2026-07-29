@@ -14,6 +14,8 @@
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
 #   6. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
+#      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
+#       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
 #   7. Warten, bis die Web-UI erreichbar ist (erster Start baut Images = dauert)
 #   8. Browser öffnen
 #   9. Kurze Zusammenfassung "wie geht es weiter"
@@ -589,6 +591,12 @@ fi
 # Schritt 6 — Den Stack starten
 # Beim allerersten Mal werden hier Images gebaut und heruntergeladen.
 # Das dauert je nach Internetverbindung durchaus ein paar Minuten.
+#
+# Bekannter Docker-Stolperstein beim ZWEITEN Lauf: aus einem früheren, evtl.
+# abgebrochenen "up" hängt noch ein Container-Rest am Port ("port is already
+# allocated"). Genau diesen Fall räumen wir automatisch auf (down) und starten
+# danach GENAU EINMAL neu. Alle anderen Fehler (kein Platz, kein Internet,
+# Build kaputt) werden NICHT wiederholt — das würde nur Zeit kosten.
 # ─────────────────────────────────────────────────────────────────────────────
 
 step "Schritt 6/9 — Lokyy Brain starten (beim ersten Mal dauert das ein paar Minuten)"
@@ -599,14 +607,82 @@ if [ ! -f "${COMPOSE_FILE}" ]; then
   exit 4
 fi
 
+# Wir brauchen die Ausgabe von Compose zweimal: live auf dem Bildschirm (der
+# Build läuft minutenlang — ohne Ausgabe sieht das aus wie ein Absturz) UND als
+# Datei, um sie im Fehlerfall auswerten zu können. Beides zugleich = tee.
+# Kein Suffix nach den X-en: das mag das mktemp von macOS/BSD nicht.
+COMPOSE_LOG="$(mktemp "${TMPDIR:-/tmp}/lokyy-compose-XXXXXX" 2>/dev/null)"
+if [ -z "${COMPOSE_LOG}" ]; then
+  COMPOSE_LOG="/tmp/lokyy-compose-$$"
+fi
+
+# Startet den Stack und legt die Ausgabe in ${COMPOSE_LOG} ab.
+# Rückgabe: der Exit-Code von docker compose — NICHT der von tee. Genau dafür
+# ist PIPESTATUS da (bash-Erweiterung; dieses Script läuft per Shebang in bash).
+compose_up() {
+  ${DOCKER_SUDO} docker compose -f "${COMPOSE_FILE}" up -d --build 2>&1 | tee "${COMPOSE_LOG}"
+  return "${PIPESTATUS[0]}"
+}
+
 say ""
-${DOCKER_SUDO} docker compose -f "${COMPOSE_FILE}" up -d --build
+compose_up
 COMPOSE_EXIT=$?
 say ""
+
+# Der selbstheilende Fall: Port-Rest aus einem früheren Lauf.
+if [ "${COMPOSE_EXIT}" -ne 0 ] && grep -q "port is already allocated" "${COMPOSE_LOG}" 2>/dev/null; then
+  warn "Ein Port ist noch belegt — das sieht nach einem Rest aus einem früheren Start aus."
+  say "    Wir räumen den alten Stack automatisch ab und versuchen es genau einmal erneut."
+  say ""
+  ${DOCKER_SUDO} docker compose -f "${COMPOSE_FILE}" down --remove-orphans >/dev/null 2>&1
+  compose_up
+  COMPOSE_EXIT=$?
+  say ""
+fi
 
 if [ "${COMPOSE_EXIT}" -ne 0 ]; then
   fail "Der Start ist fehlgeschlagen (docker compose Exit-Code ${COMPOSE_EXIT})."
   say ""
+
+  # Steht in der Meldung ein konkreter Port? Dann sagen wir dem Menschen auch
+  # gleich, WER ihn hält — statt ihn selbst auf die Suche zu schicken.
+  CONFLICT_PORT="$(grep -oE '0\.0\.0\.0:[0-9]+|Bind for [^ ]*:[0-9]+' "${COMPOSE_LOG}" 2>/dev/null | grep -oE '[0-9]+$' | head -n 1)"
+
+  if [ -n "${CONFLICT_PORT}" ]; then
+    # Bewusst OHNE sudo: eine unerwartete Passwort-Abfrage mitten in einer
+    # Fehlermeldung ist die schlechtere Erfahrung. Ohne Root-Rechte bleibt die
+    # Prozess-Spalte womöglich leer — die Belegung sieht man trotzdem.
+    PORT_HOLDER=""
+    if command -v ss >/dev/null 2>&1; then
+      PORT_HOLDER="$(ss -tulpn 2>/dev/null | grep ":${CONFLICT_PORT} ")"
+    fi
+    if [ -z "${PORT_HOLDER}" ] && command -v lsof >/dev/null 2>&1; then
+      PORT_HOLDER="$(lsof -i ":${CONFLICT_PORT}" 2>/dev/null)"
+    fi
+    if [ -z "${PORT_HOLDER}" ]; then
+      # Vielleicht hält ein ganz anderes Docker-Projekt den Port.
+      PORT_HOLDER="$(${DOCKER_SUDO} docker ps --filter "publish=${CONFLICT_PORT}" --format '{{.Names}}  ({{.Image}})' 2>/dev/null)"
+    fi
+
+    say "    Port ${C_BOLD}${CONFLICT_PORT}${C_RESET} ist belegt — auch nach dem automatischen Aufräumen."
+    if [ -n "${PORT_HOLDER}" ]; then
+      say ""
+      say "    Belegt von:"
+      printf '%s\n' "${PORT_HOLDER}" | while IFS= read -r holder_line; do
+        say "      ${holder_line}"
+      done
+      say ""
+      say "    Bitte dieses Programm beenden (oder in ${COMPOSE_FILE} einen anderen"
+      say "    Port eintragen) und dieses Script erneut aufrufen."
+    else
+      say "    Wer den Port hält, war ohne Administrator-Rechte nicht zu sehen."
+      say "    Mehr Details bekommst du mit:"
+      say ""
+      say "        ${C_BOLD}sudo ss -tulpn | grep ${CONFLICT_PORT}${C_RESET}"
+    fi
+    say ""
+  fi
+
   say "    Die Fehlermeldung von Docker steht direkt darüber. Häufige Ursachen:"
   say "      • Ein Port ist wirklich belegt (siehe Warnungen oben)"
   say "      • Kein Speicherplatz mehr — aufräumen mit ${C_BOLD}docker system prune${C_RESET}"
@@ -614,9 +690,11 @@ if [ "${COMPOSE_EXIT}" -ne 0 ]; then
   say ""
   say "    Logs ansehen:  ${C_BOLD}docker compose -f ${COMPOSE_FILE} logs${C_RESET}"
   say ""
+  rm -f "${COMPOSE_LOG}"
   exit 4
 fi
 
+rm -f "${COMPOSE_LOG}"
 ok "Container gestartet."
 
 # ─────────────────────────────────────────────────────────────────────────────

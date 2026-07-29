@@ -13,6 +13,8 @@
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
 #   6. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
+#      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
+#       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
 #   7. Warten, bis die Web-UI erreichbar ist (erster Start baut Images = dauert)
 #   8. Browser öffnen
 #   9. Kurze Zusammenfassung "wie geht es weiter"
@@ -452,6 +454,12 @@ if ($portsBusy -gt 0) {
 # Schritt 6 — Den Stack starten
 # Beim allerersten Mal werden hier Images gebaut und heruntergeladen.
 # Das dauert je nach Internetverbindung durchaus ein paar Minuten.
+#
+# Bekannter Docker-Stolperstein beim ZWEITEN Lauf: aus einem früheren, evtl.
+# abgebrochenen "up" hängt noch ein Container-Rest am Port ("port is already
+# allocated"). Genau diesen Fall räumen wir automatisch auf (down) und starten
+# danach GENAU EINMAL neu. Alle anderen Fehler (kein Platz, kein Internet,
+# Build kaputt) werden NICHT wiederholt — das würde nur Zeit kosten.
 # ─────────────────────────────────────────────────────────────────────────────
 
 Write-Step 'Schritt 6/9 — Lokyy Brain starten (beim ersten Mal dauert das ein paar Minuten)'
@@ -462,14 +470,130 @@ if (-not (Test-Path $ComposeFile)) {
     exit 4
 }
 
+$composeLog = Join-Path $env:TEMP "lokyy-compose-$PID.log"
+
+# Startet den Stack. Die Ausgabe brauchen wir zweimal: live auf dem Bildschirm
+# (der Build läuft minutenlang — ohne Ausgabe sieht das aus wie ein Absturz)
+# UND als Datei, um sie im Fehlerfall auswerten zu können. Beides zugleich
+# leistet Tee-Object.
+#
+# Vier Feinheiten, die hier bewusst so stehen:
+#   • 2>&1 holt die Fehlerausgabe von docker in die normale Pipeline — sonst
+#     landet ausgerechnet die entscheidende Zeile ("port is already allocated")
+#     nicht in der Datei. Das ist unbedenklich, weil ganz oben
+#     $ErrorActionPreference = 'Continue' gesetzt ist.
+#   • ForEach-Object { "$_" } macht daraus wieder schlichten Text. Docker
+#     schreibt seinen Fortschritt ("Container ... Started") auf die
+#     Fehlerausgabe; ohne diese Umwandlung würde Windows PowerShell jede
+#     einzelne Bauzeile als roten Fehlerblock mit CategoryInfo-Anhang malen.
+#   • Out-Host am Ende: ohne das würden die durchgereichten Zeilen zum
+#     RÜCKGABEWERT dieser Funktion — wir wollen aber nur den Exit-Code.
+#   • $LASTEXITCODE setzen ausschließlich EXTERNE Programme; Cmdlets wie
+#     ForEach-Object, Tee-Object oder Out-Host fassen ihn nicht an. Nach der
+#     Pipeline steht darin also weiterhin der Exit-Code von docker selbst.
+#     (Anders als bei "Select-Object -First 1" — das kann ein Programm
+#     vorzeitig beenden und den Exit-Code verfälschen; die Cmdlets hier lesen
+#     die Ausgabe immer vollständig zu Ende.)
+function Invoke-ComposeUp {
+    param([string]$LogPath)
+
+    docker compose -f $ComposeFile up -d --build 2>&1 |
+        ForEach-Object { "$_" } |
+        Tee-Object -FilePath $LogPath |
+        Out-Host
+    return $LASTEXITCODE
+}
+
+# Liest das Protokoll als einen einzigen Text zurück. Get-Content erkennt die
+# Kodierung von Tee-Object selbst (BOM) — und die Zeichenketten, nach denen wir
+# suchen, sind ohnehin reines ASCII.
+function Get-ComposeLogText {
+    param([string]$LogPath)
+
+    if (-not (Test-Path $LogPath)) { return '' }
+    $text = Get-Content -Path $LogPath -Raw -ErrorAction SilentlyContinue
+    if ($null -eq $text) { return '' }
+    return [string]$text
+}
+
 Write-Line ''
-docker compose -f $ComposeFile up -d --build
-$composeExit = $LASTEXITCODE
+$composeExit = Invoke-ComposeUp -LogPath $composeLog
+$composeOutput = Get-ComposeLogText -LogPath $composeLog
 Write-Line ''
+
+# Der selbstheilende Fall: Port-Rest aus einem früheren Lauf.
+if ($composeExit -ne 0 -and $composeOutput -match 'port is already allocated') {
+    Write-Warn 'Ein Port ist noch belegt — das sieht nach einem Rest aus einem früheren Start aus.'
+    Write-Line '    Wir räumen den alten Stack automatisch ab und versuchen es genau einmal erneut.'
+    Write-Line ''
+
+    # Aufräumen ist ein Versuch, keine Bedingung: Ausgabe unterdrücken,
+    # Exit-Code bewusst ignorieren.
+    docker compose -f $ComposeFile down --remove-orphans 2>&1 | Out-Null
+
+    $composeExit = Invoke-ComposeUp -LogPath $composeLog
+    $composeOutput = Get-ComposeLogText -LogPath $composeLog
+    Write-Line ''
+}
 
 if ($composeExit -ne 0) {
     Write-Fail "Der Start ist fehlgeschlagen (docker compose Exit-Code $composeExit)."
     Write-Line ''
+
+    # Steht in der Meldung ein konkreter Port? Dann sagen wir dem Menschen auch
+    # gleich, WER ihn hält — statt ihn selbst auf die Suche zu schicken.
+    $conflictPort = $null
+    if ($composeOutput -match '0\.0\.0\.0:(\d+)') {
+        $conflictPort = $Matches[1]
+    } elseif ($composeOutput -match 'Bind for \S*?:(\d+)') {
+        $conflictPort = $Matches[1]
+    }
+
+    if ($conflictPort) {
+        $holderText = $null
+
+        # Get-NetTCPConnection gibt es erst ab Windows 8 / Server 2012. Fehlt es,
+        # überspringen wir diesen Weg still.
+        if (Get-Command Get-NetTCPConnection -ErrorAction SilentlyContinue) {
+            try {
+                $conn = Get-NetTCPConnection -LocalPort ([int]$conflictPort) -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($conn) {
+                    $proc = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+                    if ($proc) {
+                        $holderText = "$($proc.ProcessName) (PID $($conn.OwningProcess))"
+                    } else {
+                        $holderText = "PID $($conn.OwningProcess)"
+                    }
+                }
+            } catch {
+                $holderText = $null
+            }
+        }
+
+        # Vielleicht hält ein ganz anderes Docker-Projekt den Port.
+        if (-not $holderText) {
+            $dockerHolder = (docker ps --filter "publish=$conflictPort" --format '{{.Names}}  ({{.Image}})' 2>$null)
+            if ($dockerHolder) {
+                $holderText = @($dockerHolder)[0]
+            }
+        }
+
+        Write-Line "    Port $conflictPort ist belegt — auch nach dem automatischen Aufräumen."
+        if ($holderText) {
+            Write-Line ''
+            Write-Line "    Belegt von: $holderText"
+            Write-Line ''
+            Write-Line "    Bitte dieses Programm beenden (oder in $ComposeFile einen anderen"
+            Write-Line '    Port eintragen) und dieses Script erneut aufrufen.'
+        } else {
+            Write-Line '    Wer den Port hält, war hier nicht zu ermitteln.'
+            Write-Line '    Mehr Details bekommst du in einer PowerShell mit Administrator-Rechten:'
+            Write-Line ''
+            Write-Host "        Get-NetTCPConnection -LocalPort $conflictPort | Select-Object OwningProcess" -ForegroundColor White
+        }
+        Write-Line ''
+    }
+
     Write-Line '    Die Fehlermeldung von Docker steht direkt darüber. Häufige Ursachen:'
     Write-Line '      - Ein Port ist wirklich belegt (siehe Warnungen oben)'
     Write-Line '      - Kein Speicherplatz mehr — aufräumen mit: docker system prune'
@@ -477,9 +601,11 @@ if ($composeExit -ne 0) {
     Write-Line ''
     Write-Line "    Logs ansehen:  docker compose -f $ComposeFile logs"
     Write-Line ''
+    Remove-Item -Path $composeLog -Force -ErrorAction SilentlyContinue
     exit 4
 }
 
+Remove-Item -Path $composeLog -Force -ErrorAction SilentlyContinue
 Write-Ok 'Container gestartet.'
 
 # ─────────────────────────────────────────────────────────────────────────────
