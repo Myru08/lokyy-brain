@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -250,5 +250,182 @@ describe.skipIf(!DB_URL)("POST /api/tenants — local-only provisioning (Story 1
       body: JSON.stringify({ name: "No Session", slug: `${slug}-x`, agentId }),
     });
     expect(res.status).toBe(401);
+  });
+});
+
+/**
+ * Story 1.14 AC#7 — `PUT /api/tenants/:vaultId/scope` after the handler was
+ * rewired from raw `exec("git", …)` inside a swallowing `try/catch` onto the
+ * shared `saveVaultFile` primitive in `@lokyy/core`.
+ *
+ * The load-bearing case is the LAST one: a genuine remote divergence now
+ * surfaces as a 409 instead of the old silent `{ ok: true }`. Scope data is
+ * security-relevant — reporting a failed push as success is the bug this
+ * story fixes.
+ *
+ * Same gate and setup convention as the suite above (`LOKYY_TEST_DATABASE_URL`,
+ * real Postgres, real admin session). The vault is provisioned local-only via
+ * POST and then given a REAL bare remote, so push/pull actually happen without
+ * needing the Forgejo API.
+ */
+describe.skipIf(!DB_URL)("PUT /api/tenants/:vaultId/scope — error surfacing (Story 1.14)", () => {
+  let core: typeof import("@lokyy/core");
+  let app: Hono;
+  let base: string;
+  let adminId: string;
+  let sessionId: string;
+  let cookie: string;
+  let vaultId: string;
+  let vaultDir: string;
+  let bareRemote: string;
+  let otherClone: string;
+
+  const slug = `scope-${Date.now().toString(36)}`;
+  const agentId = "kunde-scope";
+
+  const GIT_ENV = {
+    ...process.env,
+    GIT_AUTHOR_NAME: "lokyy-test",
+    GIT_AUTHOR_EMAIL: "test@localhost",
+    GIT_COMMITTER_NAME: "lokyy-test",
+    GIT_COMMITTER_EMAIL: "test@localhost",
+    LC_ALL: "C",
+    LANG: "C",
+  };
+  const g = async (cwd: string, args: string[]): Promise<string> => {
+    const { stdout } = await exec("git", args, { cwd, env: GIT_ENV });
+    return stdout.trim();
+  };
+
+  beforeAll(async () => {
+    base = await mkdtemp(join(tmpdir(), "lokyy-scope-"));
+
+    process.env.DATABASE_URL = DB_URL!;
+    process.env.VAULT_DIR = join(base, "vault");
+    process.env.GIT_AUTHOR_NAME = "lokyy-test";
+    process.env.GIT_AUTHOR_EMAIL = "test@localhost";
+    delete process.env.FORGEJO_ADMIN_TOKEN;
+    delete process.env.FORGEJO_TENANTS_ORG;
+    delete process.env.FORGEJO_BASE_URL;
+
+    core = await import("@lokyy/core");
+    core.initDb(DB_URL!);
+    await core.runMigrations(DB_URL!);
+    core.initCore({
+      vaultDir: join(base, "vault"),
+      vaultsRoot: join(base, "vaults"),
+      gitRemote: "",
+      gitBranch: "main",
+      gitAuthorName: "lokyy-test",
+      gitAuthorEmail: "test@localhost",
+    });
+
+    adminId = core.generateUlid();
+    await core.database().insert(core.users).values({
+      id: adminId,
+      email: `admin-${adminId}@test.local`,
+      passwordHash: "not-a-real-hash",
+      name: "Test Admin",
+      role: "admin",
+    });
+    sessionId = core.generateUlid();
+    await core.database().insert(core.sessions).values({
+      id: sessionId,
+      userId: adminId,
+      expiresAt: new Date(Date.now() + 3_600_000),
+    });
+    cookie = `lokyy_session=${sessionId}`;
+
+    const { tenantRoutes } = await import("./tenants.js");
+    app = new Hono();
+    app.route("/api/tenants", tenantRoutes);
+
+    const res = await app.request("/api/tenants", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ name: "Scope GmbH", slug, agentId }),
+    });
+    vaultId = (await res.json()).vaultId;
+    vaultDir = core.vaultWorkingCopyPath(vaultId);
+
+    // Give the local-only working copy a REAL remote so push/pull actually run
+    // (the Forgejo API is not involved — a bare repo behaves identically here).
+    bareRemote = join(base, "tenant-remote.git");
+    await g(base, ["init", "--bare", "--initial-branch=main", bareRemote]);
+    await g(vaultDir, ["remote", "add", "origin", bareRemote]);
+    await g(vaultDir, ["push", "-u", "origin", "main"]);
+
+    // The concurrent writer used by the conflict case below.
+    otherClone = join(base, "other");
+    await g(base, ["clone", bareRemote, otherClone]);
+  }, 120_000);
+
+  afterAll(async () => {
+    if (core && vaultId) {
+      await core
+        .database()
+        .delete(core.vaultMemberships)
+        .where(eq(core.vaultMemberships.vaultId, vaultId));
+      await core.database().delete(core.vaults).where(eq(core.vaults.id, vaultId));
+    }
+    if (core && adminId) {
+      await core.database().delete(core.sessions).where(eq(core.sessions.id, sessionId));
+      await core.database().delete(core.users).where(eq(core.users.id, adminId));
+    }
+    if (core) await core.closeDb();
+    if (base) await rm(base, { recursive: true, force: true });
+  });
+
+  const putScope = (readGlobs: string[], writeGlobs: string[]) =>
+    app.request(`/api/tenants/${vaultId}/scope`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Cookie: cookie },
+      body: JSON.stringify({ agentId, readGlobs, writeGlobs }),
+    });
+
+  it("commits AND pushes the scope through gitService on the happy path", async () => {
+    const res = await putScope(["Freigabe/**"], ["Freigabe/**"]);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, agentId });
+
+    const yaml = await readFile(join(vaultDir, "00_meta", "mcp-scopes.yaml"), "utf8");
+    expect(yaml).toContain(`read: ["Freigabe/**"]`);
+    // The change actually reached the remote — the old raw-exec path swallowed
+    // a failed push here.
+    expect(await g(bareRemote, ["log", "-1", "--pretty=%s", "main"])).toBe(
+      "chore: update tenant scope",
+    );
+    expect(await g(bareRemote, ["show", "main:00_meta/mcp-scopes.yaml"])).toContain(
+      `read: ["Freigabe/**"]`,
+    );
+  });
+
+  it("still succeeds when the scope is unchanged (nothing to commit)", async () => {
+    const res = await putScope(["Freigabe/**"], ["Freigabe/**"]);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true });
+    // No second commit was created for identical content.
+    const log = await g(vaultDir, ["log", "--pretty=%s"]);
+    expect(log.split("\n").filter((l) => l === "chore: update tenant scope")).toHaveLength(1);
+  });
+
+  it("returns 409 instead of silently swallowing a real merge conflict (AC#5)", async () => {
+    // A concurrent writer publishes DIFFERENT scope bytes first.
+    await g(otherClone, ["pull", "origin", "main"]);
+    await writeFile(
+      join(otherClone, "00_meta", "mcp-scopes.yaml"),
+      `scopes:\n  ${agentId}:\n    read: ["RAW/intern/**"]\n`,
+      "utf8",
+    );
+    await g(otherClone, ["add", "-A"]);
+    await g(otherClone, ["commit", "-m", "their scope"]);
+    await g(otherClone, ["push", "origin", "main"]);
+
+    const res = await putScope(["Wiki/**"], ["Wiki/**"]);
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: "merge-conflict" });
   });
 });

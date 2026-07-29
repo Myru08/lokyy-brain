@@ -50,6 +50,11 @@ export {
   // credentialed remote), so the multi-tenant POST /api/tenants route can
   // provision `<vaultsRoot>/<vaultId>` through gitService instead of raw exec.
   provisionVaultDir,
+  // Story 1.14 — the parameterized write-and-sync primitive `save` delegates
+  // to. Takes an explicit target directory, so PUT /api/tenants/:vaultId/scope
+  // can commit its mcp-scopes.yaml through gitService instead of raw exec —
+  // with real typed errors instead of a swallowed catch.
+  saveVaultFile,
   // Story 10.17 — read-only note version-history + diff. Consumed by the MCP
   // get_history / get_note_diff tools (Epic 10 Wave 4).
   noteHistory,
@@ -61,6 +66,7 @@ export {
   type GitConfig,
   type ProvisionRemote,
   type ProvisionVaultOpts,
+  type SaveVaultFileOpts,
   type NoteHistoryEntry,
   type NoteDiff,
   type SyncResult,

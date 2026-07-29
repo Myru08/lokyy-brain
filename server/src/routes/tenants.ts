@@ -16,6 +16,10 @@ import {
   listMcpTokens,
   revokeMcpToken,
   provisionVaultDir,
+  saveVaultFile,
+  GitBackendError,
+  MergeConflictError,
+  PreCommitHookError,
   type McpRole,
 } from "@lokyy/core";
 import { config } from "../config.js";
@@ -402,24 +406,45 @@ tenantRoutes.put("/:vaultId/scope", async (c) => {
   const yaml =
     `scopes:\n  ${agentId}:\n    read: ${JSON.stringify(readGlobs)}\n` +
     `    write: ${JSON.stringify(writeGlobs)}\n    commit_prefix: "[agent:${agentId}]"\n`;
-  await mkdir(join(vaultDir, "00_meta"), { recursive: true });
-  await writeFile(join(vaultDir, "00_meta", "mcp-scopes.yaml"), yaml, "utf8");
 
-  const gitEnv = {
-    ...process.env,
-    GIT_AUTHOR_NAME: config.gitAuthorName,
-    GIT_AUTHOR_EMAIL: config.gitAuthorEmail,
-    GIT_COMMITTER_NAME: config.gitAuthorName,
-    GIT_COMMITTER_EMAIL: config.gitAuthorEmail,
-  };
-  const git = (args: string[]) => exec("git", ["-C", vaultDir, ...args], { env: gitEnv });
+  // Write + commit + push through the SHARED gitService primitive (Story 1.14),
+  // never raw exec. Unchanged content is a no-op inside `saveVaultFile` (its
+  // `status --porcelain` check), so a re-save of the identical scope still
+  // succeeds rather than erroring on "nothing to commit".
   try {
-    await git(["add", "--", "00_meta/mcp-scopes.yaml"]);
-    await git(["commit", "-m", "chore: update tenant scope"]);
-    if (vault.gitRemote) await git(["push", "origin", "main"]);
-  } catch {
-    // "nothing to commit" / transient push error — file is written, scope is
-    // already live for the MCP (which reads it per request).
+    await saveVaultFile({
+      targetDir: vaultDir,
+      relPath: "00_meta/mcp-scopes.yaml",
+      content: yaml,
+      message: "chore: update tenant scope",
+      // The tenant's own branch — not the primary vault's `config().gitBranch`.
+      ...(vault.gitBranch ? { branch: vault.gitBranch } : {}),
+    });
+  } catch (err) {
+    // Story 1.14 AC#5 — deliberate behavior change: this used to be swallowed.
+    // Scope data is security-relevant, so a failed commit/push must NOT be
+    // reported as success. Zone 2: map the typed git error to an HTTP status.
+    console.error("[tenants] scope update failed", { vaultId, err });
+    if (err instanceof MergeConflictError) {
+      return c.json({ error: "merge-conflict", message: err.message }, 409);
+    }
+    if (err instanceof PreCommitHookError) {
+      return c.json(
+        { error: "scope-rejected", message: err.message, detail: err.stderr || undefined },
+        422,
+      );
+    }
+    if (err instanceof GitBackendError) {
+      return c.json(
+        {
+          error: "git-backend-unavailable",
+          message: err.message,
+          retryable: err.transient,
+        },
+        503,
+      );
+    }
+    return c.json({ error: "scope-update-failed" }, 500);
   }
 
   return c.json({ ok: true, agentId, readGlobs, writeGlobs });

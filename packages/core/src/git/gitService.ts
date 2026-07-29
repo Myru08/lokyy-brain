@@ -104,11 +104,19 @@ function saveKey(relPath: string): string {
   return `${config().vaultDir}\u0000${relPath}`;
 }
 
-/** Roher git-Aufruf im Vault-Verzeichnis. */
-async function git(args: string[]): Promise<string> {
+/**
+ * Roher git-Aufruf in EINEM beliebigen Working-Copy-Verzeichnis (Story 1.14).
+ *
+ * The generalized form of `git()` below: identical env-building, just with an
+ * explicit `cwd`. It exists so the write path can target a tenant working copy
+ * (`<vaultsRoot>/<vaultId>`) instead of only the `config().vaultDir` singleton
+ * — and so the parameterized path inherits the C-locale pinning for free
+ * rather than re-deriving it (see the comment on `LC_ALL` below).
+ */
+async function gitIn(targetDir: string, args: string[]): Promise<string> {
   const c = config();
   const { stdout } = await exec("git", args, {
-    cwd: c.vaultDir,
+    cwd: targetDir,
     env: {
       ...process.env,
       GIT_AUTHOR_NAME: c.gitAuthorName,
@@ -123,6 +131,11 @@ async function git(args: string[]): Promise<string> {
     },
   });
   return stdout.trim();
+}
+
+/** Roher git-Aufruf im Vault-Verzeichnis. */
+function git(args: string[]): Promise<string> {
+  return gitIn(config().vaultDir, args);
 }
 
 /**
@@ -397,10 +410,18 @@ function stripScheme(url: string): string {
  *
  * No remote = the documented pre-setup state (server up, setup wizard hasn't
  * wired a Forgejo repo yet). In that state pull/push have no target.
+ *
+ * Story 1.14: `targetDir` probes a directory OTHER than the singleton (a tenant
+ * working copy). Omitting it resolves to `config().vaultDir` — synchronously,
+ * exactly as before — so every pre-existing call site is unchanged.
  */
-async function hasRemote(): Promise<boolean> {
+async function hasRemote(targetDir?: string): Promise<boolean> {
   try {
-    const url = await git(["remote", "get-url", "origin"]);
+    const url = await gitIn(targetDir ?? config().vaultDir, [
+      "remote",
+      "get-url",
+      "origin",
+    ]);
     return url !== "";
   } catch {
     return false;
@@ -432,17 +453,20 @@ async function hasRemote(): Promise<boolean> {
  * @param expected the content we intended to persist; `null` falls back to
  *   comparing our committed blob (HEAD:relPath) — used for binary saves / moves.
  * @param branch the (validated) remote branch name.
+ * @param targetDir working copy to probe; defaults to `config().vaultDir`.
  */
 async function isAlreadyPersisted(
   relPath: string,
   expected: string | null,
   branch: string,
+  targetDir?: string,
 ): Promise<boolean> {
+  const dir = targetDir ?? config().vaultDir;
   // What the remote currently has at this path. Throws (→ false) when the
   // path doesn't exist upstream, which is itself a "not the same" signal.
   let remoteContent: string;
   try {
-    remoteContent = await git(["show", `origin/${branch}:${relPath}`]);
+    remoteContent = await gitIn(dir, ["show", `origin/${branch}:${relPath}`]);
   } catch {
     return false;
   }
@@ -457,7 +481,7 @@ async function isAlreadyPersisted(
     intended = expected.trim();
   } else {
     try {
-      intended = await git(["show", `HEAD:${relPath}`]);
+      intended = await gitIn(dir, ["show", `HEAD:${relPath}`]);
     } catch {
       return false;
     }
@@ -472,9 +496,9 @@ async function isAlreadyPersisted(
  * later `save`/`pull` will carry the commit upstream. We never turn a
  * successfully-persisted write into a user-facing error here.
  */
-async function tryDeferredPush(branch: string): Promise<void> {
+async function tryDeferredPush(branch: string, targetDir?: string): Promise<void> {
   try {
-    await git(["push", "origin", branch]);
+    await gitIn(targetDir ?? config().vaultDir, ["push", "origin", branch]);
   } catch {
     /* deferred — the commit is local-safe; next sync pushes it. */
   }
@@ -493,17 +517,20 @@ async function tryDeferredPush(branch: string): Promise<void> {
  *
  * @returns `true` when the write was idempotently recovered (caller returns
  *   success); never returns `false` — it throws instead.
+ * @param targetDir working copy to recover; defaults to `config().vaultDir`.
  */
 async function handlePullFailure(
   err: unknown,
   relPath: string,
   expected: string | null,
   branch: string,
+  targetDir?: string,
 ): Promise<true> {
-  await git(["rebase", "--abort"]).catch(() => {});
+  const dir = targetDir ?? config().vaultDir;
+  await gitIn(dir, ["rebase", "--abort"]).catch(() => {});
 
-  if (await isAlreadyPersisted(relPath, expected, branch)) {
-    await tryDeferredPush(branch);
+  if (await isAlreadyPersisted(relPath, expected, branch, dir)) {
+    await tryDeferredPush(branch, dir);
     return true;
   }
 
@@ -606,6 +633,95 @@ export async function sync(): Promise<SyncResult> {
   });
 }
 
+export interface SaveVaultFileOpts {
+  /** Working copy to write into. May be any path — not necessarily `config().vaultDir`. */
+  targetDir: string;
+  /** Path of the file relative to `targetDir`. */
+  relPath: string;
+  /** UTF-8 content to persist. */
+  content: string;
+  /** Commit message. */
+  message: string;
+  /** Branch to pull/push against. Defaults to `config().gitBranch`. */
+  branch?: string;
+}
+
+/**
+ * The write-and-sync mechanics, WITHOUT the `serialize()` lock — every caller
+ * must already hold the lock for `targetDir` (`serialize()` is a FIFO chain,
+ * not reentrant: taking it again from inside would deadlock).
+ *
+ *   write → add → status (no-op if unchanged) → commit → pull --rebase → push
+ */
+async function writeAndSync(opts: Required<Omit<SaveVaultFileOpts, "branch">> & {
+  branch: string;
+}): Promise<string> {
+  const { targetDir, relPath, content, message, branch } = opts;
+
+  const abs = join(targetDir, relPath);
+  await mkdir(dirname(abs), { recursive: true });
+  await writeFile(abs, content, "utf8");
+
+  await gitIn(targetDir, ["add", "--", relPath]);
+
+  // nichts zu committen? (Inhalt identisch) -> still zurueck
+  const status = await gitIn(targetDir, ["status", "--porcelain", "--", relPath]);
+  if (status === "") {
+    return gitIn(targetDir, ["rev-parse", "HEAD"]);
+  }
+
+  await gitIn(targetDir, ["commit", "-m", message]);
+
+  // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
+  if (!(await hasRemote(targetDir))) {
+    return gitIn(targetDir, ["rev-parse", "HEAD"]);
+  }
+
+  try {
+    await gitIn(targetDir, ["pull", "--rebase", "--autostash", "origin", branch]);
+  } catch (err) {
+    // Pull fehlgeschlagen: erst Idempotenz prüfen (Commit liegt evtl. schon
+    // sauber auf Disk/HEAD -> kein Konflikt), sonst typisierten Fehler werfen.
+    await handlePullFailure(err, relPath, content, branch, targetDir);
+    return gitIn(targetDir, ["rev-parse", "HEAD"]); // idempotent recovered
+  }
+
+  await gitIn(targetDir, ["push", "origin", branch]);
+  return gitIn(targetDir, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * Write one text file into ANY vault working copy and sync it (Story 1.14).
+ *
+ * The write-path counterpart to Story 1.13's `provisionVaultDir`: the same
+ * mechanics `save()` has always used for the primary vault, now pointed at an
+ * explicit directory, so `PUT /api/tenants/:vaultId/scope` can commit its
+ * `mcp-scopes.yaml` change through gitService instead of raw `exec("git", …)`
+ * (architecture.md: any vault-filesystem write bypassing gitService is a hard
+ * constraint violation). `save()` itself is now a thin wrapper over the same
+ * core.
+ *
+ * Runs inside the shared `serialize()` FIFO lock keyed by `targetDir`, so a
+ * tenant write never interleaves with a save/pull on the SAME directory, while
+ * two different directories write concurrently without blocking each other.
+ *
+ * Deliberately NOT coalesced (AC#3): `pendingSaves` exists to collapse a
+ * keystroke-driven autosave storm on one note path into a single push. Callers
+ * of this function make infrequent, deliberate writes — there is no storm to
+ * collapse, so it takes the plain locked path.
+ *
+ * Errors follow the write-path convention: typed `MergeConflictError` /
+ * `GitBackendError` / `PreCommitHookError` via `classifyGitError`, which the
+ * route maps to an HTTP status.
+ *
+ * @returns the resulting commit SHA (unchanged HEAD when nothing was modified).
+ */
+export async function saveVaultFile(opts: SaveVaultFileOpts): Promise<string> {
+  const { targetDir } = opts;
+  const branch = opts.branch ?? config().gitBranch;
+  return serialize(() => writeAndSync({ ...opts, branch }), targetDir);
+}
+
 /**
  * The actual serialized write of one text note: the bytes captured here are the
  * bytes committed — no other path can swap them mid-flight (see `pendingSaves`).
@@ -622,43 +738,16 @@ function runSave(relPath: string, content: string, message: string): Promise<str
     const finalMessage = pend ? pend.message : message;
     pendingSaves.delete(key);
 
+    // We already hold the lock for the primary vault, so call the unlocked core
+    // directly (see `writeAndSync` on why re-entering `serialize()` deadlocks).
     const c = config();
-    const abs = join(c.vaultDir, relPath);
-    await mkdir(dirname(abs), { recursive: true });
-    await writeFile(abs, finalContent, "utf8");
-
-    await git(["add", "--", relPath]);
-
-    // nichts zu committen? (Inhalt identisch) -> still zurueck
-    const status = await git(["status", "--porcelain", "--", relPath]);
-    if (status === "") {
-      return git(["rev-parse", "HEAD"]);
-    }
-
-    await git(["commit", "-m", finalMessage]);
-
-    // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
-    if (!(await hasRemote())) {
-      return git(["rev-parse", "HEAD"]);
-    }
-
-    try {
-      await git([
-        "pull",
-        "--rebase",
-        "--autostash",
-        "origin",
-        c.gitBranch,
-      ]);
-    } catch (err) {
-      // Pull fehlgeschlagen: erst Idempotenz prüfen (Commit liegt evtl. schon
-      // sauber auf Disk/HEAD -> kein Konflikt), sonst typisierten Fehler werfen.
-      await handlePullFailure(err, relPath, finalContent, c.gitBranch);
-      return git(["rev-parse", "HEAD"]); // idempotent recovered
-    }
-
-    await git(["push", "origin", c.gitBranch]);
-    return git(["rev-parse", "HEAD"]);
+    return writeAndSync({
+      targetDir: c.vaultDir,
+      relPath,
+      content: finalContent,
+      message: finalMessage,
+      branch: c.gitBranch,
+    });
   });
 }
 

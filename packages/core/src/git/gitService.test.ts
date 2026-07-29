@@ -15,6 +15,7 @@ import {
   noteDiff,
   vaultActivity,
   provisionVaultDir,
+  saveVaultFile,
 } from "./gitService.js";
 import { MergeConflictError, GitBackendError } from "../errors/GitError.js";
 
@@ -716,5 +717,175 @@ describe("gitService.provisionVaultDir — arbitrary target directory (Story 1.1
         remote: { url: join(f.base, "does-not-exist.git"), branch: "main" },
       }),
     ).rejects.toThrow();
+  });
+});
+
+// ─── Story 1.14: parameterized write path (saveVaultFile) ─────────────────
+//
+// The write-and-sync counterpart to Story 1.13's `provisionVaultDir`: same
+// mechanics as `save()` (write → add → status → commit → pull --rebase → push,
+// typed errors via classifyGitError) but against an EXPLICIT target directory,
+// so `PUT /api/tenants/:vaultId/scope` can commit through gitService instead of
+// raw `exec("git", …)`. As above, `config().vaultDir` deliberately points at a
+// DIFFERENT directory in every test here.
+
+async function setupWriteFixture(): Promise<{
+  base: string;
+  primaryVault: string;
+  remote: string;
+  tenant: string;
+  other: string;
+  localOnly: string;
+  cleanup: () => Promise<void>;
+}> {
+  const base = await mkdtemp(join(tmpdir(), "lokyy-savevault-"));
+
+  // The singleton vault — must stay byte-identical across every write below.
+  const primaryVault = join(base, "primary");
+  await g(base, ["init", "--initial-branch=main", primaryVault]);
+  await writeFile(join(primaryVault, "keep.md"), "primary\n", "utf8");
+  await g(primaryVault, ["add", "--", "keep.md"]);
+  await g(primaryVault, ["commit", "-m", "primary seed"]);
+
+  // A tenant working copy with a real remote (push/pull actually happen), plus
+  // a second clone standing in for the concurrent writer.
+  const remote = join(base, "tenant.git");
+  await g(base, ["init", "--bare", "--initial-branch=main", remote]);
+  const other = join(base, "other");
+  await g(base, ["clone", remote, other]);
+  await writeFile(join(other, "README.md"), "seed\n", "utf8");
+  await g(other, ["add", "-A"]);
+  await g(other, ["commit", "-m", "seed"]);
+  await g(other, ["push", "origin", "main"]);
+  const tenant = join(base, "tenant");
+  await g(base, ["clone", remote, tenant]);
+
+  // A tenant working copy without any remote (local-only provisioning).
+  const localOnly = join(base, "local-only");
+  await g(base, ["init", "--initial-branch=main", localOnly]);
+  await writeFile(join(localOnly, ".gitkeep"), "", "utf8");
+  await g(localOnly, ["add", "-A"]);
+  await g(localOnly, ["commit", "-m", "chore: initialize lokyy vault (local-only)"]);
+
+  return {
+    base,
+    primaryVault,
+    remote,
+    tenant,
+    other,
+    localOnly,
+    cleanup: async () => {
+      await rm(base, { recursive: true, force: true });
+    },
+  };
+}
+
+describe("gitService.saveVaultFile — arbitrary target directory (Story 1.14)", () => {
+  let f: Awaited<ReturnType<typeof setupWriteFixture>>;
+
+  beforeEach(async () => {
+    f = await setupWriteFixture();
+    useVault(f.primaryVault, ""); // singleton points somewhere ELSE entirely
+  });
+  afterEach(async () => {
+    if (f) await f.cleanup();
+  });
+
+  /** The primary vault must be untouched by every write below. */
+  async function expectPrimaryUntouched(): Promise<void> {
+    expect(await readFile(join(f.primaryVault, "keep.md"), "utf8")).toBe("primary\n");
+    expect(await g(f.primaryVault, ["log", "--pretty=%s"])).toBe("primary seed");
+  }
+
+  it("writes + commits into a LOCAL-ONLY target dir that is NOT config().vaultDir", async () => {
+    const sha = await saveVaultFile({
+      targetDir: f.localOnly,
+      relPath: "00_meta/mcp-scopes.yaml",
+      content: "scopes: {}\n",
+      message: "chore: update tenant scope",
+    });
+
+    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(await readFile(join(f.localOnly, "00_meta/mcp-scopes.yaml"), "utf8")).toBe(
+      "scopes: {}\n",
+    );
+    expect(await g(f.localOnly, ["log", "-1", "--pretty=%s"])).toBe(
+      "chore: update tenant scope",
+    );
+    await expectPrimaryUntouched();
+  });
+
+  it("pushes the commit to the TARGET's own remote", async () => {
+    await saveVaultFile({
+      targetDir: f.tenant,
+      relPath: "00_meta/mcp-scopes.yaml",
+      content: "scopes: {a: 1}\n",
+      message: "chore: update tenant scope",
+    });
+
+    expect(await g(f.remote, ["log", "-1", "--pretty=%s", "main"])).toBe(
+      "chore: update tenant scope",
+    );
+    expect(await g(f.remote, ["show", "main:00_meta/mcp-scopes.yaml"])).toBe(
+      "scopes: {a: 1}",
+    );
+    await expectPrimaryUntouched();
+  });
+
+  it("is a no-op (same HEAD, no new commit) when the content is unchanged", async () => {
+    const first = await saveVaultFile({
+      targetDir: f.tenant,
+      relPath: "00_meta/mcp-scopes.yaml",
+      content: "scopes: {a: 1}\n",
+      message: "chore: update tenant scope",
+    });
+    const again = await saveVaultFile({
+      targetDir: f.tenant,
+      relPath: "00_meta/mcp-scopes.yaml",
+      content: "scopes: {a: 1}\n",
+      message: "chore: update tenant scope",
+    });
+
+    expect(again).toBe(first);
+    // Exactly one scope commit — the second call committed nothing.
+    const log = await g(f.tenant, ["log", "--pretty=%s"]);
+    expect(log.split("\n").filter((l) => l === "chore: update tenant scope")).toHaveLength(1);
+  });
+
+  it("honors an explicit branch instead of config().gitBranch", async () => {
+    await g(f.tenant, ["checkout", "-b", "trunk"]);
+    await g(f.tenant, ["push", "-u", "origin", "trunk"]);
+
+    await saveVaultFile({
+      targetDir: f.tenant,
+      relPath: "00_meta/mcp-scopes.yaml",
+      content: "scopes: {b: 2}\n",
+      message: "chore: update tenant scope",
+      branch: "trunk",
+    });
+
+    // config().gitBranch is "main"; the write must have gone to trunk.
+    expect(await g(f.remote, ["log", "-1", "--pretty=%s", "trunk"])).toBe(
+      "chore: update tenant scope",
+    );
+    expect(await g(f.remote, ["log", "-1", "--pretty=%s", "main"])).toBe("seed");
+  });
+
+  it("surfaces a genuine remote divergence as MergeConflictError", async () => {
+    // The concurrent writer publishes DIFFERENT bytes at the same path first.
+    await mkdir(join(f.other, "00_meta"), { recursive: true });
+    await writeFile(join(f.other, "00_meta/mcp-scopes.yaml"), "scopes: {theirs: 1}\n", "utf8");
+    await g(f.other, ["add", "-A"]);
+    await g(f.other, ["commit", "-m", "their scope"]);
+    await g(f.other, ["push", "origin", "main"]);
+
+    await expect(
+      saveVaultFile({
+        targetDir: f.tenant,
+        relPath: "00_meta/mcp-scopes.yaml",
+        content: "scopes: {ours: 2}\n",
+        message: "chore: update tenant scope",
+      }),
+    ).rejects.toBeInstanceOf(MergeConflictError);
   });
 });
