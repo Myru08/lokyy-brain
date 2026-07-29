@@ -134,6 +134,26 @@ MCP     → http://localhost:8788/mcp
 Öffne `http://localhost:8095` im Browser — der Setup-Wizard startet
 automatisch. (Der Installer öffnet den Browser automatisch für dich.)
 
+### Alltag: starten, anhalten, Diagnose
+
+`install.sh`/`install.ps1` sind für die einmalige Erst-Installation da (Docker
+installieren, Images bauen). Für danach gibt es `lokyy.sh` / `lokyy.ps1`:
+
+```bash
+./lokyy.sh start     # Stack starten (schnell, kein Rebuild), Browser öffnen
+./lokyy.sh stop      # Stack anhalten (Container bleiben erhalten)
+./lokyy.sh restart   # Container neu starten
+./lokyy.sh status    # Kurzer Überblick: läuft alles, ist es erreichbar?
+./lokyy.sh doctor    # Ausführliche Diagnose bei Problemen (rein lesend)
+```
+
+Nach einem Neustart des Rechners musst du in der Regel gar nichts aufrufen:
+alle Container laufen mit `restart: unless-stopped` und fahren von selbst
+wieder hoch, sobald Docker (Desktop) läuft. Wichtig für die PWA: ein
+gepinntes Icon öffnet nur den Browser auf `localhost:8095` — es kann Docker
+nicht selbst starten. Läuft der Hintergrunddienst nicht, zeigt die PWA einen
+Verbindungsfehler; Docker muss also laufen (siehe oben).
+
 ## Der Setup-Wizard im Detail
 
 Fünf Schritte, geführt:
