@@ -90,6 +90,27 @@ Kein Umweg über einen ZIP-Download: du brauchst Git ohnehin, sobald du
 später remote auf Coolify deployst (siehe [Remote-Deployment](#remote-deployment)),
 also lernst du es gleich hier.
 
+### Bei GitHub anmelden (einmalig)
+
+Dieses Repo ist **privat**. Ohne Anmeldung schlägt der nächste Schritt fehl —
+und zwar mit einer irreführenden Meldung: GitHub verrät bei privaten Repos
+absichtlich nicht, dass sie existieren, du bekommst also
+**`repository not found`**, obwohl du das Repo im Browser sehen kannst. Falls
+dir das begegnet: du bist schlicht nicht angemeldet.
+
+- **Windows:** Meist automatisch — Git für Windows bringt den Credential
+  Manager mit. Beim ersten `git clone` öffnet sich ein Browser-Login, einmal
+  bestätigen, fertig.
+- **macOS / Linux:** Am einfachsten über die
+  [GitHub CLI](https://cli.github.com/):
+  ```bash
+  gh auth login
+  ```
+  Einmal durch den Browser-Flow klicken. Danach funktionieren `git clone` und
+  später auch `git pull` ohne weitere Abfragen.
+
+### Repo holen
+
 ```bash
 git clone https://github.com/oliverhees/lokyy-brain.git
 cd lokyy-brain
