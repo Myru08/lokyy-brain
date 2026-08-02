@@ -1,0 +1,54 @@
+name: Deploy-Key anfragen (Remote-Deployment)
+description: Für Coolify o. ä. — damit dein Server dieses Repo klonen darf.
+title: "Deploy-Key: "
+labels: ["deploy-key"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Dein Server (z. B. Coolify) braucht einen eigenen Zugang zu diesem Repo —
+        dein persönlicher GitHub-Zugang reicht dafür nicht aus, weil sich ein
+        Server nicht "als du" anmelden kann.
+
+        **So kommst du an den Key:** In Coolify beim Anlegen der Source
+        *Private Repository (with deploy key)* wählen — Coolify erzeugt das
+        Schlüsselpaar und zeigt dir den **öffentlichen** Teil an. Genau den
+        hier einfügen.
+
+        Der Key bekommt **nur Lesezugriff**. Er kann nichts in dieses Repo
+        schreiben.
+  - type: input
+    id: purpose
+    attributes:
+      label: Wofür / welcher Server?
+      description: Kurz, damit der Key später zuordenbar ist (z. B. "Coolify auf meinem Hetzner-VPS").
+      placeholder: Coolify auf meinem Hetzner-VPS
+    validations:
+      required: true
+  - type: textarea
+    id: pubkey
+    attributes:
+      label: Öffentlicher Key
+      description: |
+        Eine einzige Zeile, beginnt mit `ssh-ed25519` oder `ssh-rsa`.
+        **Niemals** den privaten Key posten — der bleibt in Coolify.
+      render: text
+      placeholder: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... coolify
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Kurz bestätigen
+      options:
+        - label: Das ist der **öffentliche** Key (kein privater Schlüssel).
+          required: true
+        - label: Dieses Schlüsselpaar ist neu bzw. wird bei GitHub noch nirgends als Deploy-Key genutzt.
+          required: true
+  - type: markdown
+    attributes:
+      value: |
+        > **Hinweis zum zweiten Punkt:** GitHub erlaubt denselben Key nur bei
+        > **einem einzigen** Repository als Deploy-Key. Wenn dein Coolify-Key
+        > schon woanders eingetragen ist, lehnt GitHub ihn hier ab — dann in
+        > Coolify einfach ein neues Schlüsselpaar für dieses Repo erzeugen.

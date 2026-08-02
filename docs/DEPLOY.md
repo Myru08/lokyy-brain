@@ -48,13 +48,32 @@ Coolify's Traefik needs working DNS to fetch Let's Encrypt certificates.
 
 1. Coolify UI → **Projects** → **+ Add**.
 2. Resource type: **Docker Compose**.
-3. Source: this repo is **private** — in Coolify, connect it as a **Private
-   Git Repository** (via GitHub App or Deploy Key), not a public URL. Use your
-   own fork if you don't have direct push access.
+3. Source: this repo is **private**, so Coolify needs its own credential —
+   choose **Private Repository (with deploy key)**, not a public URL.
    - Repository: `oliverhees/lokyy-brain`
    - Branch: `main`
    - Compose File Path: `docker-compose.coolify.yml`
 4. Save. Don't deploy yet.
+
+> **Warum ein Deploy-Key, obwohl ich Zugriff auf das Repo habe?**
+> Dein persönlicher GitHub-Zugang ist ein *Menschen*-Zugang — dein Server
+> kann sich damit nicht anmelden. Er braucht einen eigenen Schlüssel, der
+> direkt am Repo hängt.
+>
+> **Und warum kann ich den nicht selbst eintragen?** Deploy-Keys darf nur
+> eintragen, wer Admin-Rechte am Repo hat. Deshalb:
+>
+> 1. In Coolify **Private Repository (with deploy key)** wählen — Coolify
+>    erzeugt das Schlüsselpaar und zeigt dir den **öffentlichen** Teil.
+> 2. Ein Issue über die Vorlage **„Deploy-Key anfragen"** öffnen und den
+>    öffentlichen Key dort einfügen (nie den privaten!).
+> 3. Der Key wird als **Nur-Lesen**-Key eingetragen, das Issue geschlossen —
+>    danach kannst du deployen.
+>
+> **Häufiger Stolperstein:** GitHub erlaubt denselben Schlüssel nur bei
+> *einem einzigen* Repository als Deploy-Key. Nutzt dein Coolify denselben
+> Key schon woanders, lehnt GitHub ihn ab — dann in Coolify ein neues
+> Schlüsselpaar speziell für dieses Repo erzeugen.
 
 ---
 
