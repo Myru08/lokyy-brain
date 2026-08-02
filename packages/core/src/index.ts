@@ -717,3 +717,17 @@ export {
   type LooseEnd,
   type LooseEndsResult,
 } from "./workspace/looseEnds.js";
+
+// ─── Base-vault scaffold (Story 1.19) ───────────────────────────────────
+// Content generation for a fresh vault: canonical folders (derived from the
+// type→folder map + conventions), the live JSON schemas, SPEC.md, note
+// templates and the SPEC-enforcing pre-commit hook. Writing + committing is
+// the caller's job (`server/src/setup/scaffoldVault.ts`).
+export {
+  buildVaultScaffold,
+  scaffoldFolders,
+  VAULT_HOOKS_DIR,
+  VAULT_HOOK_PATH,
+  VAULT_SCHEMA_DIR,
+  type ScaffoldFile,
+} from "./vault/scaffold.js";

@@ -21,6 +21,7 @@ import {
 } from "@lokyy/core";
 import { config } from "../config.js";
 import { seedSkills } from "../setup/seedSkills.js";
+import { scaffoldVault } from "../setup/scaffoldVault.js";
 import { createSession } from "../auth/sessions.js";
 
 const exec = promisify(execFile);
@@ -363,6 +364,29 @@ setupRoutes.post("/vault", async (c) => {
     );
   }
 
+  // Story 1.19 — Basis-Vault-Scaffold: kanonische Ordner (je mit `.gitkeep`),
+  // die aktuellen JSON-Schemas unter `00_meta/schemas/`, SPEC.md, die
+  // Note-Templates und der SPEC-Pre-Commit-Hook. Läuft VOR `seedSkills()`,
+  // damit Hook und Schemas stehen, bevor die erste Notiz committet wird —
+  // andernfalls würde der Hook gegen ein Vault ohne Schema-Verzeichnis laufen.
+  // Wie beim Seeding: best-effort, ein Fehler blockiert den Wizard nicht.
+  let scaffoldError: string | null = null;
+  if (!cloneError) {
+    try {
+      const scaffold = await scaffoldVault();
+      if (scaffold.pushError) {
+        console.warn(
+          `[setup/vault] scaffold committed locally but push failed for vault ${id}: ${scaffold.pushError}`,
+        );
+      }
+    } catch (err) {
+      scaffoldError = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[setup/vault] scaffoldVault failed for vault ${id}: ${scaffoldError}`,
+      );
+    }
+  }
+
   // Story 9-5 — Seed-Skills in den frisch provisionierten Vault schreiben.
   // Idempotentes create-if-absent: ein Re-Init überschreibt user-editierte
   // Skills nicht. Best-effort — ein Seed-Fehler darf den Wizard nicht
@@ -385,7 +409,7 @@ setupRoutes.post("/vault", async (c) => {
     }
   }
 
-  return c.json({ vaultId: id, cloneError, seedError });
+  return c.json({ vaultId: id, cloneError, scaffoldError, seedError });
 });
 
 /**

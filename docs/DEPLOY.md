@@ -219,10 +219,16 @@ is `0004_pg_search`.
 (`nomic-embed-text`) and can take several minutes on slow uplinks. Re-run
 `docker compose up ollama-init` on the host if it timed out.
 
-**`git push` rejected by pre-commit hook** — your vault repo is missing the
-SPEC-mandated `.forgejo/hooks/pre-commit`. Setup Wizard installs it
-automatically on a fresh repo. If you brought an existing repo, copy the hook
-from `packages/core/src/vault/hooks/pre-commit` manually.
+**Commit rejected by the pre-commit hook** — the hook found a `.md` without the
+five required frontmatter fields, without a ULID `id`, or with a `type` that has
+no `00_meta/schemas/<type>.json`. Fix the frontmatter; the hook prints the file
+and the reason.
+
+**Hook never runs at all** — the Setup Wizard installs it on a fresh vault as
+`.githooks/pre-commit` and sets `git config core.hooksPath .githooks`. Git runs
+hooks only from `core.hooksPath` (or `.git/hooks`), so a repo you brought
+yourself needs that config set once by hand; copy the hook from
+`packages/core/src/vault/hooks/pre-commit` if it is missing.
 
 **Wizard says "Postgres connection failed"** — `DATABASE_URL` resolved to a
 host outside the compose network. Inside Coolify the host must be `postgres`,

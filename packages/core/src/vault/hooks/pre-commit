@@ -1,0 +1,105 @@
+#!/bin/sh
+# lokyy-vault - pre-commit hook (SPEC guard)
+#
+# Last-resort guard: rejects a commit that would put a .md file into the vault
+# without the SPEC-mandated frontmatter. Dependency-free (POSIX sh + awk/grep)
+# so it runs on Linux, macOS and Git Bash alike.
+#
+# Source of truth: packages/core/src/vault/hooks/pre-commit in lokyy-brain.
+# A freshly scaffolded vault receives it as .githooks/pre-commit, activated
+# with `git config core.hooksPath .githooks` (Story 1.19). Git only ever runs
+# hooks from core.hooksPath (or .git/hooks) - a committed hook file alone does
+# nothing, which is why the scaffold sets that config.
+#
+# Checked per staged .md file:
+#   1. the file opens with a `---` frontmatter fence,
+#   2. the base contract fields are present - id, type, title, created, updated
+#      (mirrors "required" in 00_meta/schemas/base.json),
+#   3. `id` looks like a ULID: 26 chars, Crockford base32 (no I/L/O/U),
+#   4. `type` has a matching 00_meta/schemas/<type>.json - the closed type list
+#      is DERIVED from the schemas this vault actually carries, never hardcoded
+#      here, so it can never go stale against the application.
+#
+# Deliberately NOT checked: per-type required fields. Every per-type schema
+# shipped today requires exactly the base contract and nothing beyond it; full
+# JSON-Schema validation is the application's job (`validateFrontmatter` in
+# @lokyy/core), which runs before a write ever reaches git.
+#
+# Skipped: non-.md files, 00_meta/ (schemas, templates, SPEC), docs/, README*.
+
+set -u
+
+SCHEMA_DIR="00_meta/schemas"
+ULID_RE='^[0-9A-HJKMNP-TV-Z]{26}$'
+
+FILES=$(git diff --cached --name-only --diff-filter=ACM \
+	| grep '\.md$' \
+	| grep -v '^00_meta/' \
+	| grep -v '^docs/' \
+	| grep -v '^README')
+
+if [ -z "$FILES" ]; then
+	exit 0
+fi
+
+# The loop runs in a subshell (pipeline), so its counters cannot leak out - the
+# brace group's exit status IS the verdict, propagated via the final `exit`.
+printf '%s\n' "$FILES" | {
+	ERRORS=0
+	CHECKED=0
+
+	fail() {
+		printf 'FAIL %s\n' "$1"
+		printf '     %s\n' "$2"
+		ERRORS=$((ERRORS + 1))
+	}
+
+	while IFS= read -r FILE; do
+		[ -n "$FILE" ] || continue
+		[ -f "$FILE" ] || continue
+
+		if [ "$(head -n 1 "$FILE")" != "---" ]; then
+			fail "$FILE" "no frontmatter (file must start with ---)"
+			continue
+		fi
+
+		# Everything between the opening fence and the closing --- line. POSIX
+		# awk only - no `head -n -1`, which is GNU-only and breaks on macOS.
+		FRONTMATTER=$(awk 'NR==1{next} /^---[[:space:]]*$/{exit} {print}' "$FILE")
+
+		MISSING=""
+		for FIELD in id type title created updated; do
+			printf '%s\n' "$FRONTMATTER" | grep -q "^$FIELD:" || MISSING="$MISSING $FIELD"
+		done
+		if [ -n "$MISSING" ]; then
+			fail "$FILE" "missing required frontmatter field(s):$MISSING"
+			continue
+		fi
+
+		ID=$(printf '%s\n' "$FRONTMATTER" | grep '^id:' | head -n 1 \
+			| sed 's/^id:[[:space:]]*//' | tr -d "\"' \r")
+		if ! printf '%s\n' "$ID" | grep -Eq "$ULID_RE"; then
+			fail "$FILE" "id is not a ULID (26 chars, Crockford base32): $ID"
+			continue
+		fi
+
+		TYPE=$(printf '%s\n' "$FRONTMATTER" | grep '^type:' | head -n 1 \
+			| sed 's/^type:[[:space:]]*//' | tr -d "\"' \r")
+		if [ ! -f "$SCHEMA_DIR/$TYPE.json" ]; then
+			fail "$FILE" "unknown type '$TYPE' - no $SCHEMA_DIR/$TYPE.json in this vault"
+			continue
+		fi
+
+		CHECKED=$((CHECKED + 1))
+	done
+
+	if [ "$ERRORS" -gt 0 ]; then
+		printf '\n%s file(s) violate the vault SPEC. Commit aborted.\n' "$ERRORS"
+		printf 'Required fields are documented in 00_meta/SPEC.md.\n'
+		exit 1
+	fi
+
+	printf 'ok: %s markdown file(s) pass the vault SPEC\n' "$CHECKED"
+	exit 0
+}
+exit $?
