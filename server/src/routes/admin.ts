@@ -14,7 +14,10 @@ import {
   maskSupadataKey,
   listSkillNotes,
   parseFrontmatter,
+  VAULT_HOOKS_DIR,
 } from "@lokyy/core";
+import { scaffoldVault } from "../setup/scaffoldVault.js";
+import { scanVaultCompliance } from "../setup/vaultCompliance.js";
 import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { config } from "../config.js";
@@ -360,6 +363,106 @@ adminRoutes.post("/system-settings/reclone", async (c) => {
     note: "Working-Copy verworfen und frisch geklont. coreConfig hot-swapped. Server-Restart NICHT nötig.",
   });
 });
+
+// ── Story 1.20 — Basis-Scaffold auf einen BESTEHENDEN Vault nachziehen ──────
+//
+// Story 1.19 scaffoldet nur beim Fresh Install. Wer vor v1.9 installiert hat,
+// sitzt auf einem faktisch leeren Vault und hat nie den Pre-Commit-Hook
+// bekommen. Beide Handler unten legen dieselbe `scaffoldVault()` frei, die der
+// Wizard benutzt — nichts ist hier nachgebaut.
+//
+// Der Ablauf ist bewusst zweistufig:
+//   GET  → Plan (Dry-Run, schreibt garantiert nichts) + Pre-Flight-Zählung
+//   POST → Anwenden; die Hook-Aktivierung ist ein EIGENES, bestätigtes Flag
+//
+// Warum die Hook-Aktivierung nicht mitläuft: der Hook lehnt Commits ab, die
+// Notizen ohne SPEC-Frontmatter anfassen. Bei einem migrierten Alt-Vault kann
+// das viele Dateien betreffen, deshalb sieht der User erst die Zahl und
+// entscheidet dann.
+
+// GET /api/admin/vault-scaffold — was WÜRDE passieren?
+adminRoutes.get("/vault-scaffold", async (c) => {
+  try {
+    const [plan, compliance, hooksPath] = await Promise.all([
+      scaffoldVault({ dryRun: true }),
+      scanVaultCompliance(),
+      currentHooksPath(config.vaultDir),
+    ]);
+    return c.json({
+      vaultDir: config.vaultDir,
+      plan: { created: plan.created, skipped: plan.skipped },
+      hook: {
+        activated: hooksPath === VAULT_HOOKS_DIR,
+        hooksPath,
+        // Beide Zahlen — `blocking` ist die, die die Frage „was passiert beim
+        // Einschalten?" beantwortet. Siehe setup/vaultCompliance.ts.
+        scanned: compliance.scanned,
+        invalid: compliance.invalid,
+        blocking: compliance.blocking,
+        samples: compliance.samples,
+        truncated: compliance.truncated,
+      },
+    });
+  } catch (err) {
+    console.error("[admin] vault-scaffold plan failed", err);
+    return c.json(
+      {
+        error: "scaffold-plan-failed",
+        message: err instanceof Error ? err.message : String(err),
+      },
+      500,
+    );
+  }
+});
+
+// POST /api/admin/vault-scaffold  { activateHook?: boolean }
+//
+// `activateHook` ist hier bewusst opt-in (der Fresh-Install-Pfad hat den
+// Default `true` — dort ist der Vault leer und es gibt nichts zu blockieren).
+adminRoutes.post("/vault-scaffold", async (c) => {
+  const body = await c.req
+    .json<{ activateHook?: boolean }>()
+    .catch(() => ({}) as { activateHook?: boolean });
+  const activateHook = body.activateHook === true;
+
+  try {
+    const result = await scaffoldVault({ activateHook });
+    if (result.pushError) {
+      // Nicht als Fehler melden: das Scaffold liegt korrekt im Working-Copy,
+      // ein späterer sync holt den Push nach — dieselbe Bewertung wie im
+      // Wizard-Pfad in routes/setup.ts.
+      console.warn(`[admin] vault-scaffold committed locally, push failed: ${result.pushError}`);
+    }
+    return c.json({
+      ok: true,
+      created: result.created,
+      skipped: result.skipped,
+      committed: result.committed,
+      pushed: result.pushed,
+      pushError: result.pushError,
+      hookActivated: result.hookActivated,
+    });
+  } catch (err) {
+    console.error("[admin] vault-scaffold apply failed", err);
+    return c.json(
+      {
+        error: "scaffold-failed",
+        message: err instanceof Error ? err.message : String(err),
+      },
+      500,
+    );
+  }
+});
+
+/** `core.hooksPath` des Vaults, oder null wenn ungesetzt. */
+async function currentHooksPath(vaultDir: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec("git", ["-C", vaultDir, "config", "core.hooksPath"]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 // GET /api/admin/status — live health of dependencies
 //

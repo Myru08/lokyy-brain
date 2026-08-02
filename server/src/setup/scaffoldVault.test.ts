@@ -31,6 +31,7 @@ const exec = promisify(execFile);
 // AFTER the env is set (same pattern as routes/tenants.test.ts). No database is
 // ever contacted here — the DSN only has to be non-empty.
 let scaffoldVault: typeof import("./scaffoldVault.js").scaffoldVault;
+let planVaultScaffold: typeof import("./scaffoldVault.js").planVaultScaffold;
 let seedSkills: typeof import("./seedSkills.js").seedSkills;
 let buildSkillFrontmatter: typeof import("./seedSkills.js").buildSkillFrontmatter;
 let seedSkillDefinitions: typeof import("./seedSkills.js").seedSkillDefinitions;
@@ -57,7 +58,7 @@ beforeEach(async () => {
   process.env.VAULT_DIR = vaultDir;
   process.env.GIT_AUTHOR_NAME = "lokyy-test";
   process.env.GIT_AUTHOR_EMAIL = "test@localhost";
-  ({ scaffoldVault } = await import("./scaffoldVault.js"));
+  ({ scaffoldVault, planVaultScaffold } = await import("./scaffoldVault.js"));
   ({ seedSkills, buildSkillFrontmatter, seedSkillDefinitions } = await import(
     "./seedSkills.js"
   ));
@@ -223,5 +224,116 @@ describe("scaffoldVault — fresh install (Story 1.19)", () => {
       },
     });
     expect(await g(vaultDir, ["ls-files", "70_pai/skills"])).toContain(seed.slug);
+  }, 30_000);
+});
+
+/**
+ * Story 1.20 — retrofitting the SAME scaffold onto an already-provisioned
+ * vault. The fixture above is reused verbatim: `provisionVaultDir` leaves a
+ * repo that has a git history but none of the scaffold, which is precisely the
+ * shape of a pre-v1.9 install.
+ */
+describe("scaffoldVault — retrofit onto an existing vault (Story 1.20)", () => {
+  /** Recursive snapshot of every file below `dir`, excluding `.git/`. */
+  async function snapshot(dir: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    async function walk(rel: string): Promise<void> {
+      const entries = await readdir(join(dir, rel), { withFileTypes: true });
+      for (const e of entries) {
+        const child = rel ? `${rel}/${e.name}` : e.name;
+        if (child === ".git") continue;
+        if (e.isDirectory()) await walk(child);
+        else out.set(child, await readFile(join(dir, child), "utf8"));
+      }
+    }
+    await walk("");
+    return out;
+  }
+
+  it("dry-run reports the plan and writes NOTHING (AC#4, AC#8a)", async () => {
+    const before = await snapshot(vaultDir);
+    const headBefore = await g(vaultDir, ["rev-parse", "HEAD"]);
+
+    const plan = await scaffoldVault({ vaultDir, dryRun: true });
+
+    expect(plan.dryRun).toBe(true);
+    expect(plan.created.length).toBeGreaterThan(0);
+    expect(plan.committed).toBe(false);
+    expect(plan.pushed).toBe(false);
+    expect(plan.hookActivated).toBe(false);
+
+    // Nothing on disk moved…
+    expect(await snapshot(vaultDir)).toEqual(before);
+    // …no commit happened…
+    expect(await g(vaultDir, ["rev-parse", "HEAD"])).toBe(headBefore);
+    // …the working copy is clean…
+    expect(await g(vaultDir, ["status", "--porcelain"])).toBe("");
+    // …and the hook was NOT silently activated (AC#5).
+    await expect(g(vaultDir, ["config", "core.hooksPath"])).rejects.toBeTruthy();
+  }, 30_000);
+
+  it("the dry-run plan matches what the apply run actually creates (AC#4)", async () => {
+    const plan = await scaffoldVault({ vaultDir, dryRun: true });
+    const applied = await scaffoldVault({ vaultDir });
+
+    expect(applied.created).toEqual(plan.created);
+    expect(applied.skipped).toEqual(plan.skipped);
+    expect(applied.dryRun).toBe(false);
+  }, 30_000);
+
+  it("a partially-scaffolded vault gets only the gaps, rest reported skipped (AC#8b)", async () => {
+    // Simulate a hand-migrated vault that already carries SOME of the
+    // structure: the SPEC and two folders, with content the user must keep.
+    const full = await planVaultScaffold(vaultDir);
+    await mkdir(join(vaultDir, "00_meta"), { recursive: true });
+    await writeFile(join(vaultDir, "00_meta/SPEC.md"), "# Meine SPEC\n", "utf8");
+    await mkdir(join(vaultDir, "20_notes"), { recursive: true });
+    await writeFile(join(vaultDir, "20_notes/.gitkeep"), "", "utf8");
+
+    const preexisting = ["00_meta/SPEC.md", "20_notes/.gitkeep"];
+
+    const plan = await scaffoldVault({ vaultDir, dryRun: true });
+    for (const p of preexisting) {
+      expect(plan.skipped, `${p} should be reported as skipped`).toContain(p);
+      expect(plan.created, `${p} must not be re-created`).not.toContain(p);
+    }
+    expect(plan.created.length).toBe(full.created.length - preexisting.length);
+
+    const result = await scaffoldVault({ vaultDir });
+    expect(result.created).toEqual(plan.created);
+    expect(result.committed).toBe(true);
+    // The user's own content survived untouched.
+    expect(await readFile(join(vaultDir, "00_meta/SPEC.md"), "utf8")).toBe(
+      "# Meine SPEC\n",
+    );
+    // …and the missing pieces really landed.
+    expect(existsSync(join(vaultDir, "00_meta/schemas/note.json"))).toBe(true);
+  }, 30_000);
+
+  it("leaves core.hooksPath alone unless hook activation is asked for (AC#5)", async () => {
+    const result = await scaffoldVault({ vaultDir, activateHook: false });
+
+    expect(result.committed).toBe(true);
+    expect(result.hookActivated).toBe(false);
+    await expect(g(vaultDir, ["config", "core.hooksPath"])).rejects.toBeTruthy();
+
+    // The hook FILE ships regardless — only its activation is gated, so a
+    // later confirmation is a pure `git config` away.
+    expect(existsSync(join(vaultDir, VAULT_HOOK_PATH))).toBe(true);
+  }, 30_000);
+
+  it("activates the hook on a second, explicitly-confirmed run (AC#5)", async () => {
+    await scaffoldVault({ vaultDir, activateHook: false });
+
+    const result = await scaffoldVault({ vaultDir, activateHook: true });
+    expect(result.created).toEqual([]);
+    expect(result.hookActivated).toBe(true);
+    expect(await g(vaultDir, ["config", "core.hooksPath"])).toBe(VAULT_HOOKS_DIR);
+  }, 30_000);
+
+  it("keeps the fresh-install default: no options means hook ON", async () => {
+    const result = await scaffoldVault({ vaultDir });
+    expect(result.hookActivated).toBe(true);
+    expect(await g(vaultDir, ["config", "core.hooksPath"])).toBe(VAULT_HOOKS_DIR);
   }, 30_000);
 });

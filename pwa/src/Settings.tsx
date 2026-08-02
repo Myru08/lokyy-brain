@@ -1447,6 +1447,8 @@ export function Settings({
             saveError={tzSaveError}
             onSave={() => void saveTimezone()}
           />
+
+          <VaultScaffoldPanel isMobile={isMobile} />
         </>
       )}
 
@@ -4939,6 +4941,282 @@ function LogRow({
         {entry.message}
       </span>
     </div>
+  );
+}
+
+/**
+ * Story 1.20 — Basis-Vault-Struktur auf einem BESTEHENDEN Vault nachziehen.
+ *
+ * Wer vor v1.9 installiert hat, bekam nie das Grundgerüst (Ordner, Schemas,
+ * SPEC, Templates) und nie den Pre-Commit-Hook. Dieses Panel legt genau den
+ * Scaffold frei, den der Setup-Wizard fährt.
+ *
+ * Bewusst dreistufig, damit nichts unangekündigt passiert:
+ *   1. Prüfen   — Dry-Run, schreibt garantiert nichts
+ *   2. Nachziehen — legt NUR fehlende Dateien an, fasst eigene Edits nie an
+ *   3. Hook aktivieren — eigener, separat bestätigter Schritt
+ *
+ * Der Hook wird getrennt behandelt, weil er Commits ablehnt, die Notizen ohne
+ * SPEC-Frontmatter anfassen. Das Panel nennt die Zahl VOR der Bestätigung —
+ * und ordnet sie ein, statt sie zu dramatisieren: der Hook prüft nur gestagte
+ * Dateien und schreibt nie etwas um, sperrt also niemanden aus.
+ */
+function VaultScaffoldPanel({ isMobile }: { isMobile: boolean }) {
+  type Sample = { path: string; reasons: string[]; blocksCommit: boolean };
+  type Plan = {
+    vaultDir: string;
+    plan: { created: string[]; skipped: string[] };
+    hook: {
+      activated: boolean;
+      hooksPath: string | null;
+      scanned: number;
+      invalid: number;
+      blocking: number;
+      samples: Sample[];
+      truncated: boolean;
+    };
+  };
+
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [busy, setBusy] = useState<null | "plan" | "apply" | "hook">(null);
+  const [error, setError] = useState<string | null>(null);
+  const [flash, setFlash] = useState<string | null>(null);
+  const [hookConfirmed, setHookConfirmed] = useState(false);
+  const [showSamples, setShowSamples] = useState(false);
+
+  async function loadPlan(): Promise<void> {
+    setBusy("plan");
+    setError(null);
+    setFlash(null);
+    try {
+      const res = await fetch("/api/admin/vault-scaffold");
+      const data = (await res.json()) as Plan & { message?: string };
+      if (!res.ok) throw new Error(data.message ?? `HTTP ${res.status}`);
+      setPlan(data);
+      setHookConfirmed(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function apply(activateHook: boolean): Promise<void> {
+    setBusy(activateHook ? "hook" : "apply");
+    setError(null);
+    setFlash(null);
+    try {
+      const res = await fetch("/api/admin/vault-scaffold", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ activateHook }),
+      });
+      const data = (await res.json()) as {
+        created?: string[];
+        committed?: boolean;
+        pushed?: boolean;
+        pushError?: string | null;
+        hookActivated?: boolean;
+        message?: string;
+      };
+      if (!res.ok) throw new Error(data.message ?? `HTTP ${res.status}`);
+      const parts: string[] = [];
+      parts.push(`${data.created?.length ?? 0} Datei(en) angelegt`);
+      if (data.committed) parts.push(data.pushed ? "committet + gepusht" : "lokal committet");
+      if (data.pushError) parts.push("Push fehlgeschlagen — ein späterer Sync holt ihn nach");
+      if (data.hookActivated) parts.push("Pre-Commit-Hook aktiviert");
+      setFlash(parts.join(" · "));
+      await loadPlan();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const missing = plan?.plan.created.length ?? 0;
+  const blocking = plan?.hook.blocking ?? 0;
+
+  return (
+    <Section title="Vault-Grundgerüst nachziehen">
+      <p style={{ fontSize: 13, color: C.textDim, margin: "0 0 14px 0", lineHeight: 1.6 }}>
+        Installationen von vor v1.9 haben die Standard-Struktur nie bekommen —
+        Ordner, JSON-Schemas, SPEC.md, Note-Templates und den SPEC-Pre-Commit-Hook.
+        Das Nachziehen legt <strong>ausschließlich fehlende</strong> Dateien an;
+        alles, was schon da ist, bleibt unangetastet.
+      </p>
+
+      <button
+        onClick={() => void loadPlan()}
+        disabled={busy !== null}
+        style={mobileBtn({ ...btn, opacity: busy ? 0.6 : 1 }, isMobile)}
+      >
+        {busy === "plan" ? "Prüfe…" : "Struktur prüfen"}
+      </button>
+
+      {error && <Note color={C.err}>{error}</Note>}
+      {flash && <Note color={C.ok}>{flash}</Note>}
+
+      {plan && (
+        <div style={{ marginTop: 16 }}>
+          <KV label="Vault" value={plan.vaultDir} isMobile={isMobile} />
+          <KV
+            label="Fehlt"
+            value={missing === 0 ? "nichts — Struktur ist vollständig" : `${missing} Datei(en)`}
+            isMobile={isMobile}
+          />
+          <KV
+            label="Vorhanden"
+            value={`${plan.plan.skipped.length} Datei(en) bleiben unangetastet`}
+            isMobile={isMobile}
+          />
+
+          {missing > 0 && (
+            <button
+              onClick={() => void apply(false)}
+              disabled={busy !== null}
+              style={mobileBtn(
+                { ...btn, marginTop: 12, borderColor: C.accent, color: C.accentHi },
+                isMobile,
+              )}
+            >
+              {busy === "apply" ? "Lege an…" : `${missing} fehlende Datei(en) anlegen`}
+            </button>
+          )}
+
+          {/* ── Schritt 3: Hook, bewusst getrennt ── */}
+          <div
+            style={{
+              marginTop: 20,
+              paddingTop: 16,
+              borderTop: `1px solid ${C.border}`,
+            }}
+          >
+            <h3 style={{ fontFamily: FONT.serif, fontSize: 15, margin: "0 0 10px 0" }}>
+              SPEC-Pre-Commit-Hook
+            </h3>
+
+            {plan.hook.activated ? (
+              <Note color={C.ok}>
+                Aktiv (<code>core.hooksPath = {plan.hook.hooksPath}</code>). Neue
+                Notizen werden gegen die SPEC geprüft, bevor sie committet werden.
+              </Note>
+            ) : (
+              <>
+                <p style={{ fontSize: 13, color: C.textDim, margin: "0 0 10px 0", lineHeight: 1.6 }}>
+                  Noch nicht aktiv. Der Hook prüft <strong>nur gestagte Dateien</strong> und
+                  schreibt nie etwas um — er kann dich also nicht aus deinem Vault
+                  aussperren. Was er tut: einen Commit ablehnen, der eine Notiz ohne
+                  gültiges Frontmatter anfasst.
+                </p>
+
+                <div
+                  style={{
+                    padding: 12,
+                    background: C.elevated,
+                    borderRadius: 6,
+                    marginBottom: 12,
+                    fontSize: 13,
+                    lineHeight: 1.7,
+                  }}
+                >
+                  <div>
+                    Geprüft: <strong>{plan.hook.scanned}</strong> Notiz(en) im Vault.
+                  </div>
+                  <div style={{ color: blocking > 0 ? C.gold : C.ok }}>
+                    Davon würden <strong>{blocking}</strong> vom Hook abgelehnt —
+                    {blocking === 0
+                      ? " nichts blockiert."
+                      : " betroffen ist jeweils erst der nächste Commit, der die Datei anfasst."}
+                  </div>
+                  {plan.hook.invalid > blocking && (
+                    <div style={{ color: C.textDim, marginTop: 4 }}>
+                      Zusätzlich verletzen {plan.hook.invalid - blocking} weitere Notiz(en)
+                      die SPEC strenger, als der Hook prüft (z. B. Datum ohne Uhrzeit).
+                      Die blockieren nichts.
+                    </div>
+                  )}
+                  {plan.hook.samples.length > 0 && (
+                    <button
+                      onClick={() => setShowSamples((v) => !v)}
+                      style={{
+                        ...btn,
+                        marginTop: 8,
+                        padding: "4px 10px",
+                        fontSize: 12,
+                      }}
+                    >
+                      {showSamples ? "Beispiele ausblenden" : "Beispiele zeigen"}
+                    </button>
+                  )}
+                  {showSamples && (
+                    <ul
+                      style={{
+                        margin: "10px 0 0 0",
+                        paddingLeft: 18,
+                        fontSize: 12,
+                        color: C.textDim,
+                        fontFamily: FONT.mono,
+                      }}
+                    >
+                      {plan.hook.samples.map((s) => (
+                        <li key={s.path} style={{ marginBottom: 6 }}>
+                          <span style={{ color: s.blocksCommit ? C.gold : C.textFaint }}>
+                            {s.path}
+                          </span>
+                          <br />
+                          {s.reasons.join("; ")}
+                        </li>
+                      ))}
+                      {plan.hook.truncated && <li>… und weitere</li>}
+                    </ul>
+                  )}
+                </div>
+
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "flex-start",
+                    gap: 8,
+                    fontSize: 13,
+                    marginBottom: 12,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={hookConfirmed}
+                    onChange={(e) => setHookConfirmed(e.target.checked)}
+                    style={{ marginTop: 3 }}
+                  />
+                  <span>
+                    Ich habe die {blocking} betroffene(n) Notiz(en) zur Kenntnis genommen
+                    und will den Hook aktivieren.
+                  </span>
+                </label>
+
+                <button
+                  onClick={() => void apply(true)}
+                  disabled={busy !== null || !hookConfirmed}
+                  style={mobileBtn(
+                    {
+                      ...btn,
+                      borderColor: hookConfirmed ? C.accent : C.border,
+                      color: hookConfirmed ? C.accentHi : C.textFaint,
+                      cursor: hookConfirmed ? "pointer" : "not-allowed",
+                      opacity: busy ? 0.6 : 1,
+                    },
+                    isMobile,
+                  )}
+                >
+                  {busy === "hook" ? "Aktiviere…" : "Hook aktivieren"}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </Section>
   );
 }
 

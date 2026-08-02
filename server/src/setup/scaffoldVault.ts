@@ -48,13 +48,36 @@ export interface ScaffoldVaultOptions {
   profile?: VaultProfile;
   /** Commit-Message für den Folge-Commit. */
   message?: string;
+  /**
+   * Story 1.20 — nur planen, nichts schreiben. Liefert `created`/`skipped`
+   * exakt wie ein echter Lauf, fasst aber weder Filesystem noch git an (auch
+   * `core.hooksPath` nicht). Siehe `planVaultScaffold`.
+   */
+  dryRun?: boolean;
+  /**
+   * Story 1.20 — ob `git config core.hooksPath` gesetzt wird.
+   *
+   * Default `true`: der Fresh-Install-Pfad (`routes/setup.ts`) ruft ohne
+   * Optionen auf und bleibt damit unverändert — dort IST das Aktivieren
+   * richtig, weil der Vault leer ist und gar keine Alt-Notizen existieren,
+   * die der Hook blockieren könnte.
+   *
+   * Der Retrofit auf einen bestehenden Vault übergibt `false` und aktiviert
+   * den Hook erst in einem zweiten, separat bestätigten Aufruf (AC#5) —
+   * nachdem der User gesehen hat, wie viele Alt-Notizen die SPEC verletzen.
+   */
+  activateHook?: boolean;
 }
 
-export interface ScaffoldVaultResult {
-  /** Neu angelegte, vault-relative Pfade. */
+/** Was ein Scaffold-Lauf anlegen würde, ohne etwas anzufassen. */
+export interface VaultScaffoldPlan {
+  /** Fehlende, vault-relative Pfade, die angelegt würden. */
   created: string[];
   /** Bereits vorhandene Pfade, die unangetastet blieben. */
   skipped: string[];
+}
+
+export interface ScaffoldVaultResult extends VaultScaffoldPlan {
   /** Ob ein Commit entstanden ist (false, wenn nichts zu tun war). */
   committed: boolean;
   /** Ob der Commit zu `origin` gepusht wurde. */
@@ -65,6 +88,10 @@ export interface ScaffoldVaultResult {
    * Working-Copy, und ein späterer `sync` holt den Push nach.
    */
   pushError: string | null;
+  /** Story 1.20 — ob `core.hooksPath` in diesem Lauf gesetzt wurde. */
+  hookActivated: boolean;
+  /** Story 1.20 — true, wenn nur geplant und nichts geschrieben wurde. */
+  dryRun: boolean;
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -76,12 +103,51 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
+/**
+ * Story 1.20 — die reine "was fehlt?"-Hälfte des Scaffolds.
+ *
+ * Bewusst als eigene Funktion und nicht als `if (dryRun) return` mitten im
+ * Schreibpfad: so ist die Dry-Run-Garantie strukturell statt eine Bedingung,
+ * der man vertrauen muss. Diese Funktion kann per Konstruktion nichts kaputt
+ * machen — sie ruft ausschließlich `stat` auf.
+ */
+export async function planVaultScaffold(
+  vaultDir: string = config.vaultDir,
+  profile: VaultProfile = resolveVaultProfile(),
+): Promise<VaultScaffoldPlan> {
+  const created: string[] = [];
+  const skipped: string[] = [];
+
+  for (const file of await buildVaultScaffold(profile)) {
+    if (await exists(join(vaultDir, file.path))) skipped.push(file.path);
+    else created.push(file.path);
+  }
+
+  return { created, skipped };
+}
+
 export async function scaffoldVault(
   opts: ScaffoldVaultOptions = {},
 ): Promise<ScaffoldVaultResult> {
   const vaultDir = opts.vaultDir ?? config.vaultDir;
   const profile = opts.profile ?? resolveVaultProfile();
   const message = opts.message ?? "chore: scaffold base vault structure";
+  const activateHook = opts.activateHook ?? true;
+
+  const plan = await planVaultScaffold(vaultDir, profile);
+
+  // Dry-Run endet HIER — ab dieser Zeile schreibt die Funktion. Alles davor
+  // war ausschließlich `stat`.
+  if (opts.dryRun) {
+    return {
+      ...plan,
+      committed: false,
+      pushed: false,
+      pushError: null,
+      hookActivated: false,
+      dryRun: true,
+    };
+  }
 
   const gitEnv = {
     ...process.env,
@@ -95,28 +161,33 @@ export async function scaffoldVault(
   };
   const git = (args: string[]) => exec("git", ["-C", vaultDir, ...args], { env: gitEnv });
 
-  const created: string[] = [];
-  const skipped: string[] = [];
+  const { created, skipped } = plan;
+  const toCreate = new Set(created);
 
   for (const file of await buildVaultScaffold(profile)) {
+    if (!toCreate.has(file.path)) continue;
     const abs = join(vaultDir, file.path);
-    if (await exists(abs)) {
-      skipped.push(file.path);
-      continue;
-    }
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, file.content, "utf8");
     if (file.executable) await chmod(abs, 0o755);
-    created.push(file.path);
   }
 
   // Git führt Hooks ausschließlich aus `core.hooksPath` (bzw. `.git/hooks`) aus
   // — die committete Hook-Datei allein tut gar nichts. Idempotent, deshalb bei
   // jedem Lauf gesetzt (repariert auch einen mitgebrachten Klon).
-  await git(["config", "core.hooksPath", VAULT_HOOKS_DIR]);
+  //
+  // Story 1.20: nur noch wenn `activateHook` (Default true) gesetzt ist. Beim
+  // Retrofit auf einen bestehenden Vault ist das Aktivieren eine eigene,
+  // bestätigte Entscheidung — Alt-Notizen ohne SPEC-Frontmatter würden sonst
+  // ab sofort ihren eigenen nächsten Commit blockieren.
+  if (activateHook) {
+    await git(["config", "core.hooksPath", VAULT_HOOKS_DIR]);
+  }
+
+  const base = { created, skipped, hookActivated: activateHook, dryRun: false };
 
   if (created.length === 0) {
-    return { created, skipped, committed: false, pushed: false, pushError: null };
+    return { ...base, committed: false, pushed: false, pushError: null };
   }
 
   // Nur die eigenen Pfade stagen — ein pauschales `add -A` würde bei einem
@@ -129,7 +200,7 @@ export async function scaffoldVault(
     () => true,
   );
   if (!hasStaged) {
-    return { created, skipped, committed: false, pushed: false, pushError: null };
+    return { ...base, committed: false, pushed: false, pushError: null };
   }
 
   await git(["commit", "-m", message]);
@@ -139,17 +210,16 @@ export async function scaffoldVault(
     () => false,
   );
   if (!remote) {
-    return { created, skipped, committed: true, pushed: false, pushError: null };
+    return { ...base, committed: true, pushed: false, pushError: null };
   }
 
   const branch = (await git(["rev-parse", "--abbrev-ref", "HEAD"])).stdout.trim();
   try {
     await git(["push", "origin", branch]);
-    return { created, skipped, committed: true, pushed: true, pushError: null };
+    return { ...base, committed: true, pushed: true, pushError: null };
   } catch (err) {
     return {
-      created,
-      skipped,
+      ...base,
       committed: true,
       pushed: false,
       pushError: err instanceof Error ? err.message : String(err),
