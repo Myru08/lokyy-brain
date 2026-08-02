@@ -41,7 +41,7 @@ export interface VaultResolution {
  * `vaultId`, but it is no longer SILENT.
  *
  * Callers must guarantee `rows` is non-empty when `envVaultId` is empty (the
- * async wrapper handles the empty-DB fatal exit before calling this).
+ * async wrapper throws on the empty-DB case before calling this).
  */
 export function pickVaultResolution(
   rows: { id: string; slug: string; createdAt: Date }[],
@@ -92,9 +92,12 @@ export function pickVaultResolution(
  *   2. Rows in the `vaults` table — oldest wins as a fallback, but a multi-row
  *      DB is flagged `ambiguous: true` and a LOUD warning is emitted.
  *
- * If the env-var is empty AND the `vaults` table is empty → fatal exit (the
- * deployment is incomplete; the user must finish the Setup Wizard before the
- * MCP server can serve any tools).
+ * If the env-var is empty AND the `vaults` table is empty this THROWS. It must
+ * not terminate the process: a fresh deploy legitimately has an empty DB (the
+ * Setup Wizard is what writes the first vault row), and the in-process mount
+ * inside the brain has to survive that so the wizard stays reachable. Each
+ * caller decides whether the failure is fatal for itself — the standalone CLI
+ * entry points (`bin.ts`, `binHttp.ts`) catch this and exit 1.
  *
  * Calls `initDb(databaseUrl)` first; the function is idempotent, so the later
  * `buildServer(...)` call (which also runs `initDb`) is a no-op.
@@ -116,10 +119,9 @@ export async function resolveVaultResolution(databaseUrl: string): Promise<Vault
     .from(vaults);
 
   if (rows.length === 0) {
-    console.error(
-      "[lokyy-mcp] no vault rows in DB and no LOKYY_VAULT_ID env — cannot serve MCP. Run setup wizard first.",
+    throw new Error(
+      "no vault rows in DB and no LOKYY_VAULT_ID env — cannot serve MCP. Run setup wizard first.",
     );
-    process.exit(1);
   }
 
   return pickVaultResolution(rows, "");

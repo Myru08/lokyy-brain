@@ -28,7 +28,20 @@ const agentId = process.env.LOKYY_AGENT_ID ?? "claude-code";
 // Resolve vault-id BEFORE building the server (and BEFORE the HTTP listener
 // goes up) — the MCP tools key the memory provider by vault-id, so we
 // cannot accept any request before this completes.
-const vaultId = await resolveVaultId(databaseUrl);
+//
+// `resolveVaultId` THROWS rather than exiting (Story 1.15) so the brain's
+// in-process mount can survive an empty vaults table. This is a standalone
+// process with no setup wizard to fall back to, so here the failure IS fatal
+// and the exit belongs at this layer.
+let vaultId: string;
+try {
+  vaultId = await resolveVaultId(databaseUrl);
+} catch (err) {
+  console.error(
+    `[lokyy-mcp-http] cannot resolve vault: ${err instanceof Error ? err.message : String(err)}`,
+  );
+  process.exit(1);
+}
 
 const coreConfig = {
   vaultDir,

@@ -29,7 +29,20 @@ const agentId = process.env.LOKYY_AGENT_ID ?? "claude-desktop";
 // accept requests until after `start(server)` runs, so this is a safety
 // belt rather than a strict ordering requirement, but it keeps the two
 // entry points symmetrical and fails fast on misconfigured deployments.
-const vaultId = await resolveVaultId(databaseUrl);
+//
+// `resolveVaultId` THROWS rather than exiting (Story 1.15) so the brain's
+// in-process mount can survive an empty vaults table. This is a standalone
+// process with no setup wizard to fall back to, so here the failure IS fatal
+// and the exit belongs at this layer.
+let vaultId: string;
+try {
+  vaultId = await resolveVaultId(databaseUrl);
+} catch (err) {
+  console.error(
+    `[lokyy-mcp] cannot resolve vault: ${err instanceof Error ? err.message : String(err)}`,
+  );
+  process.exit(1);
+}
 
 const coreConfig = {
   vaultDir,

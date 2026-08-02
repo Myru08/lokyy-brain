@@ -1,6 +1,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { pickVaultResolution } from "./resolveVaultId.js";
+import { pickVaultResolution, resolveVaultResolution } from "./resolveVaultId.js";
+
+/**
+ * Story 1.15 leg (a): `resolveVaultResolution()` must THROW on an empty
+ * `vaults` table — the DB access is stubbed here so the assertion runs without
+ * a live Postgres. `rowsFixture` is read by the mock factory below, which
+ * vitest hoists above the imports (hence `vi.hoisted`).
+ */
+const dbStub = vi.hoisted(() => ({ rows: [] as { id: string; slug: string; createdAt: Date }[] }));
+
+vi.mock("@lokyy/core", () => ({
+  initDb: vi.fn(),
+  database: vi.fn(() => ({
+    select: () => ({ from: () => Promise.resolve(dbStub.rows) }),
+  })),
+  vaults: { id: "id", slug: "slug", createdAt: "createdAt" },
+}));
 
 /**
  * Story 10.13 — Multi-vault detection (AC#1, AC#2, AC#5).
@@ -143,5 +159,61 @@ describe("pickVaultResolution — env override wins (AC#1)", () => {
     expect(res.vaultId).toBe("PINNED_VAULT");
     expect(res.ambiguous).toBe(false);
     expect(res.source).toBe("env");
+  });
+});
+
+/**
+ * Story 1.15 AC#1 + AC#5(a) — empty `vaults` table must produce a CATCHABLE
+ * error, not a `process.exit(1)`.
+ *
+ * A fresh Coolify deploy has an empty DB by definition: the setup wizard is
+ * what creates the first vault row. Terminating the process here crash-looped
+ * the brain and made the wizard unreachable, so the fix is that the shared
+ * library function signals failure the normal way and each caller decides
+ * whether that is fatal for IT.
+ */
+describe("resolveVaultResolution — empty vaults table (AC#1)", () => {
+  let errSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    dbStub.rows = [];
+    delete process.env.LOKYY_VAULT_ID;
+    errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    // Must never fire. Typed as never-returning, so stub it as a throw that the
+    // assertions below would surface as the wrong error if it were ever called.
+    exitSpy = vi.spyOn(process, "exit").mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code}) was called — must not happen`);
+    }) as never);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("throws a catchable Error instead of exiting the process", async () => {
+    await expect(resolveVaultResolution("postgres://stub/db")).rejects.toThrow(
+      /no vault rows in DB and no LOKYY_VAULT_ID/,
+    );
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it("the rejection is a real Error carrying the setup-wizard hint", async () => {
+    const err = await resolveVaultResolution("postgres://stub/db").catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain("Run setup wizard first");
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it("still resolves normally when the table has a row (no false positives)", async () => {
+    dbStub.rows = [{ id: "01ONLY", slug: "solo", createdAt: new Date("2024-01-01T00:00:00Z") }];
+
+    const res = await resolveVaultResolution("postgres://stub/db");
+
+    expect(res.vaultId).toBe("01ONLY");
+    expect(res.source).toBe("db");
+    expect(exitSpy).not.toHaveBeenCalled();
   });
 });
