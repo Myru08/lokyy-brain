@@ -63,6 +63,16 @@ export default defineConfig({
         // redirectet auf GET `/share`, das die SPA als ShareTarget rendert.
         // Der GET-Handler liest die geparkte FormData wieder aus.
         importScripts: ["/share-sw.js"],
+        // Workbox precacht standardmäßig nur Assets < 2 MiB. Das Main-Bundle
+        // liegt bei ~2,1 MB und lag zuvor knapp UNTER dieser Grenze — jede
+        // kleine Änderung kippte den Build (`maximumFileSizeToCacheInBytes`-
+        // Fehler) bzw. hätte das Bundle still aus dem Precache fallen lassen
+        // und damit den Offline-Modus degradiert. 4 MiB gibt echten Headroom
+        // (~2x aktuelle Bundle-Größe) und erhält das bisherige Verhalten.
+        // Langfristig ist Code-Splitting via `build.rollupOptions.output
+        // .manualChunks` die eigentliche Lösung — Vite warnt bei jedem Build
+        // über den >500-kB-Chunk. Bewusst NICHT Teil dieser Änderung.
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
         // API-Calls nicht aggressiv cachen — Forgejo ist die Wahrheit.
         // Top-level navigations to /api/** (e.g. OAuth start redirects) must
         // bypass the SPA's navigateFallback so the browser hits the network
