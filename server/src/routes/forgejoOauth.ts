@@ -107,9 +107,13 @@ forgejoOauthRoutes.get("/start", async (c) => {
   authorizeUrl.searchParams.set("redirect_uri", redirectUri);
   authorizeUrl.searchParams.set("response_type", "code");
   authorizeUrl.searchParams.set("state", state);
-  // read:user → /api/v1/user-Lookup im Callback; write:repository → Repos
-  // listen/anlegen + Vault pushen. (Gitea: write:X impliziert read:X.)
-  authorizeUrl.searchParams.set("scope", "read:user write:repository");
+  // Forgejo/Gitea prüfen Scopes pro Routen-Gruppe (URL-Pfad-Präfix), nicht
+  // nach dem erzeugten Objekt: POST /api/v1/user/repos liegt in der
+  // /user-Gruppe UND im /repos-Combo und verlangt daher write:user UND
+  // write:repository. write:X impliziert read:X — read:user (Callback-Lookup
+  // /api/v1/user, Repo-Liste) ist über write:user abgedeckt, der Vault-Push
+  // über write:repository.
+  authorizeUrl.searchParams.set("scope", "write:user write:repository");
 
   return c.redirect(authorizeUrl.toString(), 302);
 });
