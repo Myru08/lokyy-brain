@@ -402,7 +402,11 @@ registerHandler("crawl", crawlHandler); // ganze Website
 registerHandler("voice", voiceHandler); // OpenAI Whisper (cloud)
 
 async function main() {
-  initCore(config);
+  // Story 5.8 AC#2: hand core the REAL vaults-table id so both search tiers
+  // index under it. `initMcp()` later re-injects the same field with the id it
+  // resolved (env, else the DB fallback) — that is the only path that fills it
+  // when `LOKYY_VAULT_ID` is unset.
+  initCore({ ...config, vaultId: config.lokyyVaultId });
   try {
     await runMigrations(config.databaseUrl);
     initDb(config.databaseUrl);

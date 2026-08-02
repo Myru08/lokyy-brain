@@ -3,7 +3,13 @@ import { database } from "../db/index.js";
 import { getNote } from "../notes/notesService.js";
 import { getActiveGeneration } from "../llm/embeddingsMigration.js";
 import { DEFAULT_EMBEDDINGS_GENERATION } from "../db/schema/embeddingsMigration.js";
-import { chunkNote, type Chunk, type ChunkType } from "../chunking/index.js";
+import {
+  chunkNote,
+  approximateTokens,
+  EMBED_MODEL_CONTEXT_TOKENS,
+  type Chunk,
+  type ChunkType,
+} from "../chunking/index.js";
 import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./MemoryProvider.js";
 
 /**
@@ -33,16 +39,62 @@ import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./Memor
 
 export class EmbeddingUnavailableError extends Error {
   constructor(cause?: unknown) {
-    super("Ollama embedding service unreachable", cause ? { cause } : undefined);
+    // Story 5.8 AC#5: keep the reason IN the message. It used to live only in
+    // `cause`, so every log line read as a bare "unreachable" regardless of
+    // what actually failed (wrong model name, 503, bad response shape).
+    const reason =
+      cause === undefined || cause === null
+        ? ""
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
+    super(
+      `Ollama embedding service unreachable${reason ? ` (${reason})` : ""}`,
+      cause ? { cause } : undefined,
+    );
     this.name = "EmbeddingUnavailableError";
   }
 }
+
+/**
+ * The embedding service was reachable and REFUSED the input because it is
+ * longer than the model's context window (Story 5.8 AC#5).
+ *
+ * Deliberately NOT a subclass of {@link EmbeddingUnavailableError}: reporting
+ * this as "service unreachable" is what sent the community bug reporter
+ * debugging a healthy Ollama. The fix is on the caller's side (chunk smaller —
+ * see `EMBED_MODEL_CONTEXT_TOKENS`), not on the service's.
+ */
+export class EmbeddingInputTooLargeError extends Error {
+  readonly status: number;
+  readonly detail: string;
+  readonly approxTokens: number;
+  constructor(status: number, detail: string, approxTokens: number) {
+    super(
+      `Embedding input rejected: it exceeds the model's context window ` +
+        `(~${approxTokens} tokens sent, model limit ${EMBED_MODEL_CONTEXT_TOKENS}). ` +
+        `The service is UP — the chunk is too large. HTTP ${status}: ${detail}`,
+    );
+    this.name = "EmbeddingInputTooLargeError";
+    this.status = status;
+    this.detail = detail;
+    this.approxTokens = approxTokens;
+  }
+}
+
+/**
+ * Ollama's wording when a prompt overruns the context window, observed against
+ * the deployed model:
+ *   HTTP 500 {"error":"the input length exceeds the context length"}
+ * Kept deliberately loose so a reworded upstream message still classifies.
+ */
+const INPUT_TOO_LONG_RE = /context length|context window|input (?:length|is too long)|too (?:long|large)|exceeds/i;
 
 export interface Tier2Config {
   ollamaHost?: string;
   model?: string;
   vaultId: string;
-  /** Override the body_full token cap (default 6000). */
+  /** Override the body_full token cap (default 1920 — see chunking/index.ts). */
   maxBodyFullTokens?: number;
 }
 
@@ -79,7 +131,22 @@ export class Tier2Provider implements MemoryProvider {
     } catch (err) {
       throw new EmbeddingUnavailableError(err);
     }
-    if (!res.ok) throw new EmbeddingUnavailableError(`HTTP ${res.status}`);
+    if (!res.ok) {
+      // AC#5: read the body before deciding. "Service down" and "you sent too
+      // much text" are different failures with different fixes, and only the
+      // body distinguishes them — the status is 500 in both cases.
+      const detail = await res.text().catch(() => "");
+      if (INPUT_TOO_LONG_RE.test(detail)) {
+        throw new EmbeddingInputTooLargeError(
+          res.status,
+          detail.trim().slice(0, 200),
+          approximateTokens(text),
+        );
+      }
+      throw new EmbeddingUnavailableError(
+        `HTTP ${res.status}${detail ? `: ${detail.trim().slice(0, 200)}` : ""}`,
+      );
+    }
     const data = (await res.json()) as { embedding: number[] };
     if (!Array.isArray(data.embedding) || data.embedding.length !== DIM) {
       throw new EmbeddingUnavailableError(`Unexpected embedding shape: ${data.embedding?.length}`);

@@ -1,5 +1,9 @@
 import { Tier1Provider } from "./Tier1Provider.js";
-import { Tier2Provider, EmbeddingUnavailableError } from "./Tier2Provider.js";
+import {
+  Tier2Provider,
+  EmbeddingUnavailableError,
+  EmbeddingInputTooLargeError,
+} from "./Tier2Provider.js";
 import { Tier1BM25 } from "./Tier1BM25.js";
 import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./MemoryProvider.js";
 
@@ -32,6 +36,13 @@ import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./Memor
  * The `note_search` BM25 corpus is maintained separately via
  * `queueSearchIndexRefresh` in `./index.ts` on every save — not here.
  */
+/**
+ * Fraction of a search's `limit` held open for Tier-2 (semantic) hits when the
+ * semantic leg has anything new to contribute (Story 5.8 AC#6). At the default
+ * limit of 25 this is 8 slots. Unused reserve is backfilled from Tier 1.
+ */
+const TIER2_RESERVED_SHARE = 0.3;
+
 export class CombinedProvider implements MemoryProvider {
   readonly t1: Tier1Provider;
   readonly t2: Tier2Provider;
@@ -91,9 +102,31 @@ export class CombinedProvider implements MemoryProvider {
 
     const seen = new Set(t1Hits.map((h) => h.noteId));
     const t2Hits = await this.t2.search(query, opts);
-    const merged = [...t1Hits];
-    for (const h of t2Hits) {
-      if (!seen.has(h.noteId)) merged.push(h);
+    const t2New = t2Hits.filter((h) => !seen.has(h.noteId));
+    if (t2New.length === 0) return t1Hits.slice(0, limit);
+
+    // ── Story 5.8 AC#6: reserve capacity for the semantic leg ───────────────
+    //
+    // The previous merge appended Tier 2 AFTER an uncapped Tier 1 and then
+    // sliced to `limit`, so a query with `limit` keyword hits could never
+    // surface a semantic one — the whole point of Tier 2 (finding notes that
+    // share no keywords with the query) was unreachable exactly when the vault
+    // was well-populated.
+    //
+    // Reserving a share beats re-ranking by score: BM25 scores and cosine
+    // similarities are not on a comparable scale, so a numeric merge would be
+    // arbitrary. Whatever either leg leaves unused is backfilled from the
+    // other, so the caller always gets `limit` hits when they exist.
+    const reserved = Math.min(
+      t2New.length,
+      Math.max(1, Math.ceil(limit * TIER2_RESERVED_SHARE)),
+    );
+    const t1Take = Math.max(0, limit - reserved);
+
+    const merged = [...t1Hits.slice(0, t1Take), ...t2New.slice(0, reserved)];
+    for (const h of [...t1Hits.slice(t1Take), ...t2New.slice(reserved)]) {
+      if (merged.length >= limit) break;
+      merged.push(h);
     }
     return merged.slice(0, limit);
   }
@@ -110,7 +143,13 @@ export class CombinedProvider implements MemoryProvider {
     try {
       await this.t2.indexNote(noteId);
     } catch (err) {
-      if (err instanceof EmbeddingUnavailableError) {
+      if (err instanceof EmbeddingInputTooLargeError) {
+        // Story 5.8 AC#5: a chunk that slipped past the size gates must not
+        // read as an outage, and must not abort indexing of the whole note.
+        console.warn(
+          `[tier2] chunk rejected for note ${noteId} — Ollama is UP: ${err.message}`,
+        );
+      } else if (err instanceof EmbeddingUnavailableError) {
         console.warn("[tier2] embedding sync skipped:", err.message);
       } else {
         throw err;

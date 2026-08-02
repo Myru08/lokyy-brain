@@ -22,10 +22,10 @@ import {
   type FrontmatterMap,
   type NoteCreateIntent,
   type PolishProviderName,
+  indexVaultId,
 } from "@lokyy/core";
 
 /** Single-active-vault id (mirrors searchRoutes / notesService). */
-const DEFAULT_VAULT = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 
 /**
  * Maps a save-pipeline error to a Hono JSON response (Story 10.6 AC#4).
@@ -130,7 +130,7 @@ notesRoutes.get("/search", async (c) => {
     return c.json({ results: [] });
   }
   const limit = Number(c.req.query("limit") ?? "10");
-  const hits = await getMemoryProvider(DEFAULT_VAULT).search(q, {
+  const hits = await getMemoryProvider(indexVaultId()).search(q, {
     limit: Number.isFinite(limit) ? limit : 10,
   });
   return c.json({ results: hits });

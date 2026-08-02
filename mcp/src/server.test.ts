@@ -3,7 +3,13 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DOC_TYPES, getVaultConventions, getSkillSchema, getHealth } from "@lokyy/core";
+import {
+  DOC_TYPES,
+  getVaultConventions,
+  getSkillSchema,
+  getHealth,
+  FrontmatterValidationError,
+} from "@lokyy/core";
 import {
   resolveCreateNoteInput,
   classifyToolError,
@@ -1415,6 +1421,224 @@ describe("MCP get_health — vault_warning when ambiguous (e2e)", () => {
     expect(out.vault_warning).toContain("vault-bbb");
     expect(out.vault_warning).toContain("work");
     expect(out.vault_warning).toContain("LOKYY_VAULT_ID");
+  });
+});
+
+/**
+ * Story 7.9 — MCP protocol `isError` envelope.
+ *
+ * A failed tool call MUST be distinguishable from a successful one via the
+ * protocol's own signal (`CallToolResult.isError`), not only by the caller
+ * parsing the JSON body. Before this story the handler never set `isError`
+ * anywhere, so every rejected write looked like a success to the client.
+ *
+ * The JSON payload shape is deliberately asserted alongside `isError` in each
+ * test: this is an envelope-only change, so every existing body must survive
+ * byte-for-byte.
+ *
+ * Scope is restricted to `20_notes/**` so a write outside it produces a real
+ * ScopeViolation through the real handler.
+ */
+describe("Story 7.9 — isError on failed tool calls (e2e)", () => {
+  let vaultDir: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let client: any;
+
+  beforeAll(async () => {
+    vaultDir = await mkdtemp(join(tmpdir(), "lokyy-mcp-iserror-"));
+    await mkdir(join(vaultDir, "00_meta"), { recursive: true });
+    await writeFile(
+      join(vaultDir, "00_meta", "mcp-scopes.yaml"),
+      "scopes:\n  test-agent:\n    read: ['20_notes/**']\n    write: ['20_notes/**']\n    commit_prefix: '[agent:test]'\n",
+      "utf8",
+    );
+
+    resolveVaultResolutionMock.mockResolvedValue({
+      vaultId: "vault-iserror",
+      ambiguous: false,
+      candidates: [],
+      source: "db",
+    });
+
+    const { buildServer } = await import("./server.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+
+    const server = await buildServer(
+      { vaultDir } as never,
+      "postgres://unused",
+      "vault-iserror",
+      "test-agent",
+    );
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "test", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+  });
+
+  afterAll(async () => {
+    await client?.close();
+    await rm(vaultDir, { recursive: true, force: true });
+  });
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function payload(res: any): any {
+    return JSON.parse(res.content[0].text);
+  }
+
+  /** The FrontmatterValidationError core throws on a schema-invalid write. */
+  function frontmatterError(noteId: string): FrontmatterValidationError {
+    return new FrontmatterValidationError({
+      message: `Frontmatter for save of "${noteId}" failed validation.`,
+      noteId,
+      errors: [
+        {
+          instancePath: "",
+          keyword: "required",
+          message: "must have required property 'source'",
+          params: { missingProperty: "source" },
+        },
+      ],
+    });
+  }
+
+  it("a genuine success does NOT set isError", async () => {
+    createNoteMock.mockResolvedValueOnce({ id: "20_notes/ok", title: "ok" });
+    const res = await client.callTool({
+      name: "create_note",
+      arguments: { path: "20_notes/ok", type: "note", title: "ok" },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(payload(res).created.id).toBe("20_notes/ok");
+  });
+
+  it("a scope violation sets isError: true and keeps its payload", async () => {
+    const res = await client.callTool({
+      name: "create_note",
+      arguments: { path: "10_projects/secret", type: "note", title: "nope" },
+    });
+    expect(res.isError).toBe(true);
+    const out = payload(res);
+    expect(out).toEqual({
+      error: "scope_violation",
+      action: "write",
+      path: "10_projects/secret",
+      error_class: "user-error",
+    });
+  });
+
+  it("a frontmatter-validation failure sets isError: true and keeps its payload", async () => {
+    createNoteMock.mockRejectedValueOnce(frontmatterError("20_notes/bad"));
+    const res = await client.callTool({
+      name: "create_note",
+      arguments: { path: "20_notes/bad", type: "note", title: "bad" },
+    });
+    expect(res.isError).toBe(true);
+    const out = payload(res);
+    expect(out.error).toBe("frontmatter-validation-failed");
+    expect(out.error_class).toBe("user-error");
+    expect(out.note).toBe("20_notes/bad");
+    expect(out.fields).toEqual([
+      { field: "source", problem: "must have required property 'source'" },
+    ]);
+    expect(out.hint).toContain("create_managed_note");
+  });
+
+  it("an unclassified thrown error sets isError: true (tool-execution-failed)", async () => {
+    createNoteMock.mockRejectedValueOnce(new Error("boom: something exploded"));
+    const res = await client.callTool({
+      name: "create_note",
+      arguments: { path: "20_notes/boom", type: "note", title: "boom" },
+    });
+    expect(res.isError).toBe(true);
+    const out = payload(res);
+    expect(out.error).toBe("tool-execution-failed");
+    expect(out.error_class).toBe("backend");
+    expect(out.tool).toBe("create_note");
+    expect(out.message).not.toContain("exploded");
+  });
+
+  it("an unknown tool name sets isError: true", async () => {
+    const res = await client.callTool({ name: "no_such_tool", arguments: {} });
+    expect(res.isError).toBe(true);
+    expect(payload(res)).toEqual({ error: "unknown-tool", name: "no_such_tool" });
+  });
+
+  /**
+   * AC#3 — the community-reported repro ("11 of 22 failed, 22× success
+   * reported"). Confirmed against the code: `create_notes` (bulk) is ATOMIC
+   * (core `createNotes` pre-flights every item and returns ONE `{ ok:false,
+   * error }` writing nothing), so it can never yield 11 individual failures
+   * inside one call. The symptom therefore comes from N SEPARATE singular
+   * `create_note` calls, each of which threw FrontmatterValidationError and was
+   * individually returned as a plain (isError-less) result.
+   */
+  it("N separate create_note calls: only the failing ones carry isError", async () => {
+    const ids = ["20_notes/a", "20_notes/b", "20_notes/c", "20_notes/d"];
+    const failing = new Set(["20_notes/b", "20_notes/d"]);
+    createNoteMock.mockImplementation(async (id: string) => {
+      if (failing.has(id)) throw frontmatterError(id);
+      return { id, title: id };
+    });
+
+    const results = [];
+    for (const id of ids) {
+      results.push(
+        await client.callTool({
+          name: "create_note",
+          arguments: { path: id, type: "note", title: id },
+        }),
+      );
+    }
+    createNoteMock.mockReset();
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const failed = results.filter((r: any) => r.isError === true);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const succeeded = results.filter((r: any) => !r.isError);
+    expect(failed).toHaveLength(2);
+    expect(succeeded).toHaveLength(2);
+    expect(failed.map((r) => payload(r).note)).toEqual(["20_notes/b", "20_notes/d"]);
+    expect(succeeded.map((r) => payload(r).created.id)).toEqual([
+      "20_notes/a",
+      "20_notes/c",
+    ]);
+  });
+
+  it("bulk create_notes reports its atomic failure with isError (nothing written)", async () => {
+    createNotesMock.mockResolvedValueOnce({
+      ok: false,
+      error: { id: "20_notes/bulk-bad", reason: "frontmatter-invalid", message: "…" },
+      committed: [],
+    });
+    const res = await client.callTool({
+      name: "create_notes",
+      arguments: { notes: [{ id: "20_notes/bulk-ok" }, { id: "20_notes/bulk-bad" }] },
+    });
+    expect(res.isError).toBe(true);
+    const out = payload(res);
+    expect(out.ok).toBe(false);
+    expect(out.committed).toEqual([]);
+    // Atomicity: ONE offending item, never a per-item failure list.
+    expect(out.error.id).toBe("20_notes/bulk-bad");
+  });
+
+  it("an empty search is NOT an error (documented empty result)", async () => {
+    const res = await client.callTool({
+      name: "search_vault",
+      arguments: { query: "nichts" },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(payload(res).empty).toBe(true);
+  });
+
+  it("a read-only not-found lookup is NOT flagged as isError", async () => {
+    getNoteMock.mockResolvedValueOnce(null);
+    const res = await client.callTool({
+      name: "read_note",
+      arguments: { path: "20_notes/gone" },
+    });
+    expect(res.isError).toBeFalsy();
+    expect(payload(res).error).toBe("not-found");
   });
 });
 

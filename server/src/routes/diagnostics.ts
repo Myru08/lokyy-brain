@@ -13,6 +13,7 @@ import {
   listNotes,
   maskApiKey,
   sleepAgent,
+  indexVaultId,
 } from "@lokyy/core";
 import type { LlmRole, LlmRoutingConfig, ProviderConfig } from "@lokyy/core";
 import { config } from "../config.js";
@@ -55,7 +56,6 @@ interface DiagnosticCheck {
 const OLLAMA_HOST = () => process.env.OLLAMA_HOST ?? "http://localhost:11434";
 const EMBED_MODEL = "nomic-embed-text";
 const EMBED_DIM = 768;
-const DEFAULT_VAULT = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 const SEARCH_PROBE_QUERY = "test";
 
 /** Truncate any detail string to keep the response compact. */
@@ -263,7 +263,7 @@ async function checkSearchTier1(): Promise<DiagnosticCheck> {
 // degraded flag (Ollama down → no query vector → no semantic hits).
 async function checkSearchTier2(): Promise<DiagnosticCheck> {
   return guard("search", "Tier 2 Probe (semantisch)", async () => {
-    const t2 = new Tier2Provider({ vaultId: DEFAULT_VAULT });
+    const t2 = new Tier2Provider({ vaultId: indexVaultId() });
     try {
       const hits = await t2.search(SEARCH_PROBE_QUERY, { limit: 5 });
       const count = hits.length;
@@ -293,7 +293,7 @@ async function checkSearchTier2(): Promise<DiagnosticCheck> {
 // merged hit count so the operator sees what the app's search box returns.
 async function checkSearchCombined(): Promise<DiagnosticCheck> {
   return guard("search", "Combined Probe (Tier 1 + 2)", async () => {
-    const hits = await getMemoryProvider(DEFAULT_VAULT).search(SEARCH_PROBE_QUERY, {
+    const hits = await getMemoryProvider(indexVaultId()).search(SEARCH_PROBE_QUERY, {
       limit: 5,
     });
     const count = hits.length;
@@ -397,7 +397,7 @@ async function checkSleepAgent(): Promise<DiagnosticCheck[]> {
 // Cheap + synchronous (AC#6 in core forbids heavy queries here).
 async function checkMcpHealth(): Promise<DiagnosticCheck> {
   return guard("mcp", "Backend-Health-Snapshot", async () => {
-    const h = getHealth({ vaultId: DEFAULT_VAULT });
+    const h = getHealth({ vaultId: indexVaultId() });
     const quarantined = h.quarantined.length;
     return {
       ok: quarantined === 0,

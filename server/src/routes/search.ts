@@ -17,6 +17,7 @@ import {
   type RetrieveHit,
   type SearchOpts,
   type SearchPipelineInput,
+  indexVaultId,
 } from "@lokyy/core";
 
 /**
@@ -32,7 +33,6 @@ import {
  * under that scope.
  */
 
-const DEFAULT_VAULT = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 
 export const searchRoutes = new Hono();
 
@@ -78,7 +78,7 @@ searchRoutes.post("/search/reindex", async (c) => {
       const forgotten = isForgotten(parseFrontmatter(note.body).data);
       await bm25.upsert(
         note.id,
-        DEFAULT_VAULT,
+        indexVaultId(),
         note.title,
         note.body,
         note.tags,
@@ -103,14 +103,14 @@ searchRoutes.post("/search", async (c) => {
     folderPrefix?: string;
   }>();
   const opts: SearchOpts = { limit, tagFilter, folderPrefix };
-  const hits = await getMemoryProvider(DEFAULT_VAULT).search(query ?? "", opts);
+  const hits = await getMemoryProvider(indexVaultId()).search(query ?? "", opts);
   return c.json({ results: hits, degraded: hits.every((h) => h.tier === "t1") && hits.length > 0 ? false : false });
 });
 
 searchRoutes.get("/notes/:id{.+}/related", async (c) => {
   const noteId = c.req.param("id");
   const limit = Number(c.req.query("limit") ?? "5");
-  const hits = await getMemoryProvider(DEFAULT_VAULT).relatedNotes(noteId, { limit });
+  const hits = await getMemoryProvider(indexVaultId()).relatedNotes(noteId, { limit });
   return c.json({ results: hits });
 });
 
@@ -145,7 +145,7 @@ searchRoutes.post("/search/hybrid", async (c) => {
   // Embed the query via Tier-2 (which already speaks Ollama). On failure,
   // fall back to a zero-vector — the dense leg will return useless rankings
   // but the BM25 leg keeps working. Mark the response as degraded.
-  const t2 = new Tier2Provider({ vaultId: DEFAULT_VAULT });
+  const t2 = new Tier2Provider({ vaultId: indexVaultId() });
   let queryEmbedding: number[];
   let degraded: "no_embedding" | undefined;
   try {
@@ -169,7 +169,7 @@ searchRoutes.post("/search/hybrid", async (c) => {
     intent: body.intent,
     topK: body.topK,
     rrfK: body.rrfK,
-    vaultId: DEFAULT_VAULT,
+    vaultId: indexVaultId(),
   });
   // Eliminate accidental unused-binding lint on t2 — placeholder until the
   // embed helper migrates into core.
@@ -259,7 +259,7 @@ searchRoutes.post("/search/rag-fusion", async (c) => {
       intent: body.intent,
       topK: body.topK,
       rrfK: body.rrfK,
-      vaultId: DEFAULT_VAULT,
+      vaultId: indexVaultId(),
     });
     return hits.map((h) => ({ noteId: h.noteId, score: h.score }));
   };

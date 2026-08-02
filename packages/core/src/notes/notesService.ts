@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { Note, NoteSummary, TreeNode } from "@lokyy/shared";
-import { coreConfig } from "../util/coreConfig.js";
+import { coreConfig, indexVaultId } from "../util/coreConfig.js";
 import { lastModified, move, pull, remove, save } from "../git/gitService.js";
 import {
   parseAliases,
@@ -28,6 +28,7 @@ import { FrontmatterValidationError } from "../errors/FrontmatterValidationError
 import { TypeFolderMismatchError } from "../errors/TypeFolderMismatchError.js";
 import { checkPathMatchesType } from "./folderMap.js";
 import {
+  queueIndexRefresh,
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
 } from "../memory/index.js";
@@ -35,12 +36,23 @@ import { syncWikilinksToTemporalEdges } from "../graph/temporalEdges.js";
 import { invalidateUlidCache } from "./findByUlid.js";
 
 /**
- * Default vault id used by the BM25 search-index hooks. The Story-2 hybrid
- * retrieval pipeline runs in single-active-vault dev mode (mirrors the
- * convention already used by `searchRoutes`). Story 3's per-vault route
- * migration will plumb the real vault id through here.
+ * Story 5.8 — both search tiers are refreshed after every write, scoped to the
+ * SAME vault id (`indexVaultId()`, injected via `initCore`). Tier 2 additionally
+ * requires that id to be a real `vaults(id)` row: `note_embeddings.vault_id`
+ * has an FK, so the old `LOKYY_DEFAULT_VAULT ?? "default"` placeholder made
+ * every embedding insert bounce silently while Tier 1 (no FK) looked fine.
  */
-const DEFAULT_VAULT_ID = process.env.LOKYY_DEFAULT_VAULT ?? "default";
+function queueBothSearchTiers(
+  noteId: string,
+  title: string,
+  body: string,
+  tags: string[],
+  forgotten: boolean,
+): void {
+  const vaultId = indexVaultId();
+  queueSearchIndexRefresh(vaultId, noteId, title, body, tags, forgotten);
+  queueIndexRefresh(vaultId, noteId);
+}
 
 /**
  * Phase C Wave C2 / Story 1 — fire-and-forget hook into the bi-temporal
@@ -205,8 +217,7 @@ export async function saveNote(id: string, body: string): Promise<Note> {
   //    frontmatter's `forgotten` field is mirrored into the search corpus
   //    so the next query naturally hides this note. The frontmatter is
   //    still the source of truth; the DB column is the index.
-  queueSearchIndexRefresh(
-    DEFAULT_VAULT_ID,
+  queueBothSearchTiers(
     saved.id,
     saved.title,
     saved.body,
@@ -405,8 +416,7 @@ export async function createNote(
   // the frontmatter (newly created notes are almost always not forgotten,
   // but `opts.extra` could in principle carry the field e.g. for a pipe
   // that imports archived material).
-  queueSearchIndexRefresh(
-    DEFAULT_VAULT_ID,
+  queueBothSearchTiers(
     created.id,
     created.title,
     created.body,
@@ -796,8 +806,7 @@ export async function moveEntry(
       } catch {
         movedForgotten = false;
       }
-      queueSearchIndexRefresh(
-        DEFAULT_VAULT_ID,
+      queueBothSearchTiers(
         moved.id,
         moved.title,
         moved.body,

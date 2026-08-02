@@ -112,6 +112,27 @@ und kopiert; das Fremdsystem hinterlegt ihn als Secret.
 
 `*` = Pflichtparameter. Die exakten JSON-Schemas liefert `tools/list` zur Laufzeit.
 
+### 4a. Fehlerbehandlung — `isError` prüfen, nicht nur den Text
+
+Jedes Tool-Ergebnis ist ein `CallToolResult` mit `content` **und** einem optionalen
+`isError`-Feld (MCP-Spec). Ein fehlgeschlagener Aufruf (Scope-Verletzung,
+Frontmatter-Validierung, unbekanntes Tool, jeder sonstige Ausführungsfehler)
+setzt `isError: true` — der strukturierte Fehler-Payload (`{ error: "...", ... }`)
+steckt dabei weiterhin in `content[0].text`, unverändert im Format.
+
+**Wichtig für jedes anbindende System:** Verlasse dich nicht darauf, dass ein
+zurückgegebenes `content` automatisch Erfolg bedeutet — prüfe `result.isError`
+explizit, bevor ein Schreibvorgang als erledigt gilt. Ein Klient, der nur auf
+"kam eine Antwort zurück" statt auf `isError` prüft, hält einen abgelehnten
+Schreibvorgang für erfolgreich.
+
+Bewusst **kein** `isError` bei: einem leeren, aber gültigen Suchergebnis
+(`search_vault` ohne Treffer), einem lesenden Lookup, der nichts findet
+(`read_note`/`resolve_by_id` bei nicht existierendem Pfad — die Antwort auf
+"existiert das?" ist kein Fehler), und einem `validate_note`-Verdikt
+`{ valid:false, ... }` (das Tool hat korrekt gearbeitet, das Ergebnis der
+Prüfung ist die eigentliche Antwort).
+
 ---
 
 ## 5. Empfohlenes Nutzungsmuster (aus den Server-Instructions)

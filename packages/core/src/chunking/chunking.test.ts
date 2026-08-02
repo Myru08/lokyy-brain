@@ -1,5 +1,120 @@
 import { describe, it, expect } from "vitest";
-import { chunkNote, approximateTokens, hashChunk } from "./index.js";
+import {
+  chunkNote,
+  approximateTokens,
+  hashChunk,
+  EMBED_MODEL_CONTEXT_TOKENS,
+  DEFAULT_MAX_BODY_FULL_TOKENS,
+} from "./index.js";
+
+/**
+ * Story 5.8 AC#3/AC#4 — every emitted chunk must fit the embedding model's
+ * REAL context window.
+ *
+ * Verified against the deployed model rather than assumed:
+ *   $ ollama show nomic-embed-text
+ *     architecture     nomic-bert
+ *     context length   2048
+ *     embedding length 768
+ *
+ * and confirmed empirically — a 2048-token-plus prompt to
+ * `POST /api/embeddings` returns
+ * `HTTP 500 {"error":"the input length exceeds the context length"}`.
+ * The previous 6000-token `body_full` gate was ~3x the real limit, and
+ * `section` / `sliding_3para` had no gate at all.
+ */
+describe("Story 5.8 AC#3/AC#4 — chunk size is bounded by the model context window", () => {
+  const paragraph = (marker: string, chars: number): string =>
+    `${marker} ` + "wort ".repeat(Math.ceil(chars / 5));
+
+  it("the default body_full budget fits the model window with anchor headroom", () => {
+    expect(EMBED_MODEL_CONTEXT_TOKENS).toBe(2048);
+    expect(DEFAULT_MAX_BODY_FULL_TOKENS).toBeLessThan(EMBED_MODEL_CONTEXT_TOKENS);
+  });
+
+  it("a body between the old 6000 and the real limit no longer emits body_full", () => {
+    // ~3000 approx-tokens: accepted by the old 6000 gate, rejected now.
+    const body = paragraph("A", 12_000);
+    expect(approximateTokens(body)).toBeGreaterThan(DEFAULT_MAX_BODY_FULL_TOKENS);
+    expect(approximateTokens(body)).toBeLessThan(6000);
+    const chunks = chunkNote({ title: "Oversized", body });
+    expect(chunks.some((c) => c.chunkType === "body_full")).toBe(false);
+  });
+
+  it("no chunk of ANY type exceeds the model window — long unsubdivided section", () => {
+    const body = `## Huge Section\n\n${paragraph("S", 40_000)}`;
+    const chunks = chunkNote({ title: "Huge", body });
+    for (const c of chunks) {
+      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+    }
+  });
+
+  it("no chunk of ANY type exceeds the model window — wide sliding windows", () => {
+    const paras = Array.from({ length: 6 }, (_, i) => paragraph(`P${i}`, 6_000));
+    const chunks = chunkNote({ title: "Wide", body: paras.join("\n\n") });
+    for (const c of chunks) {
+      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+    }
+  });
+
+  it("an oversized section is SPLIT, not dropped — its content stays indexed", () => {
+    const body = [
+      "## Big",
+      "",
+      paragraph("HEAD", 9_000),
+      "",
+      paragraph("TAIL", 9_000),
+    ].join("\n");
+    const sections = chunkNote({ title: "Split", body }).filter(
+      (c) => c.chunkType === "section",
+    );
+    expect(sections.length).toBeGreaterThan(1);
+    // Every piece keeps the section's breadcrumb anchor.
+    for (const s of sections) expect(s.breadcrumb).toBe("Big");
+    const joined = sections.map((s) => s.text).join("\n");
+    expect(joined).toContain("HEAD");
+    expect(joined).toContain("TAIL");
+    // Indices stay sequential so the (chunk_type, chunk_idx) upsert key is stable.
+    expect(sections.map((s) => s.chunkIdx)).toEqual(sections.map((_, i) => i));
+  });
+
+  it("a single paragraph larger than the budget is hard-split, never emitted whole", () => {
+    const body = paragraph("MONO", 30_000);
+    const chunks = chunkNote({ title: "Mono", body });
+    const sections = chunks.filter((c) => c.chunkType === "section");
+    expect(sections.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+    }
+  });
+
+  it("splitting stays deterministic (hash-skip path depends on it)", () => {
+    const body = `## Big\n\n${paragraph("D", 20_000)}`;
+    const a = chunkNote({ title: "Det", body });
+    const b = chunkNote({ title: "Det", body });
+    expect(a.map((c) => `${c.chunkType}:${c.chunkIdx}:${c.hash}`)).toEqual(
+      b.map((c) => `${c.chunkType}:${c.chunkIdx}:${c.hash}`),
+    );
+  });
+
+  it("an explicit maxChunkTokens override is honoured for every chunk type", () => {
+    const paras = Array.from({ length: 6 }, (_, i) => paragraph(`Q${i}`, 400));
+    const chunks = chunkNote({
+      title: "Tight",
+      body: paras.join("\n\n"),
+      maxChunkTokens: 60,
+    });
+    for (const c of chunks) {
+      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(60);
+    }
+  });
+});
 
 describe("chunkNote — basic fan-out", () => {
   it("empty body yields title-only", () => {

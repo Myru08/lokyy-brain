@@ -12,7 +12,12 @@ export type {
 } from "./MemoryProvider.js";
 export { NullMemoryProvider } from "./MemoryProvider.js";
 export { Tier1Provider } from "./Tier1Provider.js";
-export { Tier2Provider, EmbeddingUnavailableError, type Tier2Config } from "./Tier2Provider.js";
+export {
+  Tier2Provider,
+  EmbeddingUnavailableError,
+  EmbeddingInputTooLargeError,
+  type Tier2Config,
+} from "./Tier2Provider.js";
 export { CombinedProvider } from "./CombinedProvider.js";
 export { Tier1BM25, type BM25Hit } from "./Tier1BM25.js";
 export {

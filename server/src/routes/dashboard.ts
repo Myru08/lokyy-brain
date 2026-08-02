@@ -9,6 +9,7 @@ import {
   getTimezone,
   getDateParts,
   type DataviewRow,
+  indexVaultId,
 } from "@lokyy/core";
 
 /**
@@ -33,7 +34,6 @@ import {
  */
 export const dashboardRoutes = new Hono();
 
-const DEFAULT_VAULT = process.env.LOKYY_DEFAULT_VAULT ?? "default";
 
 /** Top-N broken links surfaced on the health tile. */
 const BROKEN_TOP_N = 5;
@@ -116,7 +116,7 @@ dashboardRoutes.get("/", async (c) => {
     }
 
     // ── system ──────────────────────────────────────────────────────────────
-    const health = getHealth({ vaultId: DEFAULT_VAULT });
+    const health = getHealth({ vaultId: indexVaultId() });
 
     return c.json({
       counts: { notes: all.length, byType, tags: tags.length },

@@ -206,7 +206,10 @@ export async function initServerDeps(
   vaultId: string,
   agentId: string,
 ): Promise<void> {
-  initCore(coreConfig);
+  // Story 5.8 AC#2: core needs the resolved vaults-table id, otherwise
+  // notesService indexes under the "default" placeholder and every Tier-2
+  // write bounces off `note_embeddings`' FK.
+  initCore({ ...coreConfig, vaultId });
   initDb(databaseUrl);
   await ensureRepo();
   await loadScopes(coreConfig.vaultDir, agentId);
@@ -805,6 +808,17 @@ export function createServer(): Server {
         }
       }
       try {
+        // Story 7.9 — `text(payload, { isError: true })` marks a result as a
+        // FAILED tool execution at the protocol level. The rule applied across
+        // this switch:
+        //   - the tool did what was asked            → no isError
+        //   - a documented empty result or verdict   → no isError
+        //     (search_vault's `empty`, validate_note's `valid:false`)
+        //   - a READ-ONLY lookup found nothing       → no isError
+        //     (read_note / resolve_by_id / get_pipe_status / validate_note:
+        //      "does it exist?" is a question the caller legitimately asked)
+        //   - anything else that could not be done   → isError: true
+        //     (bad input, scope denial, failed/aborted mutation, unknown tool)
         switch (name) {
         case "read_note": {
           const path = String(args.path);
@@ -816,7 +830,7 @@ export function createServer(): Server {
         case "resolve_by_id": {
           const id = String(args.id ?? "");
           if (!isUlid(id)) {
-            return text({ error: "invalid-ulid-format", id });
+            return text({ error: "invalid-ulid-format", id }, { isError: true });
           }
           const resolved = await findByUlid(id);
           if (!resolved) return text({ error: "not-found", id });
@@ -860,7 +874,7 @@ export function createServer(): Server {
           // (derive from type+slug when omitted). Pure function so the
           // decision logic is unit-testable without a live DB/git server.
           const resolved = resolveCreateNoteInput(args, profile);
-          if (!resolved.ok) return text(resolved.error);
+          if (!resolved.ok) return text(resolved.error, { isError: true });
           const { type, path } = resolved;
 
           if (!canWrite(`${path}.md`)) throw new ScopeViolation("write", path);
@@ -905,12 +919,15 @@ export function createServer(): Server {
             return text({ created: note, commitPrefix: activeScope().commitPrefix });
           } catch (err) {
             if (err instanceof TypeFolderMismatchError) {
-              return text({
-                error: "type-folder-mismatch",
-                type: err.type,
-                expectedFolder: err.expectedFolder,
-                gotPath: err.gotPath,
-              });
+              return text(
+                {
+                  error: "type-folder-mismatch",
+                  type: err.type,
+                  expectedFolder: err.expectedFolder,
+                  gotPath: err.gotPath,
+                },
+                { isError: true },
+              );
             }
             throw err;
           }
@@ -957,24 +974,33 @@ export function createServer(): Server {
           const skills = await listSkillNotes(currentMcpSession()?.vaultDir ?? activeVaultDir);
           const skill = skills.find((s) => s.skill_name === skillName);
           if (!skill) {
-            return text({ ok: false, error: "skill-not-found", skill_name: skillName });
+            return text(
+              { ok: false, error: "skill-not-found", skill_name: skillName },
+              { isError: true },
+            );
           }
           if (skill.execution === "server") {
-            return text({
-              ok: false,
-              error: "server-execution-not-supported",
-              skill_name: skillName,
-            });
+            return text(
+              {
+                ok: false,
+                error: "server-execution-not-supported",
+                skill_name: skillName,
+              },
+              { isError: true },
+            );
           }
           const input = (args.input ?? {}) as Record<string, unknown>;
           const validation = validateSkillInput(skill, input);
           if (!validation.ok) {
-            return text({
-              ok: false,
-              error: "invalid-input",
-              skill_name: skillName,
-              field_errors: validation.errors ?? [],
-            });
+            return text(
+              {
+                ok: false,
+                error: "invalid-input",
+                skill_name: skillName,
+                field_errors: validation.errors ?? [],
+              },
+              { isError: true },
+            );
           }
           const prompt = renderPrompt(skill, input);
           // allowed_tools is advisory (PRD Q3): prepend a single hint line, do
@@ -1012,17 +1038,20 @@ export function createServer(): Server {
           // frontmatter injection + git write to the shared core importSkill.
           const skillName = String(args.skill_name ?? "");
           const parsed = parseImportSkillFiles(args.files);
-          if (!parsed.ok) return text(parsed.error);
+          if (!parsed.ok) return text(parsed.error, { isError: true });
           const files = parsed.files;
 
           // No-manifest / empty guards surfaced as structured errors up front
           // (core throws plain Errors here; classify them to typed shapes so a
           // caller can react instead of getting tool-execution-failed).
           if (files.length === 0) {
-            return text({ error: "no-files", skill_name: skillName });
+            return text({ error: "no-files", skill_name: skillName }, { isError: true });
           }
           if (!files.some((f) => isSkillManifestRel(f.relPath))) {
-            return text({ error: "no-skill-manifest", skill_name: skillName });
+            return text(
+              { error: "no-skill-manifest", skill_name: skillName },
+              { isError: true },
+            );
           }
 
           // Per-file write-scope: build each target vault path under the
@@ -1051,7 +1080,9 @@ export function createServer(): Server {
           // missing source, so we check existence here to return the typed shape
           // instead of letting it fall through to the error wrapper.
           const existing = await getNote(path);
-          if (!existing) return text({ error: "not-found", path });
+          // A delete whose target does not exist is a mutation that did NOT
+          // happen → protocol-level failure (unlike a read-only lookup miss).
+          if (!existing) return text({ error: "not-found", path }, { isError: true });
           if (hard) {
             await deleteEntry(path, "note");
             return text({ deleted: { path }, mode: "hard" });
@@ -1099,7 +1130,9 @@ export function createServer(): Server {
           const scopeErr = firstWriteScopeViolation(items.map((i) => i.id));
           if (scopeErr) throw scopeErr;
           const result = await createNotes(items);
-          return text(result);
+          // Bulk ops are atomic on validation: `ok:false` means NOTHING was
+          // written, so the whole call failed.
+          return text(result, { isError: !result.ok });
         }
         case "update_notes": {
           // Story 10.10 — atomic bulk update via core `updateNotes`. Same
@@ -1108,7 +1141,7 @@ export function createServer(): Server {
           const scopeErr = firstWriteScopeViolation(items.map((i) => i.id));
           if (scopeErr) throw scopeErr;
           const result = await updateNotes(items);
-          return text(result);
+          return text(result, { isError: !result.ok });
         }
         case "list_notes": {
           // Story 10.11 — frontmatter filter via dataview `queryNotes`, then the
@@ -1199,7 +1232,7 @@ export function createServer(): Server {
           // karpathy vault derives RAW/Wiki/Outputs paths and accepts
           // raw-source/wiki-article/frage-report; `para` keeps Default.
           const resolved = resolveManagedCreate(args, new Date(), profile);
-          if (!resolved.ok) return text(resolved.error);
+          if (!resolved.ok) return text(resolved.error, { isError: true });
           const { type, path, title, tags } = resolved;
 
           if (!canWrite(`${path}.md`)) throw new ScopeViolation("write", path);
@@ -1230,12 +1263,15 @@ export function createServer(): Server {
             return text({ created: note, commitPrefix: activeScope().commitPrefix });
           } catch (err) {
             if (err instanceof TypeFolderMismatchError) {
-              return text({
-                error: "type-folder-mismatch",
-                type: err.type,
-                expectedFolder: err.expectedFolder,
-                gotPath: err.gotPath,
-              });
+              return text(
+                {
+                  error: "type-folder-mismatch",
+                  type: err.type,
+                  expectedFolder: err.expectedFolder,
+                  gotPath: err.gotPath,
+                },
+                { isError: true },
+              );
             }
             throw err;
           }
@@ -1251,7 +1287,12 @@ export function createServer(): Server {
           // Thin wrapper over the pipe queue — the HTTP POST /api/pipes/import
           // pendant. Enqueue + return the PipeJob; the queue drains async.
           const url = String(args.url ?? "");
-          if (!url) return text({ error: "missing-url", message: "`url` is required." });
+          if (!url) {
+            return text(
+              { error: "missing-url", message: "`url` is required." },
+              { isError: true },
+            );
+          }
           const typeOverride =
             typeof args.type === "string" && args.type.length > 0
               ? (args.type as PipeType)
@@ -1270,19 +1311,22 @@ export function createServer(): Server {
         }
 
           default:
-            return text({ error: "unknown-tool", name: requestedName });
+            return text({ error: "unknown-tool", name: requestedName }, { isError: true });
         }
       } catch (err) {
         // Story 10.7 — per-tool structured errors keep their format, additively
         // tagged with `error_class` so callers can decide retry vs. give-up.
         if (err instanceof ScopeViolation) {
           // Scope/validation issues are the caller's to fix → user-error.
-          return text({
-            error: "scope_violation",
-            action: err.action,
-            path: err.path,
-            error_class: "user-error",
-          });
+          return text(
+            {
+              error: "scope_violation",
+              action: err.action,
+              path: err.path,
+              error_class: "user-error",
+            },
+            { isError: true },
+          );
         }
         if (err instanceof FrontmatterValidationError) {
           // A schema-validation failure is the caller's to fix AND is safe to
@@ -1300,7 +1344,8 @@ export function createServer(): Server {
               ...(Array.isArray(allowed) ? { allowed } : {}),
             };
           });
-          return text({
+          return text(
+            {
             error: "frontmatter-validation-failed",
             error_class: "user-error",
             note: err.noteId,
@@ -1313,18 +1358,20 @@ export function createServer(): Server {
               "Erfinde KEINE Fakten: ist eine Quelle/URL/ein Autor unbekannt, nutze den Platzhalter \"—\". " +
               "Nutze NIEMALS eine Shell, ExecCommand oder das lokale Dateisystem, um die Notiz zu schreiben — " +
               "der einzige Schreibweg ist dieses MCP.",
-          });
+            },
+            { isError: true },
+          );
         }
         // Anything else reaching here is an unclassified handler throw; route it
         // through the classifier so the raw backend message never leaks and a
         // class is always present (replaces the old raw-message fallback).
         // Use the name the caller actually invoked (alias-aware).
-        return text(classifyToolError(err, requestedName));
+        return text(classifyToolError(err, requestedName), { isError: true });
       }
     } catch (outer) {
       // Infra exception thrown AROUND the switch (pool acquire, etc.) — the SDK
       // would otherwise emit its generic error. Classify + return structured.
-      return text(classifyToolError(outer, requestedName));
+      return text(classifyToolError(outer, requestedName), { isError: true });
     }
   });
 
@@ -1446,7 +1493,8 @@ async function moveNote(from: string, to: string) {
   if (!canWrite(`${to}.md`)) throw new ScopeViolation("write", to);
   // Structured not-found up front (moveEntry would otherwise throw a git error).
   const existing = await getNote(from);
-  if (!existing) return text({ error: "not-found", path: from });
+  // Story 7.9 — the requested move did not happen → protocol-level failure.
+  if (!existing) return text({ error: "not-found", path: from }, { isError: true });
 
   await moveEntry(from, to, "note");
 
@@ -1526,7 +1574,9 @@ async function validateNote(
         params: {},
       },
     ];
-    return text({ valid: false, errors });
+    // Neither `path` nor `body`: the caller's input was unusable, so nothing
+    // was validated (unlike a real `valid:false` verdict, which IS an answer).
+    return text({ valid: false, errors }, { isError: true });
   }
 
   const data: FrontmatterMap = parseFrontmatter(markdown).data;
@@ -1867,7 +1917,17 @@ export {
   type ManagedCreateInputError,
 } from "@lokyy/core";
 
-function text(payload: unknown) {
+/**
+ * Wrap a tool payload in the MCP `CallToolResult` envelope.
+ *
+ * Story 7.9 — `opts.isError` sets the protocol's own failure signal. Per the
+ * SDK's `CallToolResult` doc comment, tool EXECUTION errors must be reported
+ * on the result with `isError: true` (never as a JSON-RPC protocol error), so
+ * a client can tell a rejected write from a successful one without parsing the
+ * body. The field is OMITTED on success (the SDK types it optional and treats
+ * absent as false) rather than serialized as `isError: false`.
+ */
+function text(payload: unknown, opts?: { isError?: boolean }) {
   return {
     content: [
       {
@@ -1875,6 +1935,7 @@ function text(payload: unknown) {
         text: typeof payload === "string" ? payload : JSON.stringify(payload, null, 2),
       },
     ],
+    ...(opts?.isError ? { isError: true } : {}),
   };
 }
 

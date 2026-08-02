@@ -32,18 +32,23 @@ export async function initMcp(): Promise<void> {
     console.warn("[mcp-mount] LOKYY_MCP_TOKEN not set — /mcp endpoint disabled.");
     return;
   }
+  const envVaultId = process.env.LOKYY_VAULT_ID;
+  const vaultId =
+    envVaultId && envVaultId.length > 0
+      ? envVaultId
+      : await resolveVaultId(config.databaseUrl);
   const coreConfig = {
     vaultDir: config.vaultDir,
     gitRemote: config.gitRemote,
     gitBranch: config.gitBranch,
     gitAuthorName: config.gitAuthorName,
     gitAuthorEmail: config.gitAuthorEmail,
+    // Story 5.8 AC#2: pass the ALREADY-resolved id through to core so
+    // notesService indexes into the same vault the MCP tools read from. This
+    // reuses the existing resolution above — it does not add or change any
+    // fallback logic.
+    vaultId,
   };
-  const envVaultId = process.env.LOKYY_VAULT_ID;
-  const vaultId =
-    envVaultId && envVaultId.length > 0
-      ? envVaultId
-      : await resolveVaultId(config.databaseUrl);
   const agentId = process.env.LOKYY_AGENT_ID ?? "claude-code";
   await initServerDeps(coreConfig, config.databaseUrl, vaultId, agentId);
   ready = true;

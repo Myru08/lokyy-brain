@@ -26,6 +26,8 @@ export {
   vaultConfigFor,
   vaultWorkingCopyPath,
   vaultsRoot,
+  // Story 5.8: the single vault id both search tiers (write AND read) agree on.
+  indexVaultId,
 } from "./util/coreConfig.js";
 
 // ─── gitService (Story 1.3) ─────────────────────────────────────────────
@@ -422,6 +424,7 @@ export {
   CombinedProvider,
   NullMemoryProvider,
   EmbeddingUnavailableError,
+  EmbeddingInputTooLargeError,
   getMemoryProvider,
   queueIndexRefresh,
   type MemoryProvider,
