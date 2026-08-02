@@ -11,7 +11,16 @@
 # Sicherheit: KEIN `ports:` an postgres/ollama/forgejo → laut Doku bleiben nicht
 # gemappte Services intern ("Unmapped services stay internal and accessible only
 # to other services in the same compose"). Öffentlich wird nur, was eine Domain
-# (SERVICE_FQDN_*) bekommt: PWA, Server-API, MCP, Forgejo-UI.
+# (SERVICE_FQDN_*) bekommt: lokyy-brain und Forgejo-UI.
+#
+# EIN Brain-Container liefert UI + API + MCP (Story 1.18):
+#   • PWA        → `/`       (server/src/index.ts serviert pwa/dist + SPA-Fallback)
+#   • REST-API   → `/api/*`
+#   • MCP        → `/mcp`    (server/src/mcpMount.ts, in-process gemountet)
+# Deshalb gibt es KEINEN separaten `lokyy-pwa`- und KEINEN `lokyy-mcp`-Container
+# mehr: der nginx-PWA-Layer proxyte nur `/api/` und machte `/mcp` unerreichbar,
+# und der Standalone-MCP-Container überbuchte das RAM der Box und riss das Brain
+# mit. Eine Domain, ein Prozess, ein Port.
 #
 # DB-Passwort: SERVICE_PASSWORD_* ist der dokumentierte Auto-Secret-Mechanismus.
 # Doku: diese Variablen "expand inline within compose files, including database
@@ -24,9 +33,10 @@
 #   2. Repository = git-URL dieses Repos, Compose File Path = docker-compose.coolify.yml
 #   3. NICHT "Connect To Predefined Network" aktivieren (nicht nötig, alles in 1 Compose).
 #   4. Pro öffentlichem Service in der UI "Add Domain" setzen → füllt SERVICE_FQDN_*.
+#      Nötig sind nur zwei: lokyy-brain und forgejo.
 #   5. Restliche Env aus .env.coolify.example eintragen, Deploy.
 #
-# claude.ai Custom Connector → URL = https://<MCP-Domain>/mcp, Bearer = LOKYY_MCP_TOKEN.
+# claude.ai Custom Connector → URL = https://<Brain-Domain>/mcp, Bearer = LOKYY_MCP_TOKEN.
 
 services:
   # ── Postgres (ParadeDB: pgvector + pg_search) ──────────────────────────
@@ -87,7 +97,9 @@ services:
 
   # ── Forgejo (Vault git remote + OAuth-Provider) ────────────────────────
   forgejo:
-    image: codeberg.org/forgejo/forgejo:9
+    # v15 = aktuelle LTS-Linie (v15.0.6, 2026-07-30); erhält Security-Fixes für
+    # 15 Monate. v16 wäre latest-stable, LTS ist für fremde Vault-Daten sicherer.
+    image: codeberg.org/forgejo/forgejo:15
     restart: unless-stopped
     environment:
       - SERVICE_FQDN_FORGEJO_3000
@@ -104,7 +116,7 @@ services:
       retries: 10
       start_period: 30s
 
-  # ── Server (Hono REST API + Setup-Wizard-Backend) ──────────────────────
+  # ── Brain (PWA-UI + Hono REST API + in-process MCP + Setup-Wizard) ─────
   lokyy-brain:
     build:
       context: .
@@ -137,6 +149,16 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - COHERE_API_KEY=${COHERE_API_KEY:-}
+      # ── In-process MCP (/mcp) — ersetzt den früheren lokyy-mcp-Container ──
+      # Bearer-Token für claude.ai/Claude Code. Ohne diese Var ist /mcp deaktiviert.
+      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
+      # Leer lassen bis der Setup-Wizard durch ist; danach die vaults.id pinnen.
+      - LOKYY_VAULT_ID=${LOKYY_VAULT_ID:-}
+      - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
+      # OAuth 2.1 für den claude.ai-Connector; fallen ohne Wert auf
+      # LOKYY_MCP_TOKEN zurück (siehe mcp/src/oauth.ts).
+      - LOKYY_OAUTH_PASSWORD=${LOKYY_OAUTH_PASSWORD:-}
+      - LOKYY_OAUTH_SIGNING_SECRET=${LOKYY_OAUTH_SIGNING_SECRET:-}
       - PORT=8787
       - NODE_ENV=production
     volumes:
@@ -153,64 +175,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
-
-  # ── PWA (nginx/wget-served static build) ───────────────────────────────
-  lokyy-pwa:
-    build:
-      context: .
-      dockerfile: pwa/Dockerfile
-    restart: unless-stopped
-    depends_on:
-      lokyy-brain:
-        condition: service_started
-    environment:
-      - SERVICE_FQDN_LOKYYPWA_80
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:80/ >/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      retries: 6
-      start_period: 15s
-
-  # ── MCP HTTP transport (claude.ai Custom-Connector-Endpoint) ───────────
-  lokyy-mcp:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: mcp             # WICHTIG: explizit mcp-Stage.
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-      lokyy-brain:
-        condition: service_started
-    environment:
-      - SERVICE_FQDN_LOKYYMCP_8788
-      - LOKYY_DB_URL=postgres://postgres:${SERVICE_PASSWORD_POSTGRES}@postgres:5432/lokyy_brain
-      - LOKYY_VAULT_DIR=/var/lokyy/vault
-      - LOKYY_GIT_REMOTE=${GIT_REMOTE:-}
-      - LOKYY_GIT_BRANCH=${GIT_BRANCH:-main}
-      - LOKYY_VAULT_ID=${LOKYY_VAULT_ID:-}
-      - LOKYY_VAULT_PROFILE=${LOKYY_VAULT_PROFILE:-para}
-      - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
-      # Bearer-Token, das du in claude.ai einträgst. EIN klares Env (kein
-      # Auto-Secret, weil du den Wert woanders — im Connector — brauchst).
-      - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN}
-      - LOKYY_MCP_HTTP_PORT=8788
-      - LOKYY_BRAIN_URL=http://lokyy-brain:8787
-      - NODE_ENV=production
-    volumes:
-      - vault-data:/var/lokyy/vault
-    healthcheck:
-      test:
-        - CMD
-        - node
-        - -e
-        - "require('net').connect(8788,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
 
 volumes:
   postgres-data:
