@@ -1,20 +1,26 @@
 # lokyy-brain — Coolify Deploy Guide
 
 End-to-end recipe for deploying lokyy-brain on a self-hosted Coolify VPS.
-Targets the `docker-compose.coolify.yml` stack: server + PWA + MCP + Forgejo +
-ParadeDB + Ollama.
+Targets the `docker-compose.coolify.yml` stack: Brain + Forgejo + ParadeDB +
+Ollama.
+
+> **Ein Container für UI, API und MCP.** Der `lokyy-brain`-Prozess serviert die
+> PWA auf `/` ([`server/src/index.ts`](../server/src/index.ts)), die REST-API auf
+> `/api/*` und den MCP-Endpoint für den claude.ai-Connector in-process auf `/mcp`
+> ([`server/src/mcpMount.ts`](../server/src/mcpMount.ts)). Separate `lokyy-pwa`-
+> und `lokyy-mcp`-Container gibt es **nicht mehr**: der
+> nginx-PWA-Layer proxyte nur `/api/` und machte `/mcp` unerreichbar, und der
+> Standalone-MCP-Container überbuchte das RAM der Box und riss das Brain mit.
+> Du brauchst deshalb nur **eine** Lokyy-Domain, nicht drei.
 
 ---
 
 ## Deploy-Pattern
 
-**Empfohlen: All-in-one** (`docker-compose.coolify.yml`, dieses Dokument) —
-alle sechs Services in einer Coolify-Application, ein Netz, native
-Docker-DNS-Auflösung. Braucht einen Build-Host mit ≥6 GB freiem RAM; bei
-kleineren Hosts gibt's gerne OOM-Kills (Exit 255) — dann Build-Ressourcen in
-Coolify hochsetzen, statt auf ein Split-Resource-Pattern auszuweichen (das
-bringt eigene Cross-Resource-DNS-Fallen mit, siehe `docker-compose.local.yml`s
-Kommentare zum selben Thema).
+**All-in-one** (`docker-compose.coolify.yml`, dieses Dokument) — alle vier
+Services in einer Coolify-Application, ein Netz, native Docker-DNS-Auflösung.
+Braucht einen Build-Host mit ≥6 GB freiem RAM; bei kleineren Hosts gibt's gerne
+OOM-Kills (Exit 255) — dann die Build-Ressourcen in Coolify hochsetzen.
 
 Für eine schlanke Einzelservice-Demo statt des vollen Stacks siehe
 `docker-compose.coolify-demo.yml` im Repo-Root.
@@ -35,66 +41,77 @@ Für eine schlanke Einzelservice-Demo statt des vollen Stacks siehe
 
 | Subdomain | Type | Target | Used by |
 |-----------|------|--------|---------|
-| `lokyy.example.tld` | A | VPS IP | `lokyy-brain` (REST API) + `lokyy-pwa` (UI) |
-| `mcp.lokyy.example.tld` | A | VPS IP | `lokyy-mcp` (claude.ai Custom Connector) |
+| `lokyy.example.tld` | A | VPS IP | `lokyy-brain` — UI (`/`), REST API (`/api/*`) und MCP (`/mcp`) |
 | `forgejo.lokyy.example.tld` | A | VPS IP | `forgejo` (vault git) |
+
+Eine eigene `mcp.`-Subdomain ist **nicht** mehr nötig — der MCP-Endpoint liegt
+als Pfad `/mcp` auf der Brain-Domain.
 
 Wait for DNS propagation (`dig +short lokyy.example.tld`) before continuing —
 Coolify's Traefik needs working DNS to fetch Let's Encrypt certificates.
 
 ---
 
-## 2. Add the project to Coolify
+## 2. Fork erstellen
+
+Für ein Remote-Deployment brauchst du **einen eigenen Fork** dieses Repos.
+
+**Warum?** Coolify ist ein Server und kann sich nicht mit deinem persönlichen
+GitHub-Zugang anmelden — es braucht einen eigenen Schlüssel, der direkt am
+Repository hängt (einen „Deploy-Key"). Eintragen darf den nur, wer
+Admin-Rechte am Repo hat: in deinem eigenen Fork bist du das, im Original
+nicht. Das ist der übliche Weg — bei jedem anderen selbst gehosteten Projekt
+läuft es genauso.
+
+1. Oben rechts auf **Fork** klicken. Dein Fork ist ebenfalls privat und gehört
+   dir.
+2. In Coolify später **deinen Fork** als Repository angeben, nicht das Original.
+
+> **Updates einspielen:** Dein Fork zieht Änderungen nicht automatisch nach.
+> Wenn eine neue Version erscheint, in deinem Fork auf **„Sync fork" →
+> „Update branch"** klicken (ein Klick im GitHub-UI), danach in Coolify neu
+> deployen. Ein `git pull` in einem Clone deines Forks holt **nur deinen
+> Fork** — nicht das Original.
+
+---
+
+## 3. Add the project to Coolify
 
 1. Coolify UI → **Projects** → **+ Add**.
 2. Resource type: **Docker Compose**.
-3. Source: this repo is **private**, so Coolify needs its own credential —
-   choose **Private Repository (with deploy key)**, not a public URL.
-   - Repository: `oliverhees/lokyy-brain`
+3. Source: **Private Repository (with deploy key)** — Coolify erzeugt ein
+   Schlüsselpaar und zeigt dir den **öffentlichen** Teil. Diesen in deinem Fork
+   unter **Settings → Deploy keys → Add deploy key** eintragen. Schreibzugriff
+   wird **nicht** gebraucht, Coolify muss nur lesen.
+   - Repository: **dein Fork**, z. B. `dein-name/lokyy-brain`
    - Branch: `main`
    - Compose File Path: `docker-compose.coolify.yml`
 4. Save. Don't deploy yet.
 
-> **Warum ein Deploy-Key, obwohl ich Zugriff auf das Repo habe?**
-> Dein persönlicher GitHub-Zugang ist ein *Menschen*-Zugang — dein Server
-> kann sich damit nicht anmelden. Er braucht einen eigenen Schlüssel, der
-> direkt am Repo hängt.
->
-> **Und warum kann ich den nicht selbst eintragen?** Deploy-Keys darf nur
-> eintragen, wer Admin-Rechte am Repo hat. Deshalb:
->
-> 1. In Coolify **Private Repository (with deploy key)** wählen — Coolify
->    erzeugt das Schlüsselpaar und zeigt dir den **öffentlichen** Teil.
-> 2. Ein Issue über die Vorlage **„Deploy-Key anfragen"** öffnen und den
->    öffentlichen Key dort einfügen (nie den privaten!).
-> 3. Der Key wird als **Nur-Lesen**-Key eingetragen, das Issue geschlossen —
->    danach kannst du deployen.
->
-> **Häufiger Stolperstein:** GitHub erlaubt denselben Schlüssel nur bei
-> *einem einzigen* Repository als Deploy-Key. Nutzt dein Coolify denselben
-> Key schon woanders, lehnt GitHub ihn ab — dann in Coolify ein neues
+> **Häufiger Stolperstein:** GitHub erlaubt denselben Schlüssel nur bei *einem
+> einzigen* Repository als Deploy-Key. Nutzt dein Coolify denselben Key schon
+> für ein anderes Projekt, lehnt GitHub ihn ab — dann in Coolify ein neues
 > Schlüsselpaar speziell für dieses Repo erzeugen.
 
 ---
 
-## 3. Attach domains to each service
+## 4. Attach domains to each service
 
 Inside the new resource → **Domains** tab. For each service, click "Add Domain":
 
 | Service | Add Domain |
 |---------|------------|
 | `lokyy-brain` | `https://lokyy.example.tld` |
-| `lokyy-pwa` | `https://lokyy.example.tld` *(same FQDN if you split paths; or `ui.lokyy.example.tld`)* |
-| `lokyy-mcp` | `https://mcp.lokyy.example.tld` |
 | `forgejo` | `https://forgejo.lokyy.example.tld` |
 
-Coolify auto-injects matching `SERVICE_FQDN_LOKYYBRAIN_8787`,
-`SERVICE_FQDN_LOKYYPWA_80`, `SERVICE_FQDN_LOKYYMCP_8788`,
-`SERVICE_FQDN_FORGEJO_3000` env vars and writes Traefik labels.
+Coolify auto-injects the matching `SERVICE_FQDN_LOKYYBRAIN_8787` and
+`SERVICE_FQDN_FORGEJO_3000` env vars and writes Traefik labels. Nur diese zwei
+Services bekommen eine Domain; `postgres` und `ollama` bleiben ohne `ports:`
+compose-intern.
 
 ---
 
-## 4. Set environment variables
+## 5. Set environment variables
 
 In the Coolify UI → **Environment Variables**, paste the contents of
 [`.env.coolify.example`](../.env.coolify.example) and replace the `CHANGE_ME_*`
@@ -102,16 +119,23 @@ placeholders. The variables Coolify provides automatically (the `SERVICE_FQDN_*`
 ones) are NOT pasted manually — they appear once you attach domains in step 3.
 
 Mandatory at first deploy:
-- `POSTGRES_PASSWORD` — `openssl rand -hex 32`
-- `LOKYY_MCP_TOKEN` — `openssl rand -hex 32` (this is the Bearer token claude.ai sends)
+- `LOKYY_MCP_TOKEN` — `openssl rand -hex 32` (this is the Bearer token claude.ai sends;
+  ohne diese Var deaktiviert `mcpMount.ts` den `/mcp`-Endpoint komplett)
 - `GIT_AUTHOR_EMAIL`
 - `GIT_REMOTE` — set to the future Forgejo URL, e.g.
   `https://forgejo.lokyy.example.tld/oliver/lokyy-vault` (the repo is created in step 6).
+
+**Nicht** manuell setzen: `POSTGRES_PASSWORD`. Im All-in-one-Pattern erzeugt
+Coolify das DB-Passwort als Auto-Secret `SERVICE_PASSWORD_POSTGRES` und
+expandiert es sowohl im `postgres`-Service als auch in der `DATABASE_URL`.
 
 Leave empty for now (filled in step 6):
 - `LOKYY_VAULT_ID`
 
 Optional:
+- `LOKYY_OAUTH_PASSWORD` / `LOKYY_OAUTH_SIGNING_SECRET` — für den OAuth-2.1-Flow
+  des claude.ai-Connectors. Ohne Wert fallen beide auf `LOKYY_MCP_TOKEN` zurück;
+  in Produktion ein eigenes `openssl rand -hex 32` für das Signing-Secret setzen.
 - `OLLAMA_PULL_CHAT=true` to pre-pull `llama3.1:8b` (~5 GB; only if you want
   fully local LLM and have the RAM).
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `COHERE_API_KEY` — can also be added
@@ -119,26 +143,27 @@ Optional:
 
 ---
 
-## 5. First deploy
+## 6. First deploy
 
 Click **Deploy**. Coolify will:
 
 1. Clone the repo.
-2. Build `lokyy-brain`, `lokyy-pwa`, `lokyy-mcp` images (first build ~5-8 min).
-3. Pull `paradedb/paradedb`, `ollama/ollama`, `codeberg.org/forgejo/forgejo:9`.
+2. Build the `lokyy-brain` image (`server` target; first build ~5-8 min).
+3. Pull `paradedb/paradedb`, `ollama/ollama`, `codeberg.org/forgejo/forgejo:15`.
 4. Start everything in dependency order.
 5. Fetch TLS certs from Let's Encrypt for each attached domain.
 
-`lokyy-mcp` will crash-loop on the first deploy because `LOKYY_VAULT_ID` is
-empty — that's fine, the rest of the stack still comes up. The PWA and the
-Setup Wizard work without MCP.
+Der `/mcp`-Endpoint meldet auf dem ersten Deploy `503 mcp-unavailable`, solange
+`LOKYY_VAULT_ID` leer ist bzw. der Vault noch nicht existiert. Das ist erwartet
+und **kein** Crash: `initMcp()` ist best-effort und bricht den Brain-Start nicht
+ab, UI und Setup-Wizard laufen normal.
 
 Watch the logs. When `lokyy-brain` reaches `lokyy-brain Server laeuft auf :8787`
-and `postgres`, `forgejo`, `lokyy-pwa` are **healthy** in the UI, proceed.
+and `postgres` + `forgejo` are **healthy** in the UI, proceed.
 
 ---
 
-## 6. Run the Setup Wizard
+## 7. Run the Setup Wizard
 
 1. Open `https://lokyy.example.tld` in a browser.
 2. The Setup Wizard appears (the server detects `setup_complete=false`).
@@ -157,7 +182,7 @@ and `postgres`, `forgejo`, `lokyy-pwa` are **healthy** in the UI, proceed.
 
 ---
 
-## 7. Wire MCP
+## 8. Wire MCP
 
 1. SSH into the VPS (or use Coolify's terminal shell on the postgres container).
 2. Grab the vault ID:
@@ -168,18 +193,19 @@ and `postgres`, `forgejo`, `lokyy-pwa` are **healthy** in the UI, proceed.
    ```
 
 3. Coolify → Environment Variables → set `LOKYY_VAULT_ID=<that-ulid>`.
-4. Redeploy **only** `lokyy-mcp` (Coolify → Services → lokyy-mcp → Redeploy).
+4. Redeploy `lokyy-brain` — der MCP-Mount wird beim Brain-Start initialisiert,
+   also übernimmt erst ein Neustart die neue Vault-ID.
 
 Verify:
 
 ```bash
-curl https://mcp.lokyy.example.tld/mcp/health
+curl https://lokyy.example.tld/mcp/health
 # {"ok":true,"sessions":0}
 ```
 
 ---
 
-## 8. Verify a note write hits Forgejo
+## 9. Verify a note write hits Forgejo
 
 1. In the PWA → New Note → "Hello from Coolify" → save.
 2. Inside Forgejo → `lokyy-vault` repo → latest commit should be your save.
@@ -187,7 +213,7 @@ curl https://mcp.lokyy.example.tld/mcp/health
 
 ---
 
-## 9. Configure AI providers (optional)
+## 10. Configure AI providers (optional)
 
 PWA → Settings → AI Providers. Add an Anthropic, OpenAI, or Cohere key.
 Alternatively rely on local Ollama if `OLLAMA_PULL_CHAT=true` was set.
@@ -197,10 +223,10 @@ The Settings UI calls `PUT /api/llm/config` which persists keys to
 
 ---
 
-## 10. Connect AI clients
+## 11. Connect AI clients
 
 ### claude.ai Custom Connector
-- URL: `https://mcp.lokyy.example.tld/mcp`
+- URL: `https://lokyy.example.tld/mcp`
 - Auth: `Bearer <LOKYY_MCP_TOKEN>`
 
 ### Cursor / Claude Desktop / other MCP-stdio clients
@@ -208,7 +234,7 @@ Use the MCP setup CLI from a developer machine:
 
 ```bash
 pnpm --filter @lokyy/mcp setup -- \
-  --remote https://mcp.lokyy.example.tld/mcp \
+  --remote https://lokyy.example.tld/mcp \
   --token <LOKYY_MCP_TOKEN>
 ```
 
@@ -226,13 +252,22 @@ the build on a beefier host and push the image.
 `dig +short lokyy.example.tld`. Let's Encrypt rate-limits failed challenges,
 so wait 10 minutes before retrying.
 
-**`lokyy-mcp` keeps crash-looping after step 7** — check `LOKYY_VAULT_ID` is
-set correctly. Also confirm `LOKYY_MCP_TOKEN` has no leading/trailing
-whitespace (Coolify env editor sometimes pastes a newline).
+**`/mcp` antwortet `503 mcp-unavailable` nach Schritt 7** — der MCP-Mount ist
+nicht initialisiert. Prüfe in dieser Reihenfolge: (1) `LOKYY_MCP_TOKEN` ist
+gesetzt — ohne Token deaktiviert `mcpMount.ts` den Endpoint bewusst; (2)
+`LOKYY_VAULT_ID` zeigt auf die richtige `vaults.id`; (3) `lokyy-brain` wurde
+nach der Env-Änderung neu gestartet. Ein `[mcp-mount] MCP mounted at /mcp`
+im Brain-Log bestätigt den Erfolg. Achte auf Whitespace am Token-Ende (der
+Coolify-Env-Editor pastet gerne einen Newline mit).
+
+**`/mcp` liefert die PWA statt einer MCP-Antwort** — dann läuft ein Reverse
+Proxy vor dem Brain, der nur `/api/` durchreicht (z. B. der alte
+`pwa/nginx.conf`-Layer). Im aktuellen Compose gibt es diesen Layer nicht mehr;
+die Domain muss direkt auf `lokyy-brain:8787` zeigen.
 
 **`pg_search` extension missing** — you're not on the ParadeDB image. Confirm
-`postgres.image = paradedb/paradedb:latest`. The first migration that needs it
-is `0004_pg_search`.
+`postgres.image = paradedb/paradedb:latest-pg17`. The first migration that needs
+it is `0004_pg_search`.
 
 **Ollama init never finishes** — first model pull is ~270 MB
 (`nomic-embed-text`) and can take several minutes on slow uplinks. Re-run
