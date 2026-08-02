@@ -18,6 +18,7 @@ import {
 import type { LlmRole, LlmRoutingConfig, ProviderConfig } from "@lokyy/core";
 import { config } from "../config.js";
 import { logBuffer } from "../lib/logBuffer.js";
+import { forgejoStatus, toDiagnosticFields } from "../lib/forgejoStatus.js";
 
 /**
  * `GET /api/diagnostics` — an in-app, per-service self-test suite.
@@ -93,22 +94,14 @@ async function guard(
 }
 
 // ── Forgejo ────────────────────────────────────────────────────────────────
-// Reuses the same `git ls-remote` probe shape as admin.ts checkForgejo. When
-// no remote is wired yet (pre-setup) we report info, not error.
+// Shares the exact verdict `GET /api/admin/status` reports (Story 1.17): the
+// remote comes from the `vaults` row with the owner's OAuth token injected, and
+// "no remote wired yet" stays info, not error. Same function, same strings —
+// the Diagnostics and System tabs cannot disagree.
 async function checkForgejo(): Promise<DiagnosticCheck> {
-  return guard("forgejo", "Remote erreichbar (git ls-remote)", async () => {
-    if (!config.gitRemote) {
-      return {
-        ok: false,
-        severity: "info",
-        detail: "GIT_REMOTE nicht gesetzt — Vault-Clone wird vom Setup-Wizard provisioniert.",
-      };
-    }
-    await exec("git", ["ls-remote", "--heads", config.gitRemote, config.gitBranch], {
-      timeout: 5_000,
-    });
-    return { ok: true };
-  });
+  return guard("forgejo", "Remote erreichbar (git ls-remote)", async () =>
+    toDiagnosticFields(await forgejoStatus()),
+  );
 }
 
 // ── Postgres: connection + pgvector + pg_search/BM25 ─────────────────────────

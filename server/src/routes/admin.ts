@@ -12,8 +12,6 @@ import {
   setSupadataApiKey,
   setDefaultImportFolder,
   maskSupadataKey,
-  getValidForgejoToken,
-  loadAllTokensForUser,
   listSkillNotes,
   parseFrontmatter,
 } from "@lokyy/core";
@@ -21,6 +19,14 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import { config } from "../config.js";
 import { requireAdmin } from "../middleware/auth.js";
+import {
+  extractHost,
+  findOauthTokenForHost,
+  forgejoStatus,
+  injectOauthToken,
+  stripTokenFromMessage,
+  toStatusEntry,
+} from "../lib/forgejoStatus.js";
 
 
 const exec = promisify(execFile);
@@ -357,6 +363,12 @@ adminRoutes.post("/system-settings/reclone", async (c) => {
 
 // GET /api/admin/status — live health of dependencies
 //
+// The Forgejo probe runs through the shared `forgejoStatus()` (Story 1.17):
+// it reads the remote from the `vaults` row — NOT from `GIT_REMOTE`, which is
+// empty by design for wizard-based installs — and authenticates with the vault
+// owner's OAuth token. `/api/diagnostics` renders the SAME verdict, so the
+// System and Diagnostics tabs cannot contradict each other.
+//
 // Each entry carries a stable `service` key (used by the PWA to look up the
 // per-service remediation hint) alongside `{ ok, error? }`. The Ollama probe
 // additionally yields a derived `embeddings` entry: when Ollama is reachable
@@ -366,13 +378,13 @@ adminRoutes.post("/system-settings/reclone", async (c) => {
 // (`postgres.pgvector`, `ollama.hasNomicEmbed`) are preserved unchanged.
 adminRoutes.get("/status", async (c) => {
   const [forgejo, postgresStatus, ollama] = await Promise.all([
-    checkForgejo(config.gitRemote, config.gitBranch),
+    forgejoStatus(),
     checkPostgres(config.databaseUrl),
     checkOllama(process.env.OLLAMA_HOST ?? "http://localhost:11434"),
   ]);
   const embeddings = deriveEmbeddingsStatus(ollama);
   return c.json({
-    forgejo: { service: "forgejo", ...forgejo },
+    forgejo: toStatusEntry(forgejo),
     postgres: { service: "postgres", ...postgresStatus },
     ollama: { service: "ollama", ...ollama },
     embeddings,
@@ -669,105 +681,6 @@ async function walkMarkdownFiles(
 
 function maskDsn(dsn: string): string {
   return dsn.replace(/(:)([^@]+)(@)/, "$1***$3");
-}
-
-/**
- * Extract the bare host (no scheme, no path) from a clone URL.
- *
- *   https://forgejo.example.com/oliver/vault.git → "forgejo.example.com"
- *
- * Returns null for SSH/bare slugs/anything we can't parse — caller treats
- * null as "not OAuth-eligible, fall back to anonymous test".
- */
-function extractHost(gitRemote: string): string | null {
-  try {
-    const u = new URL(gitRemote);
-    if (u.protocol !== "https:" && u.protocol !== "http:") return null;
-    return u.host;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Find a `forgejo_oauth_tokens` row for `(userId, host)`.
- *
- * The token row stores `forgejo_base_url` like `https://forgejo.example.com`
- * — we match by host so an HTTPS clone URL with the same hostname picks up
- * the right token regardless of whether the stored base ends in a slash or
- * has a path suffix.
- */
-async function findOauthTokenForHost(
-  userId: string,
-  host: string,
-): Promise<string | null> {
-  const rows = await loadAllTokensForUser(userId);
-  // `forgejo_base_url` is whatever the operator set in env — normalize to
-  // host before comparing so trailing-slash / scheme drift doesn't matter.
-  // Tokens are returned ALREADY DECRYPTED by loadAllTokensForUser, so we
-  // can hand them straight to `git ls-remote`.
-  for (const r of rows) {
-    let tokenHost: string;
-    try {
-      tokenHost = new URL(r.forgejoBaseUrl).host;
-    } catch {
-      tokenHost = r.forgejoBaseUrl.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-    }
-    if (tokenHost !== host) continue;
-    // Run through the refresh-token-aware helper so an expired access_token
-    // gets transparently refreshed before the `git ls-remote` test runs.
-    // Falls back to the directly-loaded value if the env-level OAuth-app
-    // config isn't wired up (refresh impossible, but the legacy token is
-    // still our best bet — let git decide whether it works).
-    const fresh = await getValidForgejoToken(userId, {
-      forgejoBaseUrl: r.forgejoBaseUrl,
-      clientId: config.forgejoOauthClientId,
-      clientSecret: config.forgejoOauthClientSecret,
-    });
-    return fresh ?? r.accessToken ?? null;
-  }
-  return null;
-}
-
-/**
- * Inject `oauth2:<token>@` into an HTTPS clone URL. Same convention
- * `setupVaultFromForgejo` uses in `gitService.ts`. Token NEVER touches the
- * stored `vaults.git_remote` column — only the in-flight `git ls-remote`
- * argument.
- */
-function injectOauthToken(gitRemote: string, accessToken: string): string {
-  try {
-    const u = new URL(gitRemote);
-    if (u.protocol !== "https:" && u.protocol !== "http:") return gitRemote;
-    return `${u.protocol}//oauth2:${accessToken}@${u.host}${u.pathname}${u.search}`;
-  } catch {
-    return gitRemote;
-  }
-}
-
-/**
- * Remove the OAuth token from any error string before returning it to the
- * client / logs. Git tends to echo the full URL back in stderr; we never
- * want the token to surface there.
- */
-function stripTokenFromMessage(message: string, token: string): string {
-  if (!token) return message;
-  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return message
-    .replace(new RegExp(`oauth2:${escaped}@`, "g"), "oauth2:***@")
-    .replace(new RegExp(escaped, "g"), "***");
-}
-
-async function checkForgejo(remote: string, branch: string) {
-  try {
-    await exec("git", ["ls-remote", "--heads", remote, branch], { timeout: 5_000 });
-    return { ok: true };
-  } catch (err) {
-    return {
-      ok: false,
-      error: err instanceof Error ? err.message.slice(0, 200) : String(err),
-    };
-  }
 }
 
 async function checkPostgres(dsn: string) {

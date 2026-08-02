@@ -101,7 +101,7 @@ interface ServiceRemediation {
 const SERVICE_REMEDIATION: Record<string, ServiceRemediation> = {
   forgejo: {
     docker: "docker compose up -d forgejo",
-    note: "Verbindung im Vault-Tab prüfen (GIT_REMOTE / Forgejo-Token).",
+    note: "Vault-Remote und Forgejo-Verbindung im Vault-Tab prüfen.",
   },
   postgres: {
     docker: "docker compose up -d postgres",
