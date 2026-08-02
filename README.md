@@ -186,6 +186,14 @@ also weiter die alte Version laufen haben.
 Was aktuell in welcher Version behoben/dazugekommen ist, steht in
 **[CHANGELOG.md](CHANGELOG.md)**.
 
+### Vor v1.9 installiert?
+
+Die Standard-Struktur (Ordner, Vorlagen, Struktur-Regeln) gab es anfangs nur
+bei einer Neuinstallation. Du musst nichts neu aufsetzen: unter
+**Einstellungen → System → "Vault-Grundgerüst nachziehen"** siehst du zuerst,
+was in deinem Vault fehlt, und ziehst es dann mit einem Klick nach. Bestehende
+Dateien werden dabei nie überschrieben.
+
 ## Der Setup-Wizard im Detail
 
 Fünf Schritte, geführt:

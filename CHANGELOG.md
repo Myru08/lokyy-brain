@@ -14,6 +14,21 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.10 — 2026-08-02
+
+### Neu
+- **Bestehende Vaults können die Standard-Struktur nachträglich bekommen.**
+  Wer vor v1.9 installiert hat, findet unter Einstellungen → System jetzt
+  "Vault-Grundgerüst nachziehen". Erst wird angezeigt, was fehlt (ohne
+  irgendetwas zu ändern), dann werden nur die fehlenden Teile angelegt —
+  eigene Änderungen an Vorlagen oder Struktur-Regeln bleiben unangetastet.
+- **Der Schutz gegen kaputte Notizen wird separat eingeschaltet.** Vorher
+  zeigt Lokyy dir, wie viele deiner vorhandenen Notizen die Pflichtangaben
+  noch nicht haben. Der Schutz greift nur beim Speichern einer betroffenen
+  Notiz — er sperrt dich nie aus deinem Vault aus und ändert nie eine Datei.
+
+---
+
 ## v1.9 — 2026-08-02
 
 ### Neu
