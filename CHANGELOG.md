@@ -5,16 +5,39 @@ aktuelle Version steht immer ganz oben.
 
 ## Roadmap — woran gerade gearbeitet wird
 
-- **Erstinstallation zuverlässiger machen.** In seltenen Fällen kann der
-  allererste Start hängen bleiben, bevor der Einrichtungsassistent
-  erreichbar ist.
-- **Forgejo-Verbindung beim Anlegen eines neuen Repositories.** Aktuell kann
-  es dabei zu einer Fehlermeldung kommen; der Weg über ein bereits
-  bestehendes Repository funktioniert einwandfrei.
-- **Status-Anzeige korrigieren.** Die System-Übersicht zeigt Forgejo teils
-  fälschlich als "nicht verbunden" an, obwohl alles läuft.
-- **Deploy-Konfiguration aufräumen** für alle, die remote (z. B. über
-  Coolify) hosten.
+- **Import-Pipes** (YouTube-Transkripte, Webseiten, PDFs, Sprachnotizen
+  direkt in den Vault).
+- **Graph-Ansicht ausbauen** und die "ähnliche Notizen"-Vorschläge in der
+  Seitenleiste.
+- **Weitere Rückmeldungen aus der Community** — meldet gerne, was euch
+  auffällt.
+
+---
+
+## v1.9 — 2026-08-02
+
+### Neu
+- **Der Vault startet jetzt mit vollständiger Struktur.** Bisher war nach
+  der Installation praktisch ein leerer Ordner da. Jetzt sind alle
+  Standard-Ordner (Projekte, Notizen, Aufnahmen, Entscheidungen,
+  Meetings, Kunden, Ideen, Archiv …), Vorlagen für neue Notizen und die
+  Struktur-Regeln von Anfang an angelegt.
+- **Schutz gegen kaputte Notizen.** Der Vault prüft jetzt selbst beim
+  Speichern, ob eine Notiz die Pflichtangaben hat, und blockiert sonst.
+  So kann die Struktur nicht mit der Zeit verrotten.
+
+### Behoben
+- **Erstinstallation bleibt nicht mehr hängen.** Unter bestimmten
+  Bedingungen konnte der allererste Start abbrechen, bevor der
+  Einrichtungsassistent überhaupt erreichbar war.
+- **Neues Forgejo-Repository anlegen funktioniert wieder.** Der Weg über
+  den Einrichtungsassistenten scheiterte bisher an einer zu eng gefassten
+  Berechtigung.
+- **System-Status zeigt Forgejo korrekt an.** Die Übersicht meldete
+  teilweise "nicht verbunden", obwohl alles lief.
+- **Aufgeräumte Deploy-Konfiguration** für alle, die remote (z. B. über
+  Coolify) hosten — überflüssige Container entfernt, Forgejo-Version
+  aktualisiert.
 
 ---
 
