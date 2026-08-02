@@ -25,6 +25,7 @@
 - [Features](#features)
 - [Quickstart — lokale Installation](#quickstart--lokale-installation)
 - [Befehle im Überblick](#befehle-im-überblick)
+- [Update — auf eine neue Version bringen](#update--auf-eine-neue-version-bringen)
 - [Der Setup-Wizard im Detail](#der-setup-wizard-im-detail)
 - [Architektur](#architektur)
 - [Memory-Modell](#memory-modell)
@@ -161,6 +162,29 @@ wieder hoch, sobald Docker (Desktop) läuft. Wichtig für die PWA: ein
 gepinntes Icon öffnet nur den Browser auf `localhost:8095` — es kann Docker
 nicht selbst starten. Läuft der Hintergrunddienst nicht, zeigt die PWA einen
 Verbindungsfehler; Docker muss also laufen (siehe oben).
+
+## Update — auf eine neue Version bringen
+
+Deine Notizen (Vault), Datenbank und Einstellungen bleiben bei einem Update
+unangetastet — sie liegen in Docker-Volumes, nicht im Code. Ein Update
+betrifft nur die Anwendung selbst:
+
+```bash
+cd lokyy-brain          # dein geklonter Ordner
+git pull
+./install.sh            # macOS/Linux — baut die neuen Images und startet neu
+.\install.ps1            # Windows (PowerShell)
+```
+
+`install.sh`/`install.ps1` sind bewusst auch für Updates gedacht, nicht nur
+für die Erstinstallation — sie bauen neu (`--build`) und starten den Stack
+danach automatisch neu. Datenbank-Änderungen laufen automatisch beim Start
+mit, dafür musst du nichts extra tun. Ein `./lokyy.sh start` reicht für ein
+Update **nicht** — das startet bewusst ohne Neubau (siehe oben), du würdest
+also weiter die alte Version laufen haben.
+
+Was aktuell in welcher Version behoben/dazugekommen ist, steht in
+**[CHANGELOG.md](CHANGELOG.md)**.
 
 ## Der Setup-Wizard im Detail
 
