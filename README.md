@@ -296,9 +296,17 @@ den claude.ai Custom Connector, oder einen eigenen Agenten.
 
 ```
 MCP-Endpoint: http://localhost:8788/mcp
-Auth:         Bearer-Token (siehe LOKYY_MCP_TOKEN in docker-compose.local.yml
-              — Default zum Testen, für echten Einsatz ändern)
+Auth:         Bearer-Token aus Einstellungen → MCP → „Token erzeugen"
 ```
+
+Der Token wird **genau einmal** angezeigt — gespeichert wird nur sein Hash, also
+gleich kopieren. Er gilt sofort, ohne Neustart, und lässt sich jederzeit
+widerrufen oder neu erzeugen.
+
+> ⚠️ Bis v1.10 nutzte jede Installation den Default `LOKYY_MCP_TOKEN` aus
+> `docker-compose.local.yml` — der steht im öffentlichen Repo, ist also allen
+> bekannt. Er funktioniert weiterhin (damit nichts abreißt), wird dir in den
+> Einstellungen aber als unsicher markiert. Erzeuge dir einen eigenen.
 
 Claude Code oder jeder andere MCP-Client verbindet sich mit genau diesen zwei
 Angaben; Tools werden automatisch entdeckt.

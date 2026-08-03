@@ -119,8 +119,6 @@ placeholders. The variables Coolify provides automatically (the `SERVICE_FQDN_*`
 ones) are NOT pasted manually — they appear once you attach domains in step 3.
 
 Mandatory at first deploy:
-- `LOKYY_MCP_TOKEN` — `openssl rand -hex 32` (this is the Bearer token claude.ai sends;
-  ohne diese Var deaktiviert `mcpMount.ts` den `/mcp`-Endpoint komplett)
 - `GIT_AUTHOR_EMAIL`
 - `GIT_REMOTE` — set to the future Forgejo URL, e.g.
   `https://forgejo.lokyy.example.tld/oliver/lokyy-vault` (the repo is created in step 6).
@@ -133,9 +131,16 @@ Leave empty for now (filled in step 6):
 - `LOKYY_VAULT_ID`
 
 Optional:
+- `LOKYY_MCP_TOKEN` — Legacy-Bearer-Token. **Nicht mehr nötig:** den Token für
+  die MCP-Anbindung erzeugst du nach dem Setup unter Einstellungen → MCP, er
+  gilt sofort und ohne Neustart. Die Variable bleibt nur als Fallback für
+  bestehende Installationen gültig. Lässt du sie leer, akzeptiert `/mcp`
+  ausschließlich die in der Oberfläche erzeugten Token — der empfohlene Zustand.
 - `LOKYY_OAUTH_PASSWORD` / `LOKYY_OAUTH_SIGNING_SECRET` — für den OAuth-2.1-Flow
   des claude.ai-Connectors. Ohne Wert fallen beide auf `LOKYY_MCP_TOKEN` zurück;
-  in Produktion ein eigenes `openssl rand -hex 32` für das Signing-Secret setzen.
+  ist auch diese Variable leer, ist der OAuth-Flow **deaktiviert** (`/mcp`
+  funktioniert weiterhin per Bearer-Token). Willst du den claude.ai-Connector
+  nutzen, setze beide — für das Signing-Secret ein eigenes `openssl rand -hex 32`.
 - `OLLAMA_PULL_CHAT=true` to pre-pull `llama3.1:8b` (~5 GB; only if you want
   fully local LLM and have the RAM).
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `COHERE_API_KEY` — can also be added
@@ -154,9 +159,10 @@ Click **Deploy**. Coolify will:
 5. Fetch TLS certs from Let's Encrypt for each attached domain.
 
 Der `/mcp`-Endpoint meldet auf dem ersten Deploy `503 mcp-unavailable`, solange
-`LOKYY_VAULT_ID` leer ist bzw. der Vault noch nicht existiert. Das ist erwartet
-und **kein** Crash: `initMcp()` ist best-effort und bricht den Brain-Start nicht
-ab, UI und Setup-Wizard laufen normal.
+der Vault noch nicht existiert. Das ist erwartet und **kein** Crash: `initMcp()`
+ist best-effort und bricht den Brain-Start nicht ab, UI und Setup-Wizard laufen
+normal. Sobald der Wizard durch ist, initialisiert sich `/mcp` beim nächsten
+Request selbst — ohne Neustart.
 
 Watch the logs. When `lokyy-brain` reaches `lokyy-brain Server laeuft auf :8787`
 and `postgres` + `forgejo` are **healthy** in the UI, proceed.
@@ -184,17 +190,20 @@ and `postgres` + `forgejo` are **healthy** in the UI, proceed.
 
 ## 8. Wire MCP
 
-1. SSH into the VPS (or use Coolify's terminal shell on the postgres container).
-2. Grab the vault ID:
+**Seit v1.11 ist hier nichts mehr zu tun.** Der Brain löst die Vault-ID selbst
+auf und initialisiert den MCP-Mount beim ersten Request nach dem Setup-Wizard —
+kein `LOKYY_VAULT_ID`, kein Redeploy. Den Bearer-Token erzeugst du in der
+Oberfläche unter **Einstellungen → MCP** (siehe Abschnitt 11).
 
-   ```bash
-   docker exec $(docker ps -q -f name=postgres) \
-     psql -U postgres -d lokyy_brain -c "SELECT id FROM vaults;"
-   ```
+`LOKYY_VAULT_ID` bleibt nur für Sonderfälle nützlich: wenn in derselben
+Datenbank mehrere Vaults liegen und du den MCP explizit auf einen davon
+festnageln willst. Dann gilt weiterhin — Wert setzen, `lokyy-brain` neu
+starten, weil die Variable beim Start gelesen wird:
 
-3. Coolify → Environment Variables → set `LOKYY_VAULT_ID=<that-ulid>`.
-4. Redeploy `lokyy-brain` — der MCP-Mount wird beim Brain-Start initialisiert,
-   also übernimmt erst ein Neustart die neue Vault-ID.
+```bash
+docker exec $(docker ps -q -f name=postgres) \
+  psql -U postgres -d lokyy_brain -c "SELECT id FROM vaults;"
+```
 
 Verify:
 
@@ -225,9 +234,12 @@ The Settings UI calls `PUT /api/llm/config` which persists keys to
 
 ## 11. Connect AI clients
 
+Den Token erzeugst du in der Oberfläche: **Einstellungen → MCP → „Token
+erzeugen"**. Er wird genau einmal angezeigt — gleich kopieren.
+
 ### claude.ai Custom Connector
 - URL: `https://lokyy.example.tld/mcp`
-- Auth: `Bearer <LOKYY_MCP_TOKEN>`
+- Auth: `Bearer <dein Token aus Einstellungen → MCP>`
 
 ### Cursor / Claude Desktop / other MCP-stdio clients
 Use the MCP setup CLI from a developer machine:
@@ -235,7 +247,7 @@ Use the MCP setup CLI from a developer machine:
 ```bash
 pnpm --filter @lokyy/mcp setup -- \
   --remote https://lokyy.example.tld/mcp \
-  --token <LOKYY_MCP_TOKEN>
+  --token <dein Token aus Einstellungen → MCP>
 ```
 
 This generates the right `mcpServers` block for your client config.
@@ -253,12 +265,18 @@ the build on a beefier host and push the image.
 so wait 10 minutes before retrying.
 
 **`/mcp` antwortet `503 mcp-unavailable` nach Schritt 7** — der MCP-Mount ist
-nicht initialisiert. Prüfe in dieser Reihenfolge: (1) `LOKYY_MCP_TOKEN` ist
-gesetzt — ohne Token deaktiviert `mcpMount.ts` den Endpoint bewusst; (2)
-`LOKYY_VAULT_ID` zeigt auf die richtige `vaults.id`; (3) `lokyy-brain` wurde
-nach der Env-Änderung neu gestartet. Ein `[mcp-mount] MCP mounted at /mcp`
-im Brain-Log bestätigt den Erfolg. Achte auf Whitespace am Token-Ende (der
-Coolify-Env-Editor pastet gerne einen Newline mit).
+nicht initialisiert, weil **kein Vault existiert**. Das ist der normale Zustand
+vor dem Setup-Wizard; der Token ist daran unschuldig (ein falscher Token gäbe
+`401`, nicht `503`). Sobald der Wizard durchgelaufen ist, initialisiert sich
+`/mcp` beim nächsten Request selbst — ein **Neustart ist nicht nötig**. Bleibt
+der 503 danach bestehen, prüfe: (1) das Brain-Log auf `no vault rows in DB`;
+(2) `LOKYY_VAULT_ID` zeigt, falls gesetzt, auf die richtige `vaults.id`. Ein
+`[mcp-mount] MCP mounted at /mcp` im Brain-Log bestätigt den Erfolg.
+
+`LOKYY_MCP_TOKEN` ist dafür **nicht** mehr erforderlich: ist die Variable leer,
+akzeptiert `/mcp` ausschließlich die in Einstellungen → MCP erzeugten Token —
+das ist der empfohlene Zustand. Setzt du sie doch, achte auf Whitespace am Ende
+(der Coolify-Env-Editor pastet gerne einen Newline mit).
 
 **`/mcp` liefert die PWA statt einer MCP-Antwort** — dann läuft ein Reverse
 Proxy vor dem Brain, der nur `/api/` durchreicht (z. B. der alte

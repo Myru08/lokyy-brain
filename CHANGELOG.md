@@ -14,6 +14,32 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.11 — 2026-08-03
+
+### Neu
+- **Dein MCP-Zugangsschlüssel wird jetzt in Lokyy selbst verwaltet.** Bisher
+  musstest du dafür eine Konfigurationsdatei bearbeiten und den Stack neu
+  starten. Jetzt findest du unter Einstellungen → MCP einen Bereich, in dem du
+  einen Schlüssel erzeugst, kopierst und jederzeit wieder ungültig machst —
+  samt fertigem Verbindungsblock zum Einfügen in deine KI. Änderungen wirken
+  sofort, ohne Neustart.
+- **Bei der Einrichtung wird automatisch ein eigener Schlüssel erzeugt** und
+  dir einmalig angezeigt. Bitte gleich kopieren: aus Sicherheitsgründen wird er
+  nur verschlüsselt gespeichert und lässt sich später nicht wieder anzeigen —
+  nur neu erzeugen.
+
+### Behoben
+- **Wichtig für alle bisherigen Installationen:** bis v1.10 hatte jede
+  Installation denselben Zugangsschlüssel, und der ist öffentlich einsehbar.
+  Bitte erzeuge dir unter Einstellungen → MCP einen eigenen. Der alte
+  funktioniert weiterhin, damit nichts abreißt — er wird dir in den
+  Einstellungen aber als unsicher markiert, solange er in Gebrauch ist.
+- **Die MCP-Anbindung funktioniert direkt nach der Installation.** Bisher
+  blieb sie nach einer frischen Installation stumm, bis der Stack einmal neu
+  gestartet wurde — auch mit korrektem Schlüssel.
+
+---
+
 ## v1.10 — 2026-08-02
 
 ### Neu
