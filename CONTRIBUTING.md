@@ -4,6 +4,13 @@ Schön, dass du hier bist. Lokyy Brain steht unter der **AGPL-3.0** — du darfs
 es nutzen, verändern und weitergeben, ohne jemanden zu fragen. Wenn du eine
 Verbesserung zurückgeben willst, umso besser.
 
+## Verhaltenskodex
+
+Für dieses Projekt gilt der [Contributor Covenant v2.1](CODE_OF_CONDUCT.md) —
+der Standard, den die meisten Open-Source-Projekte verwenden. Kurz: geh
+respektvoll miteinander um. Wenn dir etwas begegnet, das dagegen verstößt,
+melde es bei [@oliverhees](https://github.com/oliverhees).
+
 ## Bevor du loslegst
 
 **Öffne zuerst ein Issue.** Auch für kleine Sachen. Das kostet dich zwei
@@ -26,6 +33,10 @@ erwartet. Wenn du an die Logs kommst (`./lokyy.sh doctor`), häng sie an.
   `docs/DEPLOY.md` dazu — nicht in einen Folge-PR.
 - **Schreib auf Deutsch oder Englisch**, wie es dir leichter fällt. Beides ist
   in diesem Projekt normal.
+- **KI-generierter Code ist willkommen** — Lokyy ist ein KI-Werkzeug, es wäre
+  seltsam, das zu verbieten. Du musst nicht angeben, womit du gearbeitet hast.
+  Aber der Code ist deiner: du hast ihn gelesen, verstanden und getestet.
+  Erkennbar ungeprüfte Einreichungen schließen wir mit einem Verweis hierher.
 
 ## Contributor License Agreement (CLA)
 
