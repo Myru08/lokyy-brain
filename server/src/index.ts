@@ -20,6 +20,7 @@ import {
   runMigrations,
   setLlmProviders,
   sleepAgent,
+  warmUpdateCheck,
 } from "@lokyy/core";
 import { notesRoutes } from "./routes/notes.js";
 import { vaultRoutes } from "./routes/vault.js";
@@ -519,6 +520,14 @@ async function main() {
   serve({ fetch: app.fetch, port: config.port });
   console.log(`lokyy-brain Server laeuft auf :${config.port}`);
   console.log(`Vault: ${config.vaultDir}`);
+
+  // ── Update-Check aufwärmen (Story 7.12) ──────────────────────────────
+  // Deliberately AFTER serve() and deliberately NOT awaited: the server is
+  // already accepting requests while this runs. It fills the 6h cache once
+  // per start, so "beim Start wird immer geprüft" holds without any page view
+  // triggering a network request. `warmUpdateCheck` swallows every failure;
+  // the extra .catch() only guards against future changes to that contract.
+  void warmUpdateCheck().catch(() => {});
 }
 
 main().catch((err) => {

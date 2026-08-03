@@ -152,6 +152,11 @@ services:
       - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-lokyy-brain@localhost}
       - OLLAMA_HOST=http://ollama:11434
       - OLLAMA_EMBED_MODEL=${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      # Story 7.12 — Ein-Klick-Update: der Brain reicht `POST /api/system/update`
+      # an den Sidecar weiter. Fehlt der Token oder ist der Sidecar nicht
+      # erreichbar (z. B. Coolify), meldet der Brain `canUpdate: false`.
+      - LOKYY_UPDATER_URL=${LOKYY_UPDATER_URL:-http://lokyy-updater:8799}
+      - LOKYY_UPDATER_TOKEN=${LOKYY_UPDATER_TOKEN:-}
       - SUPADATA_API_KEY=${SUPADATA_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
@@ -231,6 +236,62 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  # ── Updater-Sidecar (Story 7.12) ───────────────────────────────────────
+  # Der EINZIGE Container, der zwei Dinge sieht, die sonst niemand sieht: das
+  # Host-Repo (/repo) und den Docker-Socket. Damit kann er das, was der Brain
+  # nicht kann — `git pull` im Host-Klon und `docker compose build`. Im Brain-
+  # Image liegen nur gebaute Artefakte, kein Git-Checkout; ein Socket-Proxy
+  # allein hilft deshalb nicht (Story 7.12, Entscheidung 3).
+  #
+  # ⚠️ Wer den Docker-Socket hat, hat faktisch Root auf dem Host. Der Gegenwert
+  # ist, dass diese Fähigkeit NICHT im Brain liegt, der Netz-Eingaben verarbeitet.
+  # Genau deshalb bleibt dieser Dienst winzig: kein `ports:` (nur über das
+  # Compose-Netz erreichbar, nie auf den Host gemappt), keine Laufzeit-
+  # Abhängigkeiten, Zugriff nur mit LOKYY_UPDATER_TOKEN.
+  #
+  # ⚠️ BEWUSSTE AUSNAHME von der SYNC-PFLICHT im Kopf dieser Datei: Dieser
+  # Service gehört NICHT in docker-compose.coolify*.yml. Remote-Deployments
+  # aktualisieren über Coolify; dort gibt es weder Host-Klon noch Socket, und
+  # der Brain meldet dann korrekt `canUpdate: false` (AC#11).
+  #
+  # ⚠️ Der Updater schließt sich beim Update selbst aus (er würde sich sonst
+  # mitten im Lauf neu erzeugen und sterben). Eine GEÄNDERTE Updater-Definition
+  # oder ein neues Updater-Image greift daher erst beim nächsten manuellen
+  # `./install.sh`.
+  lokyy-updater:
+    build:
+      context: .
+      dockerfile: updater/Dockerfile
+    restart: unless-stopped
+    # KEIN `ports:` — Absicht, nicht Vergesslichkeit. Siehe oben.
+    environment:
+      # Gemeinsames Geheimnis Brain → Updater. OHNE diesen Wert verweigert der
+      # Updater jedes Update (und der Brain zeigt statt eines toten Knopfes
+      # einen Hinweis). install.sh soll ihn beim Setup einmalig erzeugen.
+      - LOKYY_UPDATER_TOKEN=${LOKYY_UPDATER_TOKEN:-}
+      - LOKYY_UPDATER_REPO=/repo
+      # Mehrere Dateien mit ':' trennen (wie COMPOSE_FILE) — für Forks mit
+      # eigener Override-Datei.
+      - LOKYY_UPDATER_COMPOSE_FILE=${LOKYY_UPDATER_COMPOSE_FILE:-docker-compose.local.yml}
+      - LOKYY_UPDATER_HEALTH_URL=http://lokyy-brain:8787/health
+      - LOKYY_UPDATER_PORT=8799
+      - NODE_ENV=production
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Relativer Bind → Compose löst ihn gegen das Projektverzeichnis auf dem
+      # HOST auf, also gegen den geklonten lokyy-brain-Ordner.
+      - ${LOKYY_REPO_DIR:-.}:/repo
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('net').connect(8799,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   postgres-data:

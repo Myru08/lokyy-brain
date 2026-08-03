@@ -636,8 +636,231 @@ export interface OwnMcpTokenCreated extends OwnMcpTokenMeta {
   connector: string;
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Story 7.12 — Versionsprüfung und Ein-Klick-Update.
+ *
+ * Shapes mirror `UpdateCheckResult` in `@lokyy/core/version` and `JobSnapshot`
+ * in `updater/src/update.ts`. Both are node-side sources the PWA bundle may
+ * not import, so the shapes are inlined here — keep the field names 1:1.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/** `GET /api/system/version` — deliberately NOT admin-gated (see the route). */
+export interface SystemVersion {
+  /** Version of the running build; `null` when unreadable. */
+  running: string | null;
+  /** Build SHA, display only — `null` unless the build arg was set. */
+  buildSha: string | null;
+  /** Newest remote version, or `null` when the check could not run. */
+  latest: string | null;
+  updateAvailable: boolean;
+  /** RAW markdown lines from the changelog — render via `update/changelogMarkdown`. */
+  highlights: string[];
+  checkedAt: string | null;
+  status: "ok" | "disabled" | "unknown";
+}
+
+/** Why an installation cannot update itself. Shared by capability and 503s. */
+export type UpdateBlockedReason = "managed" | "off" | "blocked" | "unreachable";
+
+/**
+ * Whether THIS installation can update itself — `GET /api/system/update`.
+ * Capability-based, never env-sniffed (AC#11), and always answered with 200:
+ * "cannot update" is an answer, not an error.
+ *
+ * Render rule, in full: `canUpdate === true` → button. Otherwise → `message`
+ * as text. Never both, never a dead button.
+ */
+export interface UpdateCapability {
+  canUpdate: boolean;
+  /** Effective mode after `LOKYY_UPDATE_MODE` and capability detection. */
+  mode?: "local" | "managed" | "off";
+  /** `null` when `canUpdate`. */
+  reason?: UpdateBlockedReason | null;
+  /** One ready-to-render sentence. `null` when `canUpdate`. */
+  message?: string | null;
+  /**
+   * Only ever non-empty when `reason === "blocked"` — an updater IS present
+   * but misconfigured. Actionable, so these are shown to the admin.
+   */
+  blockers?: string[];
+  /** A job the updater is running RIGHT NOW — the UI attaches to it. */
+  currentJobId?: string | null;
+  /** Compose project, display only. */
+  project?: string | null;
+}
+
+export type UpdatePhase =
+  | "queued"
+  | "preflight"
+  | "pull"
+  | "build"
+  | "switch"
+  | "verify"
+  | "rollback"
+  | "done";
+
+export type UpdateResult =
+  | "success"
+  | "already-up-to-date"
+  | "aborted"
+  | "build-failed"
+  | "rolled-back"
+  | "failed";
+
+/**
+ * A refused update call — start or poll.
+ *
+ * Carries the three fields the shared `json()` helper would throw away, each
+ * of which decides UI behaviour:
+ *
+ * - `retryable` — the server's own verdict on whether waiting can help. The
+ *   UI branches on THIS, not on the status code: a 503 during the restart
+ *   window is `true`, a 503 because no updater exists is `false`.
+ * - `currentJobId` — from a 409, which always means "a job is already
+ *   running, follow that one" and never anything else.
+ * - `reason` — `managed` / `off` / `blocked` / `unreachable`.
+ */
+export class UpdateApiError extends ApiError {
+  constructor(
+    status: number,
+    message: string,
+    public currentJobId: string | null = null,
+    public reason: UpdateBlockedReason | null = null,
+    /** `null` when the server said nothing — then fall back to the status. */
+    public retryable: boolean | null = null,
+  ) {
+    super(status, message);
+  }
+}
+
+/** Body shape shared by the update endpoints' error responses. */
+interface UpdateErrorBody {
+  error?: string;
+  message?: string;
+  reason?: UpdateBlockedReason;
+  currentJobId?: string;
+  retryable?: boolean;
+}
+
+/** Turn a non-2xx update response into an `UpdateApiError`. */
+async function updateError(res: Response, fallback: string): Promise<UpdateApiError> {
+  const body = (await res.json().catch(() => ({}))) as UpdateErrorBody;
+  return new UpdateApiError(
+    res.status,
+    body.message ?? fallback,
+    body.currentJobId ?? null,
+    body.reason ?? null,
+    typeof body.retryable === "boolean" ? body.retryable : null,
+  );
+}
+
+/** One update job as the updater reports it, proxied 1:1 by the server. */
+export interface UpdateJob {
+  id: string;
+  phase: UpdatePhase;
+  running: boolean;
+  result?: UpdateResult;
+  message?: string;
+  startedAt: string;
+  finishedAt?: string;
+  project: string;
+  targetServices: string[];
+  fromSha?: string;
+  toSha?: string;
+  log: string[];
+}
+
 export const api = {
   listNotes: () => fetch(`${BASE}/notes`).then(json<NoteSummary[]>),
+
+  /**
+   * Story 7.12 — running version + cached update-check result.
+   *
+   * Never throws: this is called on every app start, and AC#3 requires a
+   * failed check to be invisible and inconsequential. A failure yields a
+   * `status: "unknown"` payload, which means "no banner".
+   */
+  getSystemVersion: async (): Promise<SystemVersion> => {
+    const offline: SystemVersion = {
+      running: null,
+      buildSha: null,
+      latest: null,
+      updateAvailable: false,
+      highlights: [],
+      checkedAt: null,
+      status: "unknown",
+    };
+    try {
+      const res = await fetch(`${BASE}/system/version`, { credentials: "include" });
+      if (!res.ok) return offline;
+      return (await res.json()) as SystemVersion;
+    } catch {
+      return offline;
+    }
+  },
+
+  /**
+   * Story 7.12 — can this installation update itself? Admin-only server-side,
+   * and always a 200 when it answers at all.
+   *
+   * Never throws: any transport failure resolves to `canUpdate: false` with a
+   * German fallback sentence. A dead button is explicitly forbidden
+   * (AC#5/#11), so "cannot tell" has to mean "show the note, not the button".
+   */
+  getUpdateCapability: async (): Promise<UpdateCapability> => {
+    const unreachable: UpdateCapability = {
+      canUpdate: false,
+      reason: "unreachable",
+      message:
+        "Der Update-Status lässt sich gerade nicht abfragen. " +
+        "Der manuelle Weg aus dem README funktioniert unverändert.",
+    };
+    try {
+      const res = await fetch(`${BASE}/system/update`, { credentials: "include" });
+      if (!res.ok) return unreachable;
+      return (await res.json()) as UpdateCapability;
+    } catch {
+      return unreachable;
+    }
+  },
+
+  /**
+   * Story 7.12 — start an update.
+   *
+   * Deliberately NOT using the shared `json()` helper: that one surfaces the
+   * machine-readable `error` field ("job-running"), and this message goes in
+   * front of a non-technical user. We read `message` instead, and carry
+   * `currentJobId` out of a 409 so the UI can attach to the job that is
+   * already running rather than reporting a failure.
+   */
+  startUpdate: async (): Promise<UpdateJob> => {
+    const res = await fetch(`${BASE}/system/update`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (res.ok) return (await res.json()) as UpdateJob;
+    throw await updateError(
+      res,
+      res.status === 403
+        ? "Nur Administratoren dürfen ein Update starten."
+        : "Das Update konnte nicht gestartet werden.",
+    );
+  },
+
+  /**
+   * Story 7.12 — poll one job. Throws on failure BY DESIGN: during the switch
+   * phase the brain restarts and this call fails, which the progress view must
+   * read as "restarting" and retry (AC#6). Swallowing it here would hide the
+   * very state the UI needs to distinguish. The thrown `UpdateApiError`
+   * carries `retryable`, which is what the caller branches on.
+   */
+  getUpdateJob: async (id: string): Promise<UpdateJob> => {
+    const res = await fetch(`${BASE}/system/update/${encodeURIComponent(id)}`, {
+      credentials: "include",
+    });
+    if (res.ok) return (await res.json()) as UpdateJob;
+    throw await updateError(res, "Der Update-Status ist gerade nicht abrufbar.");
+  },
 
   getNote: (id: string) =>
     fetch(`${BASE}/notes/${id}`).then(json<Note>),

@@ -1,6 +1,46 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
+
+/**
+ * Story 7.12 — the bundle has to know which build it IS, so it can compare
+ * itself against `GET /api/system/version` and blow away a stale Service
+ * Worker cache (Task 5). The value comes from the monorepo root
+ * `package.json`, the same single source the server reads at runtime.
+ *
+ * Walk up from the working directory rather than using `__dirname`/
+ * `import.meta.url` — Vite loads this config in either module format
+ * depending on the invocation, and the walk is identical whether the build is
+ * started from `pwa/` (pnpm --filter) or from the repo root (`pnpm -r build`).
+ * The manifest is identified by its `name`, so a workspace package.json can
+ * never be picked up by accident. Unreadable → empty string, and the
+ * consumer treats "no build version" as "don't compare" (never a placeholder).
+ */
+function readRootVersion(): string {
+  let dir = process.cwd();
+  for (let depth = 0; depth <= 5; depth += 1) {
+    try {
+      const parsed = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as {
+        name?: string;
+        version?: string;
+      };
+      if (parsed.name === "lokyy-brain" && typeof parsed.version === "string") {
+        return parsed.version;
+      }
+    } catch {
+      // No/unreadable manifest at this level — keep walking.
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  console.warn("[vite] root package.json version not found — __LOKYY_BUILD_VERSION__ = \"\"");
+  return "";
+}
+
+const BUILD_VERSION = readRootVersion();
 
 /**
  * Vite-Konfig. Die SPA ist gleichzeitig die installierbare PWA.
@@ -13,6 +53,12 @@ import { VitePWA } from "vite-plugin-pwa";
  * braucht es einen Fallback (Shortcut, der ans Backend postet).
  */
 export default defineConfig({
+  // Story 7.12 Task 1 — build identity of THIS bundle. Declared for TypeScript
+  // in `pwa/src/buildVersion.d.ts`. Empty string means "unknown", which the
+  // cache-refresh logic must read as "do not compare", never as "mismatch".
+  define: {
+    __LOKYY_BUILD_VERSION__: JSON.stringify(BUILD_VERSION),
+  },
   plugins: [
     react(),
     VitePWA({

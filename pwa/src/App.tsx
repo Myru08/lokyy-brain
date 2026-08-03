@@ -37,6 +37,8 @@ import { VoiceQuickButton } from "./VoiceQuickButton.js";
 import { BottomNav } from "./BottomNav.js";
 import { VoiceReviewSheet } from "./VoiceReviewSheet.js";
 import { SessionUserContext } from "./AuthGate.js";
+import { UpdateBanner } from "./update/UpdateBanner.js";
+import { useSystemVersion } from "./update/useSystemVersion.js";
 import { C, FONT } from "./theme.js";
 
 /**
@@ -364,6 +366,11 @@ export function App() {
   // via `onCountChange` after every accept/reject/dismiss action.
   const [agentReviewOpen, setAgentReviewOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState<number>(0);
+  // Story 7.12 — laufende Version + Update-Check. Der Hook stößt beim Laden
+  // außerdem den Cache-Abgleich an (Bundle-Version ↔ `running`): weicht sie
+  // ab, wird der Service Worker verworfen und genau EINMAL neu geladen. Das
+  // repariert auch den manuellen Update-Weg (`git pull && ./install.sh`).
+  const { version: systemVersion } = useSystemVersion();
   const sessionUser = useContext(SessionUserContext);
   // SessionUserContext is non-null at App-render time (AuthGate gates this
   // tree) but the type allows null — fall back gracefully without crashing.
@@ -2269,6 +2276,12 @@ export function App() {
           </span>
         )}
       </header>
+
+      {/* Story 7.12 — Update-Hinweis direkt unter der Topbar: prominent in der
+          App-Shell, nicht in den Einstellungen versteckt (AC#2). Rendert sich
+          selbst weg, wenn alles aktuell ist, die Rolle kein Admin ist oder der
+          Hinweis für genau diese Version geschlossen wurde. */}
+      <UpdateBanner version={systemVersion} />
 
       <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
         {/* Mobile drawer backdrop. Sits behind the aside, tap-to-close. */}

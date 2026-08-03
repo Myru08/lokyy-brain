@@ -12,6 +12,15 @@
 #   /app/packages/{shared,core}/dist
 #
 # Curl is included so docker-compose healthchecks can hit /health on 8787/8788.
+#
+# Story 7.12 — the version of the running build is read at runtime from the
+# `/app/package.json` copied into every runtime target below. `LOKYY_BUILD_SHA`
+# is an OPTIONAL display-only extra (`--build-arg LOKYY_BUILD_SHA=$(git rev-parse
+# --short HEAD)`); it never takes part in the version comparison, and when it is
+# not passed the API simply omits it rather than showing a placeholder.
+
+# Global build arg — re-declared in each stage that consumes it (Docker scoping).
+ARG LOKYY_BUILD_SHA=""
 
 FROM node:22-bookworm-slim AS base
 RUN corepack enable && corepack prepare pnpm@9.0.0 --activate
@@ -36,6 +45,8 @@ RUN pnpm -r build
 FROM base AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
+ARG LOKYY_BUILD_SHA=""
+ENV LOKYY_BUILD_SHA=$LOKYY_BUILD_SHA
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/server ./server
@@ -54,6 +65,8 @@ CMD ["node", "dist/index.js"]
 FROM base AS server
 WORKDIR /app
 ENV NODE_ENV=production
+ARG LOKYY_BUILD_SHA=""
+ENV LOKYY_BUILD_SHA=$LOKYY_BUILD_SHA
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/server ./server
@@ -74,6 +87,8 @@ CMD ["node", "dist/index.js"]
 FROM base AS mcp
 WORKDIR /app
 ENV NODE_ENV=production
+ARG LOKYY_BUILD_SHA=""
+ENV LOKYY_BUILD_SHA=$LOKYY_BUILD_SHA
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/packages ./packages
 COPY --from=build /app/mcp ./mcp

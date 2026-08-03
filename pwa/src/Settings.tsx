@@ -16,6 +16,7 @@ import { AiProviderSettings } from "./AiProviderSettings.js";
 import { TenantsTab } from "./Tenants.js";
 import { AgentReviewPanel } from "./AgentReviewPanel.js";
 import { McpTokenSection } from "./McpTokenSection.js";
+import { SystemVersionInfo } from "./update/SystemVersionInfo.js";
 import { api } from "./api.js";
 import type {
   DiagnosticsResult,
@@ -1379,6 +1380,11 @@ export function Settings({
 
       {tab === "system" && (
         <>
+          {/* Story 7.12 — Version + Update-Status als ruhiger Ort, wenn das
+              Banner in der App-Shell geschlossen wurde. */}
+          <Section title="Version">
+            <SystemVersionInfo />
+          </Section>
           <Section title="System-Status">
             <ServiceStatusRow
               service="forgejo"

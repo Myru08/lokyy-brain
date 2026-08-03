@@ -733,3 +733,29 @@ export {
   VAULT_SCHEMA_DIR,
   type ScaffoldFile,
 } from "./vault/scaffold.js";
+
+// ─── Version identity + update check (Story 7.12) ───────────────────────
+// Running version comes from the `package.json` shipped inside the image;
+// the available version from the LIVE repo's raw CHANGELOG.md. The check
+// never throws, never blocks, never logs on `error` — a user who is offline
+// notices nothing. Served by GET /api/system/version, warmed once at startup.
+export {
+  DEFAULT_UPDATE_CHECK_URL,
+  checkForUpdate,
+  compareVersions,
+  getBuildSha,
+  getUpdateStatus,
+  isUpdateAvailable,
+  parseChangelog,
+  parseVersion,
+  readRunningVersion,
+  refreshUpdateCheck,
+  resetUpdateCheckCacheForTests,
+  updateCheckConfig,
+  warmUpdateCheck,
+  type ChangelogEntry,
+  type CheckForUpdateOptions,
+  type FetchLike,
+  type UpdateCheckConfig,
+  type UpdateCheckResult,
+} from "./version/index.js";
