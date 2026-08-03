@@ -52,26 +52,25 @@ Coolify's Traefik needs working DNS to fetch Let's Encrypt certificates.
 
 ---
 
-## 2. Fork erstellen
+## 2. Repository wählen — Fork optional
 
-Für ein Remote-Deployment brauchst du **einen eigenen Fork** dieses Repos.
+Lokyy Brain ist **öffentlich**. Coolify kann direkt aus
+`https://github.com/oliverhees/lokyy-brain` deployen — kein Fork, kein
+Deploy-Key, keine Zugangsdaten nötig. Für den Standardfall überspringst du
+diesen Schritt einfach.
 
-**Warum?** Coolify ist ein Server und kann sich nicht mit deinem persönlichen
-GitHub-Zugang anmelden — es braucht einen eigenen Schlüssel, der direkt am
-Repository hängt (einen „Deploy-Key"). Eintragen darf den nur, wer
-Admin-Rechte am Repo hat: in deinem eigenen Fork bist du das, im Original
-nicht. Das ist der übliche Weg — bei jedem anderen selbst gehosteten Projekt
-läuft es genauso.
+**Wann ein Fork trotzdem sinnvoll ist:**
 
-1. Oben rechts auf **Fork** klicken. Dein Fork ist ebenfalls privat und gehört
-   dir.
-2. In Coolify später **deinen Fork** als Repository angeben, nicht das Original.
+- Du willst eigene Änderungen am Code deployen.
+- Du willst selbst steuern, *wann* eine neue Version bei dir landet, statt bei
+  jedem Push auf `main` automatisch mitzugehen.
 
-> **Updates einspielen:** Dein Fork zieht Änderungen nicht automatisch nach.
-> Wenn eine neue Version erscheint, in deinem Fork auf **„Sync fork" →
-> „Update branch"** klicken (ein Klick im GitHub-UI), danach in Coolify neu
-> deployen. Ein `git pull` in einem Clone deines Forks holt **nur deinen
-> Fork** — nicht das Original.
+Dann oben rechts auf **Fork** klicken und in Coolify deinen Fork angeben.
+
+> **Updates in einem Fork:** Dein Fork zieht Änderungen nicht automatisch nach.
+> Bei einer neuen Version im Fork auf **„Sync fork" → „Update branch"** klicken,
+> danach in Coolify neu deployen. Ein `git pull` in einem Clone deines Forks
+> holt **nur deinen Fork** — nicht das Original.
 
 ---
 
@@ -79,19 +78,14 @@ läuft es genauso.
 
 1. Coolify UI → **Projects** → **+ Add**.
 2. Resource type: **Docker Compose**.
-3. Source: **Private Repository (with deploy key)** — Coolify erzeugt ein
-   Schlüsselpaar und zeigt dir den **öffentlichen** Teil. Diesen in deinem Fork
-   unter **Settings → Deploy keys → Add deploy key** eintragen. Schreibzugriff
-   wird **nicht** gebraucht, Coolify muss nur lesen.
-   - Repository: **dein Fork**, z. B. `dein-name/lokyy-brain`
+3. Source: **Public Repository** — URL `https://github.com/oliverhees/lokyy-brain`.
+   Kein Deploy-Key, keine Zugangsdaten. (Nutzt du einen eigenen Fork und ist der
+   privat, dann stattdessen **Private Repository (with deploy key)** und den von
+   Coolify erzeugten öffentlichen Schlüssel in deinem Fork unter
+   **Settings → Deploy keys** eintragen — Lesezugriff genügt.)
    - Branch: `main`
    - Compose File Path: `docker-compose.coolify.yml`
 4. Save. Don't deploy yet.
-
-> **Häufiger Stolperstein:** GitHub erlaubt denselben Schlüssel nur bei *einem
-> einzigen* Repository als Deploy-Key. Nutzt dein Coolify denselben Key schon
-> für ein anderes Projekt, lehnt GitHub ihn ab — dann in Coolify ein neues
-> Schlüsselpaar speziell für dieses Repo erzeugen.
 
 ---
 

@@ -1,0 +1,60 @@
+Lokyy Brain
+Copyright (C) 2026 Oliver Hees
+
+Dieses Programm ist freie Software: Du kannst es weitergeben und/oder
+verändern unter den Bedingungen der GNU Affero General Public License,
+Version 3, wie von der Free Software Foundation veröffentlicht. Der
+vollständige Lizenztext steht in der Datei LICENSE.
+
+Die Weitergabe erfolgt in der Hoffnung, dass es nützlich ist, aber OHNE
+JEDE GEWÄHRLEISTUNG — sogar ohne die implizite Gewährleistung der
+MARKTFÄHIGKEIT oder EIGNUNG FÜR EINEN BESTIMMTEN ZWECK. Details in der
+AGPL-3.0.
+
+
+Was die AGPL für dich praktisch bedeutet
+----------------------------------------
+
+Du darfst Lokyy Brain nutzen, verändern und weitergeben — privat wie
+geschäftlich, ohne jemanden zu fragen. Du darfst es für deine eigenen
+Kunden betreiben; genau dafür ist die Mandantenfähigkeit gebaut. Dabei
+entsteht dir keinerlei Verpflichtung.
+
+Die eine Bedingung der AGPL greift erst, wenn du eine VERÄNDERTE Version
+über ein Netzwerk für andere anbietest: dann musst du deren Nutzern den
+Quellcode deiner Version zugänglich machen. Wer Lokyy Brain unverändert
+betreibt, ist davon nicht betroffen.
+
+
+Marke und Name
+--------------
+
+Die AGPL lizenziert Quellcode, keine Markenrechte. Die Namen "Lokyy",
+"Lokyy Brain", "Lokyy OS" sowie die zugehörigen Logos und das
+Erscheinungsbild bleiben beim Rechteinhaber und sind von dieser Lizenz
+NICHT erfasst.
+
+Konkret: du darfst forken, verändern und veröffentlichen — aber deine
+Version nicht "Lokyy Brain" nennen und nicht den Anschein erwecken, sie
+komme von uns. Benenne sie um. Ein sachlicher Hinweis wie "basiert auf
+Lokyy Brain" ist selbstverständlich in Ordnung und ausdrücklich
+erwünscht.
+
+
+Beiträge
+--------
+
+Beiträge sind willkommen. Wer Code beisteuert, stimmt der
+Contributor License Agreement in CONTRIBUTING.md zu — kurz gefasst: du
+behältst dein Urheberrecht und räumst uns zusätzlich das Recht ein, den
+Beitrag auch unter anderen Lizenzen zu verwenden. Warum das nötig ist,
+steht dort erklärt.
+
+
+Was NICHT unter dieser Lizenz steht
+-----------------------------------
+
+Lokyy Brain ist die Daten- und API-Schicht und vollständig frei. Die
+darauf aufbauende Logik- und Erlebnisschicht — Lokyy OS und der
+Hermes-Agent — sind eigenständige Projekte und werden separat
+lizenziert.

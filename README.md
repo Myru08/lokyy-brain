@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <img alt="License: Proprietary" src="https://img.shields.io/badge/license-proprietary-red.svg">
+  <img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg">
   <img alt="Status" src="https://img.shields.io/badge/status-beta-orange.svg">
   <img alt="MCP" src="https://img.shields.io/badge/MCP-29%20tools-6f42c1.svg">
   <img alt="Stack" src="https://img.shields.io/badge/stack-Hono%20%C2%B7%20Vite%20%C2%B7%20Postgres%20%C2%B7%20Ollama-333.svg">
@@ -89,25 +89,6 @@ Eine Voraussetzung, einmalig:
 Kein Umweg über einen ZIP-Download: du brauchst Git ohnehin, sobald du
 später remote auf Coolify deployst (siehe [Remote-Deployment](#remote-deployment)),
 also lernst du es gleich hier.
-
-### Bei GitHub anmelden (einmalig)
-
-Dieses Repo ist **privat**. Ohne Anmeldung schlägt der nächste Schritt fehl —
-und zwar mit einer irreführenden Meldung: GitHub verrät bei privaten Repos
-absichtlich nicht, dass sie existieren, du bekommst also
-**`repository not found`**, obwohl du das Repo im Browser sehen kannst. Falls
-dir das begegnet: du bist schlicht nicht angemeldet.
-
-- **Windows:** Meist automatisch — Git für Windows bringt den Credential
-  Manager mit. Beim ersten `git clone` öffnet sich ein Browser-Login, einmal
-  bestätigen, fertig.
-- **macOS / Linux:** Am einfachsten über die
-  [GitHub CLI](https://cli.github.com/):
-  ```bash
-  gh auth login
-  ```
-  Einmal durch den Browser-Flow klicken. Danach funktionieren `git clone` und
-  später auch `git pull` ohne weitere Abfragen.
 
 ### Repo holen
 
@@ -374,26 +355,30 @@ Offen: Tier-3-Knowledge-Graph (siehe oben), Graph-Frontend
 
 ## Zugriff & Mitwirken
 
-Dieses Repo ist **privat mit gezielter Freigabe** — Zugriff nur für
-eingeladene Personen. Wenn du Zugriff möchtest, wende dich an
-[@oliverhees](https://github.com/oliverhees).
+Der Quellcode ist offen — klonen, installieren, verändern, forken, alles ohne
+zu fragen. Beiträge sind willkommen: wie du am besten einsteigst, steht in
+**[CONTRIBUTING.md](CONTRIBUTING.md)**. Fang mit einem Issue an, auch bei
+Kleinigkeiten.
 
 ## Lizenz
 
-**Source-available, proprietär** — [LICENSE](LICENSE). Der Quellcode ist
-öffentlich lesbar, das ist aber **keine Open-Source-Lizenz**: veröffentlicht
-heißt nicht freigegeben.
+**[AGPL-3.0](LICENSE)** — freie Software. Du darfst Lokyy Brain nutzen,
+verändern und weitergeben, privat wie geschäftlich, ohne jemanden zu fragen.
+Du darfst es auch für deine eigenen Kunden betreiben; genau dafür ist die
+Mandantenfähigkeit gebaut.
 
-Kurz gesagt, was du darfst und was nicht:
+Die eine Bedingung der AGPL greift erst, wenn du eine **veränderte** Version
+über ein Netzwerk für andere anbietest: dann musst du deren Nutzern den
+Quellcode deiner Version zugänglich machen. Wer unverändert betreibt, ist davon
+nicht betroffen.
 
-| | |
-|---|---|
-| ✅ Lesen, klonen, forken, installieren, verändern | für dich selbst oder intern in deinem Unternehmen |
-| ✅ Für deine eigenen Kunden betreiben | z. B. einen Vault hosten, auf den ein Kunde zugreift — genau dafür ist die Mandantenfähigkeit da |
-| ❌ Weitergeben oder weiterverbreiten | auch nicht verändert, auch nicht in einem anderen öffentlichen Repo |
-| ❌ Als Produkt oder gehosteten Dienst verkaufen | der Unterschied zur Zeile darüber: wofür dein Kunde zahlt — deine Leistung (erlaubt) oder die Software (nicht erlaubt) |
+Warum AGPL und nicht MIT: damit Lokyy Brain offen bleibt. Niemand soll es
+nehmen, verbessern, zumachen und als geschlossenen Dienst weiterverkaufen
+können — was zurückfließt, kommt allen zugute.
 
-Der Name **Lokyy** und die Marke sind nicht mitlizenziert. Alles, was nicht
-ausdrücklich eingeräumt wird, bleibt beim Rechteinhaber. Für alles darüber
-hinaus — insbesondere kommerzielle Angebote auf Basis der Software —
-[@oliverhees](https://github.com/oliverhees) fragen.
+**Nicht mitlizenziert ist die Marke.** Die Namen "Lokyy", "Lokyy Brain",
+"Lokyy OS" und das Erscheinungsbild bleiben beim Rechteinhaber. Forken und
+veröffentlichen: gerne. Deine Version "Lokyy Brain" nennen: bitte nicht,
+benenne sie um. "Basiert auf Lokyy Brain" ist ausdrücklich erwünscht.
+
+Details in [NOTICE](NOTICE), Beiträge in [CONTRIBUTING.md](CONTRIBUTING.md).
