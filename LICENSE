@@ -1,45 +1,63 @@
-Proprietary License
+Lokyy Brain — Source-Available Proprietary License
 
 Copyright (C) 2026 Oliver Hees. All rights reserved.
 
-This repository and its contents ("the Software") are made available only to
-individuals explicitly authorized by the copyright holder (e.g. as an invited
-GitHub collaborator). Access to this repository does not, by itself, grant
-any of the rights described below beyond what is stated here.
+The source code of this repository ("the Software") is published publicly so
+that anyone may read it, install it, and run it for themselves. Publishing it
+is NOT a dedication to the public domain and NOT an open-source license: the
+copyright holder retains all rights except those expressly granted below.
 
-1. Grant of use. Authorized individuals may install, run, and modify the
-   Software solely for their own personal or internal business purposes
-   (including connecting it to their own AI systems via MCP), for as long
-   as their access is granted.
+1. Grant of use. You may view, clone, install, run, and modify the Software
+   for your own personal purposes or the internal business purposes of your
+   own organization — including connecting it to your own AI systems via MCP,
+   and including running it on infrastructure you control or rent.
 
-2. No redistribution. You may not copy, publish, distribute, sublicense,
-   rent, lease, or otherwise make the Software (in whole or in part, in
-   original or modified form) available to any third party, including by
-   re-hosting it in another repository, without the prior written consent
-   of the copyright holder.
+2. Serving your own clients is permitted. If you run an instance of the
+   Software as part of the services you provide to your own clients — for
+   example by giving a client access to a vault you host for them, which the
+   Software explicitly supports — that use is covered by Section 1. What is
+   not permitted is making the Software ITSELF the product, see Section 4.
 
-3. No resale. You may not sell, resell, or commercially exploit the
-   Software itself as a standalone product or service without the prior
-   written consent of the copyright holder. This does not restrict using
-   a Software instance you are authorized to run as part of your own
-   business operations.
+3. No redistribution. You may not publish, distribute, sublicense, rent,
+   lease, or otherwise make the Software available to third parties, in whole
+   or in part, in original or modified form. This includes re-hosting it in
+   another public repository, bundling it into another product, or passing
+   copies along. Forking this repository on the hosting platform in order to
+   run, track, or contribute to the Software is expressly permitted.
 
-4. Reservation of rights. All rights not expressly granted above are
-   reserved by the copyright holder. Access granted under this license may
-   be revoked at any time; upon revocation, you must stop using the
-   Software and delete any copies in your possession.
+4. No resale, no competing offering. You may not sell, resell, or otherwise
+   commercially exploit the Software itself as a standalone product, as a
+   hosted or managed service for third parties, or as the substance of a
+   paid offering, without the prior written consent of the copyright holder.
+   The distinction from Section 2 is who the paying party is buying: your
+   services (permitted) versus the Software (not permitted).
 
-5. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+5. Trademarks. This license grants no rights to the names "Lokyy",
+   "Lokyy Brain", "Lokyy OS", or to the associated logos and branding.
+
+6. Contributions. If you submit a contribution (pull request, patch, or
+   similar), you grant the copyright holder a perpetual, worldwide,
+   royalty-free, irrevocable license to use, modify, and distribute it as
+   part of the Software under this or any other license.
+
+7. Reservation of rights. All rights not expressly granted above are reserved
+   by the copyright holder.
+
+8. No warranty. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
    KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
    MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
    IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES,
-   OR OTHER LIABILITY ARISING FROM THE USE OF THE SOFTWARE.
+   OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+   OTHER DEALINGS IN THE SOFTWARE.
 
-For permission requests beyond the scope of this license, contact the
-copyright holder directly.
+For permission beyond the scope of this license — in particular any
+commercial offering built on the Software — contact the copyright holder.
 
 ---
 
-Note: this is a plain-language proprietary notice, not law-firm-drafted
-legal text. If licensing terms become commercially significant, have this
-reviewed by a lawyer in your jurisdiction before relying on it.
+Note: this is a plain-language proprietary notice, not law-firm-drafted legal
+text. The Software is published publicly under it, and its terms are what
+stands between the published source and commercial use by others. Have it
+reviewed by a lawyer in your jurisdiction before the repository is made
+public.

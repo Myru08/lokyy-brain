@@ -6,8 +6,10 @@
 # zickte; MCP lässt sich später nachrüsten).
 #
 # Gelöste Stolperfallen:
-#  • DB-Auth: POSTGRES_PASSWORD greift nur bei Erst-Init des Volumes → frisches
-#    Volume 'postgres-data2' passend zu 'lokyybraininternal'.
+#  • DB-Auth: POSTGRES_PASSWORD greift nur bei Erst-Init des Volumes. Passt das
+#    Passwort nicht zum bereits initialisierten Volume, schlaegt die Auth fehl —
+#    dann ein frisches Volume verwenden. Das Passwort kommt aus der Umgebung
+#    (POSTGRES_PASSWORD), es steht bewusst NICHT in dieser Datei.
 #  • Healthcheck: der Server ist via Traefik (Container-IP) erreichbar, aber NICHT
 #    über Loopback (127.0.0.1/localhost) — interne TCP/HTTP-Checks reapten den
 #    gesunden Container. Darum bewusst lenient (exit 0); extern bestätigt /health=200.
@@ -18,7 +20,7 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=lokyybraininternal
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD muss gesetzt sein}
       - POSTGRES_DB=lokyy_brain
     volumes:
       - postgres-data2:/var/lib/postgresql/data
@@ -47,7 +49,7 @@ services:
         condition: service_healthy
     environment:
       - SERVICE_FQDN_LOKYYBRAIN_8787
-      - DATABASE_URL=postgres://postgres:lokyybraininternal@postgres:5432/lokyy_brain
+      - DATABASE_URL=postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/lokyy_brain
       - VAULT_DIR=/var/lokyy/vault
       - LOKYY_VAULT_PROFILE=para
       - PORT=8787

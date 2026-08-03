@@ -380,9 +380,20 @@ eingeladene Personen. Wenn du Zugriff möchtest, wende dich an
 
 ## Lizenz
 
-**Proprietär** — [LICENSE](LICENSE). Kurz gesagt: als eingeladene Person
-darfst du die Software installieren, ausführen und für eigene Zwecke nutzen
-(auch mit deinen eigenen KI-Systemen über MCP), aber nicht weitergeben,
-weiterverbreiten oder ohne ausdrückliche schriftliche Zustimmung des
-Rechteinhabers weiterverkaufen. Alle Rechte, die hier nicht explizit
-eingeräumt werden, bleiben beim Rechteinhaber.
+**Source-available, proprietär** — [LICENSE](LICENSE). Der Quellcode ist
+öffentlich lesbar, das ist aber **keine Open-Source-Lizenz**: veröffentlicht
+heißt nicht freigegeben.
+
+Kurz gesagt, was du darfst und was nicht:
+
+| | |
+|---|---|
+| ✅ Lesen, klonen, forken, installieren, verändern | für dich selbst oder intern in deinem Unternehmen |
+| ✅ Für deine eigenen Kunden betreiben | z. B. einen Vault hosten, auf den ein Kunde zugreift — genau dafür ist die Mandantenfähigkeit da |
+| ❌ Weitergeben oder weiterverbreiten | auch nicht verändert, auch nicht in einem anderen öffentlichen Repo |
+| ❌ Als Produkt oder gehosteten Dienst verkaufen | der Unterschied zur Zeile darüber: wofür dein Kunde zahlt — deine Leistung (erlaubt) oder die Software (nicht erlaubt) |
+
+Der Name **Lokyy** und die Marke sind nicht mitlizenziert. Alles, was nicht
+ausdrücklich eingeräumt wird, bleibt beim Rechteinhaber. Für alles darüber
+hinaus — insbesondere kommerzielle Angebote auf Basis der Software —
+[@oliverhees](https://github.com/oliverhees) fragen.
