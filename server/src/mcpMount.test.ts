@@ -112,6 +112,10 @@ describe("brain routes after a failed MCP init (AC#2)", () => {
     const res = await app.request("/mcp", { method: "POST" });
 
     expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: "mcp-unavailable" });
+    // Story 7.11 AC#3: the lazy retry in the handler runs (and fails again,
+    // the vault table is still empty) → 503 stays, but now names the wizard.
+    const body = (await res.json()) as { error: string; message?: string };
+    expect(body.error).toBe("mcp-unavailable");
+    expect(body.message).toMatch(/Setup-Wizard/);
   });
 });

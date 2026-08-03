@@ -15,6 +15,7 @@ import { C, FONT } from "./theme.js";
 import { AiProviderSettings } from "./AiProviderSettings.js";
 import { TenantsTab } from "./Tenants.js";
 import { AgentReviewPanel } from "./AgentReviewPanel.js";
+import { McpTokenSection } from "./McpTokenSection.js";
 import { api } from "./api.js";
 import type {
   DiagnosticsResult,
@@ -176,6 +177,14 @@ interface McpInfo {
     /** Legacy mcp-remote bridge — fallback for clients without native HTTP. */
     d_mcp_remote_legacy: McpVariant;
   };
+  /**
+   * Story 7.10: the literal marker the snippets carry when NO env token is
+   * configured. The UI replaces it with the one-time plaintext of a freshly
+   * generated token — the server cannot, since it only stores hashes.
+   */
+  tokenPlaceholder?: string;
+  /** State of the legacy `LOKYY_MCP_TOKEN` (`shared` = the public default). */
+  envToken?: { configured: boolean; shared: boolean };
   // legacy single-snippet support:
   claudeDesktopConfigSnippet?: Record<string, unknown>;
   binaryHint?: string;
@@ -414,6 +423,12 @@ export function Settings({
    *   - false  → /health 4xx/5xx/timeout/network-error
    */
   const [mcpHealthy, setMcpHealthy] = useState<boolean | null>(null);
+  /**
+   * Story 7.10: plaintext of a token generated in THIS session. Held only in
+   * memory (never re-fetchable — the server stores a hash) so the config
+   * snippets below can show a copy-paste-ready value instead of a placeholder.
+   */
+  const [freshMcpToken, setFreshMcpToken] = useState<string | null>(null);
   const [mcpHealthCheckedAt, setMcpHealthCheckedAt] = useState<string | null>(
     null,
   );
@@ -1165,6 +1180,20 @@ export function Settings({
   }
 
   /**
+   * Story 7.10 AC#5 — splice a freshly generated token into the config
+   * snippets. Without a fresh token the snippet keeps the marker, which reads
+   * as "put your token here" rather than the old
+   * `<set-LOKYY_MCP_TOKEN-env-and-restart>` instruction to edit a file and
+   * restart. When an env token is configured the backend already inlined it,
+   * so there is no marker to replace and this is a no-op.
+   */
+  function withToken(text: string): string {
+    const marker = mcp?.tokenPlaceholder;
+    if (!marker || !freshMcpToken) return text;
+    return text.split(marker).join(freshMcpToken);
+  }
+
+  /**
    * Vault identifiers used in multiple tabs (MCP tab + Vault tab). Computed
    * once, falls through legacy → runtime cleanly.
    */
@@ -1712,6 +1741,20 @@ export function Settings({
           />
 
           {/*
+            Story 7.10 — Token-Verwaltung. Bewusst AUSSERHALB des
+            `mcpHealthy === true`-Gates: wer noch keinen Token hat, muss
+            trotzdem einen erzeugen können, und genau dann ist der Dienst oft
+            noch nicht erreichbar.
+          */}
+          <McpTokenSection
+            endpoint={
+              patchedVariants?.c_native_http.endpointUrl ??
+              runtime?.env.mcpPublicUrl
+            }
+            onFreshToken={setFreshMcpToken}
+          />
+
+          {/*
             Bug-fix #3: only show the three claude_desktop_config snippets
             when the MCP service is reachable. While unhealthy, render a
             single guidance block so nobody copies a half-broken config.
@@ -1902,7 +1945,7 @@ export function Settings({
                         {v.snippet && (
                           <CodeBlock
                             label={`${v.title} — claude_desktop_config.json`}
-                            code={JSON.stringify(v.snippet, null, 2)}
+                            code={withToken(JSON.stringify(v.snippet, null, 2))}
                             onCopy={(l, c) => copy(l, c)}
                             copiedLabel={copied}
                           />
@@ -1911,7 +1954,7 @@ export function Settings({
                           <CodeBlock
                             key={`${k}-extra-${i}`}
                             label={`${v.title} — ${sub.label}`}
-                            code={sub.code}
+                            code={withToken(sub.code)}
                             onCopy={(l, c) => copy(l, c)}
                             copiedLabel={copied}
                           />

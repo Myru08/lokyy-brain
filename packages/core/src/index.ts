@@ -683,6 +683,8 @@ export {
   revokeMcpToken,
   listMcpTokens,
   MCP_TOKEN_PREFIX,
+  SHARED_DEFAULT_MCP_TOKEN,
+  isSharedDefaultMcpToken,
   type McpRole,
   type McpTokenContext,
   type CreateMcpTokenInput,

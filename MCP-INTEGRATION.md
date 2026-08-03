@@ -50,16 +50,41 @@ Mcp-Session-Id: <aus initialize>     # ab dem 2. Request
 Der **Bearer-Token bestimmt Vault, Rolle und Ordner-Scope** — alles, was das
 anbindende System darf:
 
-- **Eigener/Owner-Token** (statisch konfiguriert): voller Zugriff auf den
-  Haupt-Vault.
-- **Mandanten-/Kunden-Token** (im Lokyy-Brain-Dashboard erzeugt): bindet den
+- **Eigener/Owner-Token** — **Einstellungen → MCP → „Token erzeugen"**. Voller
+  Zugriff auf den Haupt-Vault. Der Klartext wird **genau einmal** angezeigt;
+  gespeichert wird nur sein SHA-256-Hash, wiederherstellen ist unmöglich —
+  verloren heißt widerrufen + neu erzeugen. Der Token wird **pro Request**
+  geprüft: er gilt **sofort, ohne Neustart**, und ein Widerruf wirkt ebenso
+  sofort. Beim Abschluss des Setup-Wizards wird automatisch der erste Token
+  erzeugt und einmalig angezeigt.
+- **Mandanten-/Kunden-Token** (Einstellungen → Mandanten): bindet den
   Request an **genau einen** isolierten Kundenvault mit definierter Rolle
   (`read` / `write`) und Ordner-Freigaben. Der MCP zeigt diesem Token **nur**
   die freigegebenen Ordner — der Rest existiert für ihn nicht.
+- **Legacy: `LOKYY_MCP_TOKEN` (Umgebungsvariable)** — bleibt als Fallback
+  gleichberechtigt gültig, damit bestehende Installationen und hinterlegte
+  Client-Configs weiterlaufen. Nachteil: eine Änderung erfordert einen
+  **Neustart** des Stacks. Ist die Variable gar nicht gesetzt, akzeptiert `/mcp`
+  ausschließlich die in der Oberfläche erzeugten Token — das ist der empfohlene
+  Zustand.
+
+> ⚠️ **Der Default `local_dev_token_change_me_32_chars_min` aus
+> `docker-compose.local.yml` steht im öffentlichen Repo.** Er wird weiterhin
+> akzeptiert (damit laufende Installationen nicht brechen), aber jede
+> Installation, die ihn behält, teilt sich dasselbe Passwort. Die Einstellungen
+> markieren ihn sichtbar als unsicher: eigenen Token erzeugen und die Variable
+> anschließend aus dem Deployment entfernen.
 
 Ein **unbekannter oder widerrufener Token → HTTP 401**. Der Token wird vom
-Nutzer/Operator im Lokyy-Brain-Dashboard (Einstellungen → Mandanten) ausgegeben
-und kopiert; das Fremdsystem hinterlegt ihn als Secret.
+Nutzer/Operator im Lokyy-Brain-Dashboard kopiert; das Fremdsystem hinterlegt ihn
+als Secret.
+
+**HTTP 503 `{"error":"mcp-unavailable"}`** heißt dagegen: der Endpunkt ist noch
+gar nicht scharf, weil **kein Vault existiert** — das ist der Zustand vor dem
+Setup-Wizard. Der Token ist daran unschuldig. Sobald der Wizard durchgelaufen
+ist, initialisiert sich `/mcp` beim nächsten Request selbst; ein **Neustart des
+Containers ist nicht nötig**. Bleibt der 503 danach bestehen, existiert wirklich
+keine Vault-Zeile in der Datenbank (Server-Log: `no vault rows in DB`).
 
 ---
 
@@ -197,8 +222,9 @@ MCP-SDK) verbinden sich mit denselben drei Angaben: **URL `/mcp` + Bearer-Token*
 
 ## 7. Für ein anbindendes System — Checkliste
 
-- [ ] Token vom Lokyy-Brain-Dashboard besorgen (Owner-Token ODER eigener
-      Mandanten-Token mit passendem Scope).
+- [ ] Token im Lokyy-Brain-Dashboard erzeugen (Einstellungen → MCP für den
+      eigenen Vault, Einstellungen → Mandanten für einen Kundenvault) und
+      **sofort kopieren** — er wird nur einmal angezeigt.
 - [ ] MCP-Client auf `http://localhost:8788/mcp` + Bearer-Token zeigen
       lassen (oder die 3 HTTP-Schritte oben implementieren).
 - [ ] Die `initialize`-`instructions` in den eigenen System-Prompt übernehmen.

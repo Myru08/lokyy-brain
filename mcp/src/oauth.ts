@@ -63,6 +63,30 @@ function signingSecret(): string {
   );
 }
 
+/**
+ * Is the OAuth flow configured at all?
+ *
+ * Both secrets derive from env vars that MAY now be absent: since Story 7.10 an
+ * installation can run purely on DB-backed MCP tokens with no `LOKYY_MCP_TOKEN`
+ * at all. Without this gate that configuration would be catastrophic:
+ *
+ *   - `signingSecret()` would collapse to the constant `"derived:"`, so ANYONE
+ *     could forge a valid access JWT and `verifyToken` would accept it, and
+ *   - `consentPassword()` would be `""`, which an empty form field matches.
+ *
+ * So: no signing secret AND no consent password configured → OAuth is OFF.
+ * `/mcp` still works via bearer tokens; only the claude.ai connector flow
+ * requires the operator to set `LOKYY_OAUTH_PASSWORD` +
+ * `LOKYY_OAUTH_SIGNING_SECRET` explicitly.
+ */
+export function isOAuthConfigured(): boolean {
+  const secret =
+    process.env.LOKYY_OAUTH_SIGNING_SECRET ?? process.env.LOKYY_MCP_TOKEN ?? "";
+  const password =
+    process.env.LOKYY_OAUTH_PASSWORD ?? process.env.LOKYY_MCP_TOKEN ?? "";
+  return secret.length > 0 && password.length > 0;
+}
+
 export function issueToken(
   base: string,
   typ: "access" | "refresh",
@@ -91,6 +115,8 @@ export function issueToken(
 }
 
 export function verifyToken(token: string, expectedTyp: "access" | "refresh"): boolean {
+  // No OAuth config → no forgeable well-known secret to accept. See above.
+  if (!isOAuthConfigured()) return false;
   try {
     const parts = token.split(".");
     if (parts.length !== 3) return false;
@@ -504,8 +530,10 @@ export async function handleOAuthRoute(
       return true;
     }
 
-    // Verify password — gate before any code issuance
-    if (password !== consentPassword()) {
+    // Verify password — gate before any code issuance. An UNCONFIGURED install
+    // has an empty consent password, which an empty form field would match —
+    // so refuse outright rather than compare (Story 7.10).
+    if (!isOAuthConfigured() || password !== consentPassword()) {
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
       res.end(renderConsentPage(params, "Incorrect password. Please try again."));
       return true;

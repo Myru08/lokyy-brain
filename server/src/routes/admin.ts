@@ -15,6 +15,11 @@ import {
   listSkillNotes,
   parseFrontmatter,
   VAULT_HOOKS_DIR,
+  createMcpToken,
+  listMcpTokens,
+  revokeMcpToken,
+  isSharedDefaultMcpToken,
+  type McpRole,
 } from "@lokyy/core";
 import { scaffoldVault } from "../setup/scaffoldVault.js";
 import { scanVaultCompliance } from "../setup/vaultCompliance.js";
@@ -523,6 +528,137 @@ function deriveEmbeddingsStatus(ollama: {
   };
 }
 
+// ─── Own-vault MCP tokens (Story 7.10) ──────────────────────────────────
+//
+// Why these live here and NOT on `/api/tenants`: the tenant routes are the
+// CUSTOMER-vault surface. `GET /api/tenants` returns every provisioned customer
+// vault incl. its git remote (data this page has no business fetching), and
+// `POST /api/tenants/:vaultId/tokens` makes the CLIENT name the vault — a
+// Settings page could then point at a customer vault by accident — and defaults
+// `agentId` to `kunde-<slug>`. The three routes below are thin wrappers over the
+// SAME `@lokyy/core` primitives (`listMcpTokens` / `createMcpToken` /
+// `revokeMcpToken`), with the vault resolved SERVER-side to the operator's own.
+// No tenant logic (provisioning, repo creation, scope globs, remote masking) is
+// duplicated and the tenant API stays untouched.
+
+/** Default writer identity for the owner's own tokens — matches `LOKYY_AGENT_ID`. */
+const OWN_VAULT_AGENT_ID = "claude-code";
+
+/**
+ * Stand-in inside the `mcp-info` snippets when no env token is configured. The
+ * PWA swaps it for the one-time plaintext of a freshly generated token (see
+ * `tokenPlaceholder` in the `mcp-info` response) — the server itself cannot,
+ * since only the SHA-256 of a token is ever stored.
+ */
+const MCP_TOKEN_MARKER = "DEIN-MCP-TOKEN";
+
+/**
+ * The operator's own (singleton/personal) vault row. `LOKYY_VAULT_ID` wins when
+ * it points at a real row — that is the id the MCP mount itself boots with —
+ * then the `personal` row, then the single/oldest row a fresh install has.
+ * Mirrors the resolution order in `mcpMount.ts` / `resolveVaultId`.
+ */
+async function ownVaultRow(): Promise<typeof vaults.$inferSelect | null> {
+  const db = database();
+  if (config.lokyyVaultId) {
+    const [pinned] = await db
+      .select()
+      .from(vaults)
+      .where(eq(vaults.id, config.lokyyVaultId))
+      .limit(1);
+    if (pinned) return pinned;
+  }
+  const [personal] = await db
+    .select()
+    .from(vaults)
+    .where(eq(vaults.kind, "personal"))
+    .limit(1);
+  if (personal) return personal;
+  const [first] = await db.select().from(vaults).limit(1);
+  return first ?? null;
+}
+
+/** Metadata projection — deliberately drops `tokenHash`, which never leaves the server. */
+function tokenMetadata(t: Awaited<ReturnType<typeof listMcpTokens>>[number]) {
+  return {
+    id: t.id,
+    agentId: t.agentId,
+    role: t.role,
+    label: t.label,
+    createdAt: t.createdAt,
+    lastUsedAt: t.lastUsedAt,
+    revokedAt: t.revokedAt,
+  };
+}
+
+/**
+ * GET /api/admin/mcp-tokens — metadata of the own vault's tokens plus the state
+ * of the legacy env token. NEVER returns a plaintext bearer: only the SHA-256
+ * is stored, so for existing tokens there is nothing to return (AC#2).
+ */
+adminRoutes.get("/mcp-tokens", async (c) => {
+  const vault = await ownVaultRow();
+  const envValue = process.env.LOKYY_MCP_TOKEN ?? "";
+  const tokens = vault ? await listMcpTokens(vault.id) : [];
+  return c.json({
+    vaultId: vault?.id ?? null,
+    vaultName: vault?.name ?? null,
+    tokens: tokens
+      .map(tokenMetadata)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime()),
+    // AC#6/#7: the env path stays valid; we only report WHETHER it is set and
+    // whether it is the publicly-known default. The value itself never ships.
+    envToken: {
+      configured: envValue.length > 0,
+      shared: isSharedDefaultMcpToken(envValue),
+    },
+  });
+});
+
+/**
+ * POST /api/admin/mcp-tokens — mint a token for the own vault. The plaintext is
+ * returned EXACTLY ONCE (AC#3); it is unrecoverable afterwards. Takes effect on
+ * the next request — `lookupMcpToken` runs per request, no restart (AC#4).
+ */
+adminRoutes.post("/mcp-tokens", async (c) => {
+  const vault = await ownVaultRow();
+  if (!vault) return c.json({ error: "no-vault" }, 404);
+  const body = await c.req
+    .json<{ label?: string; agentId?: string; role?: McpRole }>()
+    .catch(() => ({}) as { label?: string; agentId?: string; role?: McpRole });
+  const agentId = (body.agentId ?? "").trim() || OWN_VAULT_AGENT_ID;
+  const role: McpRole = body.role === "read" ? "read" : "write";
+  const { token, row } = await createMcpToken({
+    vaultId: vault.id,
+    agentId,
+    role,
+    label: (body.label ?? "").trim() || "MCP-Client",
+  });
+  return c.json({
+    ...tokenMetadata(row),
+    vaultId: vault.id,
+    token, // plaintext — shown ONCE, only the hash is stored
+    connector: "/mcp",
+  });
+});
+
+/**
+ * DELETE /api/admin/mcp-tokens/:id — revoke one of the OWN vault's tokens.
+ * Soft-revoke; the next `/mcp` request with it resolves to null → 401. Ids that
+ * belong to another (customer) vault 404 — this surface must never reach into
+ * the tenant registry.
+ */
+adminRoutes.delete("/mcp-tokens/:id", async (c) => {
+  const id = c.req.param("id");
+  if (!id) return c.json({ error: "token id required" }, 400);
+  const vault = await ownVaultRow();
+  if (!vault) return c.json({ error: "no-vault" }, 404);
+  const owned = (await listMcpTokens(vault.id)).some((t) => t.id === id);
+  if (!owned) return c.json({ error: "not-found" }, 404);
+  await revokeMcpToken(id);
+  return c.json({ ok: true });
+});
+
 // GET /api/admin/mcp-info — connection info for Claude Desktop / other MCP clients (Story 1.12 + Epic 7)
 //
 // Liefert 4 Snippet-Varianten:
@@ -535,7 +671,13 @@ adminRoutes.get("/mcp-info", async (c) => {
   const vaultRows = await database().select().from(vaults).limit(1);
   const v = vaultRows[0];
   const httpPort = Number(process.env.LOKYY_MCP_HTTP_PORT ?? 8788);
-  const httpToken = process.env.LOKYY_MCP_TOKEN ?? "<set-LOKYY_MCP_TOKEN-env-and-restart>";
+  // Story 7.10 AC#5: no more "edit an env file and restart" placeholder. When
+  // no env token is configured the snippets carry a MARKER instead, which the
+  // Settings UI substitutes with a freshly minted token the moment the operator
+  // generates one (the stored token is a hash — the server can never fill this
+  // in itself). `tokenPlaceholder` below tells the UI what to replace.
+  const envMcpToken = process.env.LOKYY_MCP_TOKEN ?? "";
+  const httpToken = envMcpToken || MCP_TOKEN_MARKER;
   const publicHost = process.env.LOKYY_PUBLIC_HOST ?? "localhost";
 
   // OAuth consent password shown in the e_claude_ai_oauth card so the user can
@@ -642,7 +784,7 @@ adminRoutes.get("/mcp-info", async (c) => {
         endpointUrl: remoteEndpoint,
         healthUrl: remoteHealth,
         authNote:
-          "Bearer-Token aus env LOKYY_MCP_TOKEN. Jeder Request muss `Authorization: Bearer <token>` mitschicken. Ohne Token startet der HTTP-Server gar nicht.",
+          "Bearer-Token: erzeuge ihn oben unter „MCP-Token“ — er gilt sofort, ohne Neustart. Der alte Weg über die Umgebungsvariable LOKYY_MCP_TOKEN funktioniert weiterhin (erfordert aber einen Neustart). Jeder Request muss `Authorization: Bearer <token>` mitschicken.",
       },
 
       d_mcp_remote_legacy: {
@@ -671,7 +813,7 @@ adminRoutes.get("/mcp-info", async (c) => {
         endpointUrl: remoteEndpoint,
         healthUrl: remoteHealth,
         authNote:
-          "Bearer-Token aus env LOKYY_MCP_TOKEN. Jeder Request muss `Authorization: Bearer <token>` mitschicken. Ohne Token startet der HTTP-Server gar nicht.",
+          "Bearer-Token: erzeuge ihn oben unter „MCP-Token“ — er gilt sofort, ohne Neustart. Der alte Weg über die Umgebungsvariable LOKYY_MCP_TOKEN funktioniert weiterhin (erfordert aber einen Neustart). Jeder Request muss `Authorization: Bearer <token>` mitschicken.",
       },
 
       e_claude_ai_oauth: {
@@ -698,6 +840,14 @@ adminRoutes.get("/mcp-info", async (c) => {
         authNote:
           "OAuth 2.1 (Dynamic Client Registration RFC 7591 + PKCE S256). Der Zugriffstoken ist ein zustandsloses HS256-JWT, signiert mit LOKYY_OAUTH_SIGNING_SECRET. Kein manueller Token nötig — claude.ai bekommt ihn über den OAuth-Flow. (Der bestehende LOKYY_MCP_TOKEN funktioniert parallel weiter für Header-basierte Clients wie Claude Code.)",
       },
+    },
+
+    // Story 7.10: the literal string the UI has to replace with a freshly
+    // generated token, plus whether the legacy env token is in play at all.
+    tokenPlaceholder: MCP_TOKEN_MARKER,
+    envToken: {
+      configured: envMcpToken.length > 0,
+      shared: isSharedDefaultMcpToken(envMcpToken),
     },
 
     scopesFile: `${config.vaultDir}/00_meta/mcp-scopes.yaml`,

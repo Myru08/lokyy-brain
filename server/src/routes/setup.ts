@@ -13,6 +13,8 @@ import {
   initLocalVault,
   getValidForgejoToken,
   loadToken,
+  createMcpToken,
+  listMcpTokens,
 } from "@lokyy/core";
 import {
   users,
@@ -451,8 +453,43 @@ setupRoutes.post("/complete", async (c) => {
       400,
     );
   }
+  // Story 7.10 AC#1 — mint a REAL MCP token for the own vault so a fresh
+  // install never stays on the shared `local_dev_token_change_me_32_chars_min`
+  // default that ships in the public repo. Best-effort, exactly like
+  // `seedSkills` above: a failure is reported in the response and logged, it
+  // never blocks the wizard (the vault + admin rows already exist at this
+  // point, and a token can be generated later under Einstellungen → MCP).
+  //
+  // Idempotent: an install that already has a live (non-revoked) token keeps
+  // it — re-running `/complete` must not silently mint duplicates.
+  const [personal] = await db
+    .select()
+    .from(vaults)
+    .where(eq(vaults.kind, "personal"))
+    .limit(1);
+  const ownVault = personal ?? vaultCount[0];
+  let mcpToken: string | null = null;
+  let mcpTokenError: string | null = null;
+  try {
+    const existing = await listMcpTokens(ownVault.id);
+    if (!existing.some((t) => !t.revokedAt)) {
+      const created = await createMcpToken({
+        vaultId: ownVault.id,
+        agentId: process.env.LOKYY_AGENT_ID ?? "claude-code",
+        role: "write",
+        label: "Setup",
+      });
+      mcpToken = created.token; // plaintext — shown ONCE, only the hash is stored
+    }
+  } catch (err) {
+    mcpTokenError = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[setup/complete] createMcpToken failed for vault ${ownVault.id}: ${mcpTokenError}`,
+    );
+  }
+
   await markSetupComplete();
-  return c.json({ setupComplete: true });
+  return c.json({ setupComplete: true, mcpToken, mcpTokenError });
 });
 
 // Acknowledge config exists so unused imports stay clean during refactor.

@@ -28,6 +28,23 @@ export type McpRole = "read" | "write";
 /** Human-recognisable prefix so a leaked bearer is greppable / identifiable. */
 export const MCP_TOKEN_PREFIX = "lokyy_mcp_";
 
+/**
+ * The placeholder bearer `docker-compose.local.yml` falls back to when the
+ * operator never set `LOKYY_MCP_TOKEN`. It is committed to the PUBLIC repo, so
+ * every installation that keeps it shares one publicly-known secret.
+ *
+ * Story 7.10 AC#7 — it stays ACCEPTED (rejecting it would lock out every
+ * existing install mid-flight, and the OAuth consent password falls back to the
+ * same env var), but callers can detect it via `isSharedDefaultMcpToken()` and
+ * surface it as insecure with a one-click path to a real, DB-backed token.
+ */
+export const SHARED_DEFAULT_MCP_TOKEN = "local_dev_token_change_me_32_chars_min";
+
+/** True when `value` is the publicly-known default bearer (see above). */
+export function isSharedDefaultMcpToken(value: string | undefined | null): boolean {
+  return (value ?? "").trim() === SHARED_DEFAULT_MCP_TOKEN;
+}
+
 /** Resolved per-request identity a bearer maps to. */
 export interface McpTokenContext {
   tokenId: string;

@@ -602,6 +602,40 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Own-vault MCP token metadata (Story 7.10). Deliberately has NO plaintext
+ * field: only the SHA-256 of a bearer is stored, so an existing token can never
+ * be shown again — the UI shows metadata and offers revoke + reissue.
+ */
+export interface OwnMcpTokenMeta {
+  id: string;
+  agentId: string;
+  role: string;
+  label: string | null;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface OwnMcpTokenList {
+  vaultId: string | null;
+  vaultName: string | null;
+  tokens: OwnMcpTokenMeta[];
+  /**
+   * State of the legacy `LOKYY_MCP_TOKEN`. `shared: true` means the install is
+   * still on the publicly-known default from the compose file — accepted, but
+   * insecure, and flagged as such in the UI (AC#7).
+   */
+  envToken: { configured: boolean; shared: boolean };
+}
+
+/** Creation response — `token` is the one-time plaintext bearer. */
+export interface OwnMcpTokenCreated extends OwnMcpTokenMeta {
+  vaultId: string;
+  token: string;
+  connector: string;
+}
+
 export const api = {
   listNotes: () => fetch(`${BASE}/notes`).then(json<NoteSummary[]>),
 
@@ -1377,6 +1411,35 @@ export const api = {
       credentials: "include",
       body: JSON.stringify(input),
     }).then(json<CreateTenantResult>),
+
+  // ── Own-vault MCP tokens (Story 7.10) ────────────────────────────────
+  // Separate from the `*TenantToken` calls above: those manage CUSTOMER
+  // vaults and make the caller name a vaultId. These three target the
+  // operator's OWN vault, resolved server-side, and are what the MCP tab uses.
+
+  /** Metadata of the own vault's tokens + the state of the legacy env token. */
+  listOwnMcpTokens: (): Promise<OwnMcpTokenList> =>
+    fetch(`${BASE}/admin/mcp-tokens`, { credentials: "include" }).then(
+      json<OwnMcpTokenList>,
+    ),
+
+  /** Mint a token for the own vault. The plaintext comes back EXACTLY once. */
+  createOwnMcpToken: (
+    input: { label?: string; agentId?: string; role?: "read" | "write" } = {},
+  ): Promise<OwnMcpTokenCreated> =>
+    fetch(`${BASE}/admin/mcp-tokens`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(input),
+    }).then(json<OwnMcpTokenCreated>),
+
+  /** Revoke one of the own vault's tokens. Effective on the next request. */
+  revokeOwnMcpToken: (tokenId: string): Promise<{ ok: true }> =>
+    fetch(`${BASE}/admin/mcp-tokens/${encodeURIComponent(tokenId)}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).then(json<{ ok: true }>),
 
   /** Revoke an MCP token — its next request 401s. */
   revokeTenantToken: (tokenId: string): Promise<{ ok: true }> =>

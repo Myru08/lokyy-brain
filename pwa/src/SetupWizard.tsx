@@ -132,6 +132,14 @@ type ForgejoMode = "existing" | "new";
 export function SetupWizard({ onDone }: { onDone: () => void }) {
   const [s, setS] = useState<WizardState>(initialState);
 
+  /**
+   * One-time MCP bearer minted by `/api/setup/complete` (Story 7.10). Only its
+   * hash is stored server-side, so this is the single moment it can ever be
+   * read — the wizard stops on it until the user confirms.
+   */
+  const [mcpToken, setMcpToken] = useState<string | null>(null);
+  const [mcpTokenCopied, setMcpTokenCopied] = useState(false);
+
   const [pg, setPg] = useState<PgStatus>({ phase: 'loading' });
   const [ollama, setOllama] = useState<OllamaStatus>({ phase: 'loading' });
 
@@ -490,7 +498,21 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
         console.warn("[setup] vault POST threw, continuing to /complete:", err);
       }
     }
-    await postJson<{ setupComplete: boolean }>("/complete", {});
+    // Story 7.10 AC#1: `/complete` mints the installation's own MCP token so it
+    // never stays on the shared default from the public compose file. The
+    // plaintext comes back exactly once and `onDone()` reloads the page — so
+    // hold it and let the user copy it before finishing. No token (or a
+    // best-effort failure) → nothing to show, finish straight away; one can
+    // always be generated later under Einstellungen → MCP.
+    const res = await postJson<{
+      setupComplete: boolean;
+      mcpToken?: string | null;
+      mcpTokenError?: string | null;
+    }>("/complete", {});
+    if (res.mcpToken) {
+      setMcpToken(res.mcpToken);
+      return;
+    }
     onDone();
   }
 
@@ -741,19 +763,90 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                 bis du später ein Remote hinterlegst.
               </Note>
             )}
-            <button
-              onClick={completeSetup}
-              style={{
-                ...btnStyle,
-                background: C.accent,
-                color: "#0f0a06",
-                fontWeight: 600,
-                padding: "12px 20px",
-                marginTop: 12,
-              }}
-            >
-              Setup abschließen →
-            </button>
+            {mcpToken ? (
+              /* Story 7.10 AC#1/#3 — Einmalanzeige des frisch erzeugten
+                 MCP-Tokens. Danach lädt die Seite neu und der Klartext ist
+                 unwiederbringlich weg (gespeichert wird nur ein Hash). */
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: 14,
+                  border: `2px solid ${C.gold}`,
+                  borderRadius: 8,
+                }}
+              >
+                <p style={{ color: C.gold, fontSize: 13, margin: "0 0 8px 0" }}>
+                  <strong>
+                    Dein MCP-Token — kopiere ihn jetzt, er wird nur dieses eine
+                    Mal angezeigt.
+                  </strong>
+                  <br />
+                  Damit bindest du deinen Vault an eine KI an. Er gilt sofort,
+                  ohne Neustart. Gespeichert wird nur ein Hash — verloren heißt
+                  neu erzeugen (Einstellungen → MCP).
+                </p>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 8,
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <code
+                    style={{
+                      flex: "1 1 auto",
+                      minWidth: 0,
+                      padding: "8px 12px",
+                      border: `1px solid ${C.border}`,
+                      borderRadius: 6,
+                      fontFamily: FONT.mono,
+                      fontSize: 13,
+                      color: C.gold,
+                      wordBreak: "break-all",
+                    }}
+                  >
+                    {mcpToken}
+                  </code>
+                  <button
+                    onClick={() => {
+                      void navigator.clipboard.writeText(mcpToken);
+                      setMcpTokenCopied(true);
+                    }}
+                    style={btnStyle}
+                  >
+                    <Copy size={12} /> {mcpTokenCopied ? "kopiert" : "Copy"}
+                  </button>
+                </div>
+                <button
+                  onClick={onDone}
+                  style={{
+                    ...btnStyle,
+                    background: C.accent,
+                    color: "#0f0a06",
+                    fontWeight: 600,
+                    padding: "12px 20px",
+                    marginTop: 12,
+                  }}
+                >
+                  Token gesichert — weiter →
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={completeSetup}
+                style={{
+                  ...btnStyle,
+                  background: C.accent,
+                  color: "#0f0a06",
+                  fontWeight: 600,
+                  padding: "12px 20px",
+                  marginTop: 12,
+                }}
+              >
+                Setup abschließen →
+              </button>
+            )}
           </StepShell>
         )}
       </main>

@@ -76,6 +76,23 @@ async function resolveRegistrySession(
   };
 }
 
+/**
+ * Does `bearer` match the legacy static `LOKYY_MCP_TOKEN`?
+ *
+ * The empty-string guard is load-bearing (Story 7.10): an installation may now
+ * run with NO env token at all and authenticate purely via DB-backed registry
+ * tokens. Without the guard, `token === ""` would make a request carrying the
+ * literal header `Authorization: Bearer ` (empty value → `slice(7)` → `""`)
+ * compare equal and get FULL unscoped owner access. Both sides must be
+ * non-empty for a legacy match.
+ */
+export function isLegacyBearer(
+  bearer: string | undefined,
+  token: string | undefined,
+): boolean {
+  return Boolean(token) && Boolean(bearer) && bearer === token;
+}
+
 async function readBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -143,7 +160,7 @@ export async function handleMcpHttpRequest(
 
   const auth = req.headers["authorization"];
   const bearerToken = auth?.startsWith("Bearer ") ? auth.slice(7) : undefined;
-  const isLegacyToken = bearerToken === token;
+  const isLegacyToken = isLegacyBearer(bearerToken, token);
   const isOAuthToken = bearerToken ? verifyToken(bearerToken, "access") : false;
 
   // Multi-tenant (LBMT-1.3): a bearer that is neither the owner's static token
