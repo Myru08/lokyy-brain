@@ -6,6 +6,13 @@
 #     stattdessen explizite `ports:`-Mappings auf den Host.
 #   • KEIN ${SERVICE_PASSWORD_POSTGRES} (Coolify-Auto-Secret) → ${POSTGRES_PASSWORD:-lokyylocal},
 #     überall identisch (postgres-Service UND alle DATABASE_URL/LOKYY_DB_URL).
+#     Bei einer NEUEN Installation erzeugt install.sh/install.ps1 einen eigenen
+#     Zufallswert und legt ihn in .env ab; der Default `lokyylocal` greift dann
+#     nicht mehr. Er BLEIBT hier trotzdem stehen: bestehende Installationen
+#     haben ihn beim ersten Start fest ins Postgres-Volume eingebrannt
+#     (POSTGRES_PASSWORD wirkt nur bei der Erst-Initialisierung). Ihn zu
+#     entfernen oder zu ändern würde jede Bestandsinstallation aus ihrer
+#     eigenen Datenbank aussperren.
 #   • FORGEJO__security__INSTALL_LOCK=true → Forgejo überspringt den interaktiven
 #     Web-Installer beim ersten Boot.
 #   • GIT_REMOTE hat einen lauffähigen Default (container-intern, Port 3000).

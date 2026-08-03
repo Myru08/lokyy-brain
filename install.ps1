@@ -12,13 +12,15 @@
 #   3. Prüfen, ob der Docker-Daemon wirklich LÄUFT (nicht nur installiert ist)
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
-#   6. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
+#   6. Bei einer NEUEN Installation ein eigenes Datenbank-Passwort erzeugen und
+#      in .env hinterlegen (bestehende Installationen bleiben unangetastet)
+#   7. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
 #      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
 #       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
-#   7. Warten, bis Web-UI UND API bereit sind (erster Start baut Images = dauert;
+#   8. Warten, bis Web-UI UND API bereit sind (erster Start baut Images = dauert;
 #      die Web-UI allein antwortet schon, während der Server noch hochfährt)
-#   8. Browser öffnen
-#   9. Kurze Zusammenfassung "wie geht es weiter"
+#   9. Browser öffnen
+#  10. Kurze Zusammenfassung "wie geht es weiter"
 #
 # Aufruf in PowerShell (im Projekt-Ordner):
 #   .\install.ps1
@@ -102,7 +104,7 @@ Write-Line ''
 # Windows an der Umgebungsvariable $env:OS.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 1/9 — Betriebssystem erkennen'
+Write-Step 'Schritt 1/10 — Betriebssystem erkennen'
 
 $runningOnWindows = $false
 if (Get-Variable -Name 'IsWindows' -ErrorAction SilentlyContinue) {
@@ -190,7 +192,7 @@ function Test-Wsl2Ready {
     return ($LASTEXITCODE -eq 0)
 }
 
-Write-Step 'Schritt 2/9 — Docker-Installation prüfen'
+Write-Step 'Schritt 2/10 — Docker-Installation prüfen'
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
     Write-Warn 'Docker ist auf diesem Rechner nicht installiert.'
@@ -348,7 +350,7 @@ Write-Ok "Docker gefunden: $dockerVersion"
 # "docker" existiert dann — nur antwortet niemand dahinter.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 3/9 — Docker-Daemon prüfen (läuft Docker gerade?)'
+Write-Step 'Schritt 3/10 — Docker-Daemon prüfen (läuft Docker gerade?)'
 
 docker info 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) {
@@ -371,7 +373,7 @@ Write-Ok 'Docker-Daemon läuft.'
 # nicht das alte eigenständige Programm "docker-compose" (mit Bindestrich).
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 4/9 — Compose-Plugin prüfen (docker compose v2)'
+Write-Step 'Schritt 4/10 — Compose-Plugin prüfen (docker compose v2)'
 
 # Erst die komplette Ausgabe einsammeln, dann auswerten: würden wir direkt in
 # "Select-Object -First 1" pipen, könnte PowerShell das Programm vorzeitig
@@ -404,7 +406,7 @@ Write-Ok "Compose gefunden: $composeVersion"
 # einer Sprache, die man erst mal übersetzen muss.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 8790)'
+Write-Step 'Schritt 5/10 — Ports prüfen (8787, 8095, 8788, 8790)'
 
 # Prüft, ob auf einem Port bereits etwas lauscht.
 # Wir nehmen bewusst einen direkten TCP-Verbindungsversuch statt
@@ -452,7 +454,151 @@ if ($portsBusy -gt 0) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 6 — Den Stack starten
+# Schritt 6 — Datenbank-Passwort für DIESE Installation
+#
+# Ohne eigenes Passwort läuft jede Installation weltweit auf demselben
+# Standardwert, der im öffentlichen Repo steht. Neue Installationen bekommen
+# deshalb hier ein zufälliges, eigenes.
+#
+# ACHTUNG, der wichtigste Satz in dieser Datei: Postgres übernimmt
+# POSTGRES_PASSWORD ausschließlich beim ALLERERSTEN Start eines Daten-Volumes.
+# Danach steht das Passwort in der Datenbank fest. Wer einer bestehenden
+# Installation nachträglich ein neues Passwort unterschiebt, sperrt sie aus
+# ihrer eigenen Datenbank aus — ein Totalausfall, ausgelöst durch ein Update.
+# Genau deshalb erzeugen wir nur dann eines, wenn beides zutrifft:
+#   • es gibt noch keine .env mit POSTGRES_PASSWORD  UND
+#   • es gibt noch kein Postgres-Volume dieser Installation.
+# Und wenn wir das nicht sicher feststellen können (Docker antwortet nicht,
+# Projektname unklar), passiert NICHTS. Ein Standardwert zu viel ist ärgerlich,
+# eine ausgesperrte Datenbank ist ein Datenverlust-Risiko.
+#
+# Diese Logik ist die Schwester des Blocks "db-password-bootstrap" in
+# install.sh — ändert sich eine Seite, muss die andere nachgezogen werden.
+# ─────────────────────────────────────────────────────────────────────────────
+
+Write-Step 'Schritt 6/10 — Datenbank-Passwort für diese Installation'
+
+# BEGIN db-password-bootstrap
+$EnvFile = '.env'
+
+# Erzeugt ein zufälliges Passwort — bewusst NUR Buchstaben und Ziffern.
+# Der Wert landet unverändert in einer postgres://…-URL (Sonderzeichen müsste
+# man dort prozentkodieren) und in einer .env, die Docker Compose selbst noch
+# einmal interpretiert ("$" wäre dort der Anfang einer Variablen).
+function New-DbPassword {
+    $bytes = New-Object byte[] 24
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# Wie heißt das Compose-Projekt? Alle Regeln dafür kennt nur Compose selbst
+# (COMPOSE_PROJECT_NAME, ein "name:" in der Compose-Datei, die Bereinigung des
+# Ordnernamens) — also fragen wir Compose. Die erste Zeile von "config" ist
+# "name: <projekt>". Nur wenn das nicht klappt, leiten wir selbst ab.
+function Get-ComposeProjectName {
+    $configOutput = @(docker compose -f $ComposeFile config 2>$null)
+    foreach ($line in $configOutput) {
+        if ("$line" -match '^name:\s*(.+?)\s*$') {
+            return $Matches[1]
+        }
+    }
+    $derived = (Split-Path -Leaf $PSScriptRoot).ToLower() -replace '[^a-z0-9_-]', '_'
+    if ([string]::IsNullOrWhiteSpace($derived)) { return $null }
+    return $derived
+}
+
+# Gibt es das Postgres-Volume dieser Installation schon?
+# Compose benennt Volumes "<projekt>_<schlüssel>"; der Schlüssel steht unten in
+# der Compose-Datei unter "volumes:" als postgres-data. Bewusst der exakte Name
+# und kein Suchmuster — ein Muster träfe womöglich das Volume eines fremden
+# Docker-Projekts auf demselben Rechner.
+function Test-PostgresVolumeExists {
+    param([string]$Project)
+    if ([string]::IsNullOrWhiteSpace($Project)) { return $false }
+    docker volume inspect "${Project}_postgres-data" 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+# Schreibt UTF-8 OHNE BOM. Set-Content würde in Windows PowerShell 5.1 ein BOM
+# voranstellen — Docker Compose läse den ersten Schlüssel dann als "﻿POSTGRES_PASSWORD"
+# und würde das Passwort stillschweigend ignorieren.
+function Write-EnvText {
+    param([string]$Path, [string]$Text, [bool]$Append)
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $full = [System.IO.Path]::GetFullPath((Join-Path (Get-Location).Path $Path))
+    if ($Append) {
+        [System.IO.File]::AppendAllText($full, $Text, $encoding)
+    } else {
+        [System.IO.File]::WriteAllText($full, $Text, $encoding)
+    }
+}
+
+$envHasPassword = $false
+if (Test-Path $EnvFile) {
+    $envHasPassword = @(Get-Content $EnvFile -ErrorAction SilentlyContinue |
+                        Where-Object { $_ -match '^\s*POSTGRES_PASSWORD=' }).Count -gt 0
+}
+
+# Antwortet Docker überhaupt? Wenn nicht, können wir das vorhandene Volume
+# nicht sehen — und dürfen dann auf keinen Fall ein Passwort erzeugen.
+docker volume ls --quiet 2>$null | Out-Null
+$dockerVolumesReadable = ($LASTEXITCODE -eq 0)
+
+if ($envHasPassword) {
+    Write-Ok 'Diese Installation hat bereits ein eigenes Datenbank-Passwort (in .env).'
+} elseif (-not $dockerVolumesReadable) {
+    Write-Warn 'Die vorhandenen Docker-Volumes lassen sich gerade nicht auflisten.'
+    Write-Line '    Wir lassen die Datenbank deshalb unangetastet — der Start läuft normal weiter.'
+} else {
+    $composeProject = Get-ComposeProjectName
+
+    if ([string]::IsNullOrWhiteSpace($composeProject)) {
+        Write-Warn 'Der Name des Compose-Projekts ließ sich nicht ermitteln.'
+        Write-Line '    Wir lassen die Datenbank deshalb unangetastet — der Start läuft normal weiter.'
+    } elseif (Test-PostgresVolumeExists -Project $composeProject) {
+        Write-Ok 'Bestehende Installation erkannt — die Datenbank bleibt unverändert.'
+        Write-Line '    Dein Datenbank-Passwort bleibt der mitgelieferte Standardwert. Von außen'
+        Write-Line '    ist die Datenbank nicht erreichbar (sie veröffentlicht keinen Port), du'
+        Write-Line '    musst also nichts tun. Wenn du trotzdem umstellen möchtest, steht der'
+        Write-Line '    Weg in der README unter "Eigenes Datenbank-Passwort nachrüsten".'
+    } else {
+        $dbPassword = New-DbPassword
+
+        if ([string]::IsNullOrWhiteSpace($dbPassword) -or $dbPassword.Length -lt 24) {
+            Write-Warn 'Es ließ sich kein zufälliges Passwort erzeugen.'
+            Write-Line '    Die Installation läuft mit dem Standardwert weiter.'
+        } elseif (Test-Path $EnvFile) {
+            # .env gibt es schon (z. B. für API-Schlüssel), nur ohne Passwort-Zeile:
+            # anhängen, nie überschreiben.
+            $block = "`r`n" +
+                     "# Von install.ps1 erzeugt — gilt nur für diese Installation.`r`n" +
+                     "# Nicht nachträglich ändern: siehe Kommentar in der README.`r`n" +
+                     "POSTGRES_PASSWORD=$dbPassword`r`n"
+            Write-EnvText -Path $EnvFile -Text $block -Append $true
+            Write-Ok 'Eigenes Datenbank-Passwort erzeugt und an .env angehängt.'
+        } else {
+            $block = "# lokyy-brain — Einstellungen dieser Installation.`r`n" +
+                     "# Von install.ps1 angelegt. Gehört NICHT ins Git (steht in .gitignore).`r`n" +
+                     "#`r`n" +
+                     "# POSTGRES_PASSWORD wird beim allerersten Start fest in die Datenbank`r`n" +
+                     "# geschrieben. Änderst du den Wert hier einfach nachträglich, sperrst du`r`n" +
+                     "# dich aus deiner eigenen Datenbank aus — die kennt dann weiter den alten.`r`n" +
+                     "# Zum Wechseln siehe README, Abschnitt `"Eigenes Datenbank-Passwort nachrüsten`".`r`n" +
+                     "POSTGRES_PASSWORD=$dbPassword`r`n"
+            Write-EnvText -Path $EnvFile -Text $block -Append $false
+            Write-Ok 'Eigenes Datenbank-Passwort erzeugt und in .env hinterlegt (Datei bleibt lokal).'
+        }
+    }
+}
+# END db-password-bootstrap
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schritt 7 — Den Stack starten
 # Beim allerersten Mal werden hier Images gebaut und heruntergeladen.
 # Das dauert je nach Internetverbindung durchaus ein paar Minuten.
 #
@@ -463,7 +609,7 @@ if ($portsBusy -gt 0) {
 # Build kaputt) werden NICHT wiederholt — das würde nur Zeit kosten.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 6/9 — Lokyy Brain starten (beim ersten Mal dauert das ein paar Minuten)'
+Write-Step 'Schritt 7/10 — Lokyy Brain starten (beim ersten Mal dauert das ein paar Minuten)'
 
 if (-not (Test-Path $ComposeFile)) {
     Write-Fail "Die Datei $ComposeFile liegt nicht im Projekt-Ordner."
@@ -648,7 +794,7 @@ Remove-Item -Path $composeLog -Force -ErrorAction SilentlyContinue
 Write-Ok 'Container gestartet.'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 7 — Warten, bis Web-UI UND API bereit sind
+# Schritt 8 — Warten, bis Web-UI UND API bereit sind
 # "Container gestartet" heißt noch nicht "Anwendung bereit": der Server muss
 # erst hochfahren, die Datenbank migrieren usw. Deshalb fragen wir alle paar
 # Sekunden nach, ob es schon so weit ist. Jeder Punkt = ein Versuch.
@@ -661,7 +807,7 @@ Write-Ok 'Container gestartet.'
 # zusätzlich darauf, dass die API wirklich antwortet.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step "Schritt 7/9 — Warten, bis Web-UI und API bereit sind (max. $MaxWaitSeconds Sekunden)"
+Write-Step "Schritt 8/10 — Warten, bis Web-UI und API bereit sind (max. $MaxWaitSeconds Sekunden)"
 
 # Uns interessiert NUR, ob eine Verbindung zustande kommt — welcher HTTP-Status
 # zurückkommt, ist an dieser Stelle egal.
@@ -722,10 +868,10 @@ if ($stackReady) {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 8 — Browser öffnen
+# Schritt 9 — Browser öffnen
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 8/9 — Browser öffnen'
+Write-Step 'Schritt 9/10 — Browser öffnen'
 
 try {
     # -ErrorAction Stop, damit ein Fehlschlag wirklich im catch-Block landet.
@@ -737,10 +883,10 @@ try {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 9 — Wie geht es weiter?
+# Schritt 10 — Wie geht es weiter?
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 9/9 — Fertig'
+Write-Step 'Schritt 10/10 — Fertig'
 
 Write-Line ''
 Write-Host 'Lokyy Brain läuft.' -ForegroundColor Green

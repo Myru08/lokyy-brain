@@ -105,7 +105,9 @@ mit**: unter Linux vollautomatisch (offizielles Docker-Skript), unter macOS
 System-Neustart nötig ist (Windows/WSL2) oder ein neues Terminal-Fenster
 (frisch installiertes `brew`/`winget`), sagt das Skript das klar an — das ist
 kein Fehler, einfach einmal neu starten und den Befehl erneut aufrufen.
-Danach warnt der Installer bei Port-Konflikten, baut und startet den Stack,
+Danach warnt der Installer bei Port-Konflikten, legt für eine neue Installation
+ein **eigenes Datenbank-Passwort** an (zufällig erzeugt, landet in `.env` — du
+musst nichts eintippen und dir nichts merken), baut und startet den Stack,
 wartet, bis **Web-UI und API** beide antworten (die Web-UI allein ist schon
 da, während der Server dahinter noch hochfährt — deshalb beides), und öffnet
 dann den Browser:
@@ -174,7 +176,37 @@ Verbindungsfehler; Docker muss also laufen (siehe oben).
 
 Deine Notizen (Vault), Datenbank und Einstellungen bleiben bei einem Update
 unangetastet — sie liegen in Docker-Volumes, nicht im Code. Ein Update
-betrifft nur die Anwendung selbst:
+betrifft nur die Anwendung selbst.
+
+### Der normale Weg: der Knopf in Lokyy
+
+Seit v1.11 prüft Lokyy beim Start selbst, ob eine neue Version vorliegt. Wenn
+ja, erscheint oben ein Hinweis mit den wichtigsten Änderungen und einem Knopf
+**„Jetzt aktualisieren"**. Ein Klick holt die neue Version, baut sie und
+startet den Stack neu; den Fortschritt siehst du dabei. Das Neuladen der
+Oberfläche erledigt Lokyy anschließend selbst.
+
+Zwei Dinge, die dabei garantiert sind:
+
+- **Gebaut wird, bevor umgeschaltet wird.** Schlägt der Bau fehl, passiert
+  nichts weiter: die alte Version läuft unverändert weiter, und du bekommst
+  den Grund angezeigt.
+- **Hast du eigene Änderungen im Ordner**, bricht das Update ab und rührt
+  nichts an — es soll deine Arbeit nicht überschreiben. Erst committen oder
+  verwerfen, dann erneut.
+
+Der Knopf erscheint nur für Admins. Ist alles aktuell, siehst du gar nichts.
+
+**Wann der Knopf fehlt:** bei Remote-Deployments über Coolify (dort
+aktualisierst du über Coolify) und bei Installationen ohne den
+Updater-Dienst — Lokyy sagt dann, woran es liegt, statt einen toten Knopf zu
+zeigen. Wer vor v1.11 installiert hat, holt sich den Dienst mit dem manuellen
+Update unten einmalig ins Haus.
+
+### Der manuelle Weg
+
+Funktioniert weiterhin und ist der Rückfallweg, wenn der Knopf nicht
+verfügbar ist:
 
 ```bash
 cd lokyy-brain          # dein geklonter Ordner
@@ -184,19 +216,85 @@ git pull
 ```
 
 `install.sh`/`install.ps1` sind bewusst auch für Updates gedacht, nicht nur
-für die Erstinstallation — sie bauen neu (`--build`) und starten den Stack
-danach automatisch neu. Datenbank-Änderungen laufen automatisch beim Start
-mit, dafür musst du nichts extra tun. Ein `./lokyy.sh start` reicht für ein
-Update **nicht** — das startet bewusst ohne Neubau (siehe oben), du würdest
-also weiter die alte Version laufen haben.
+für die Erstinstallation. Datenbank-Änderungen laufen automatisch beim Start
+mit. Ein `./lokyy.sh start` reicht für ein Update **nicht** — das startet
+bewusst ohne Neubau, du würdest also weiter die alte Version laufen haben.
 
-**Nach jedem Update einmal hart neu laden** — `Strg`+`Shift`+`R`, am Mac
-`Cmd`+`Shift`+`R`. Lokyy ist eine PWA und hält die Oberfläche zwischengespeichert,
-damit sie offline funktioniert; ohne hartes Neuladen siehst du sonst noch die
-alte Version, obwohl der Server längst die neue ausliefert.
+Beim manuellen Weg musst du danach **einmal hart neu laden** —
+`Strg`+`Shift`+`R`, am Mac `Cmd`+`Shift`+`R`. Lokyy ist eine PWA und hält die
+Oberfläche zwischengespeichert; ohne das siehst du noch die alte Version,
+obwohl der Server längst die neue ausliefert. (Über den Knopf entfällt das.)
 
-Was aktuell in welcher Version behoben/dazugekommen ist, steht in
+### Die Grenze der Rücknahme
+
+Geht beim Umschalten etwas schief, stellt Lokyy die vorherige Version wieder
+her. Was **nicht** zurückgenommen wird, sind Änderungen an der Datenbank, die
+eine neue Version beim Start vorgenommen hat — Datenbank-Migrationen laufen
+vorwärts. In der Praxis ist das unkritisch, weil eine neue Version die alten
+Daten weiter lesen kann; ein Downgrade auf eine ältere Version nach einer
+Migration ist aber nichts, was per Knopfdruck geht.
+
+### Was die Versionsprüfung überträgt
+
+Nichts über dich. Lokyy holt die öffentliche `CHANGELOG.md` dieses Repos und
+vergleicht die oberste Versionsnummer mit der eigenen. Es werden keine Daten
+gesendet, keine Kennung, keine Statistik. Abschalten kannst du die Prüfung mit
+`LOKYY_UPDATE_CHECK=off`.
+
+Was in welcher Version dazugekommen ist, steht in
 **[CHANGELOG.md](CHANGELOG.md)**.
+
+### Eigenes Datenbank-Passwort nachrüsten
+
+Neue Installationen bekommen vom Installer automatisch ein eigenes,
+zufälliges Datenbank-Passwort. Wer **vorher** installiert hat, läuft weiter auf
+dem mitgelieferten Standardwert — und das ist auch in Ordnung: die Datenbank
+veröffentlicht keinen Port, sie ist nur aus dem Docker-Netz erreichbar. Wer
+trotzdem nachziehen will, macht das in vier Schritten. Ein Update stellt hier
+bewusst **nichts** automatisch um: Postgres brennt das Passwort beim
+allerersten Start in sein Daten-Volume ein, ein von außen untergeschobener
+neuer Wert würde deine Installation nur von ihrer eigenen Datenbank aussperren.
+
+```bash
+cd lokyy-brain                 # dein geklonter Ordner
+
+# 1. Neues Passwort erzeugen (unter Windows: siehe Hinweis unten)
+NEU="$(openssl rand -hex 24)"; echo "$NEU"
+
+# 2. In der laufenden Datenbank setzen
+docker compose -f docker-compose.local.yml exec postgres \
+  psql -U postgres -d lokyy_brain -c "ALTER USER postgres PASSWORD '$NEU'"
+
+# 3. Denselben Wert in .env hinterlegen (Datei anlegen, falls sie fehlt)
+echo "POSTGRES_PASSWORD=$NEU" >> .env
+
+# 4. Stack neu einlesen lassen
+docker compose -f docker-compose.local.yml up -d
+```
+
+Wichtig bei Schritt 4: es muss `up -d` sein. `docker compose restart` bzw.
+`./lokyy.sh restart` startet die Container nur neu und liest die `.env` dabei
+**nicht** neu ein — du liefest dann in einen Verbindungsfehler.
+
+Unter Windows/PowerShell erzeugst du den Wert in Schritt 1 so:
+
+```powershell
+$b = New-Object byte[] 24
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b)
+$NEU = ($b | ForEach-Object { $_.ToString('x2') }) -join ''; $NEU
+```
+
+**Wenn etwas schiefgeht, kommst du immer wieder rein.** `docker compose exec`
+geht von innen an die Datenbank und braucht dafür kein Passwort. Landest du
+also zwischen zwei Schritten in einem Verbindungsfehler, setzt dich das hier
+zurück auf den Ausgangszustand:
+
+```bash
+docker compose -f docker-compose.local.yml exec postgres \
+  psql -U postgres -d lokyy_brain -c "ALTER USER postgres PASSWORD 'lokyylocal'"
+# und die Zeile POSTGRES_PASSWORD wieder aus .env entfernen, dann:
+docker compose -f docker-compose.local.yml up -d
+```
 
 ### Vor v1.11 installiert?
 

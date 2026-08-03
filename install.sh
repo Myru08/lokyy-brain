@@ -13,13 +13,15 @@
 #   3. Prüfen, ob der Docker-Daemon wirklich LÄUFT (nicht nur installiert ist)
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
-#   6. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
+#   6. Bei einer NEUEN Installation ein eigenes Datenbank-Passwort erzeugen und
+#      in .env hinterlegen (bestehende Installationen bleiben unangetastet)
+#   7. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
 #      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
 #       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
-#   7. Warten, bis Web-UI UND API bereit sind (erster Start baut Images = dauert;
+#   8. Warten, bis Web-UI UND API bereit sind (erster Start baut Images = dauert;
 #      die Web-UI allein antwortet schon, während der Server noch hochfährt)
-#   8. Browser öffnen
-#   9. Kurze Zusammenfassung "wie geht es weiter"
+#   9. Browser öffnen
+#  10. Kurze Zusammenfassung "wie geht es weiter"
 #
 # Aufruf — beides funktioniert:
 #   bash install.sh
@@ -139,7 +141,7 @@ say ""
 # Schritt 1 — Betriebssystem erkennen
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 1/9 — Betriebssystem erkennen"
+step "Schritt 1/10 — Betriebssystem erkennen"
 
 OS_KERNEL="$(uname -s 2>/dev/null || echo unknown)"
 case "${OS_KERNEL}" in
@@ -444,7 +446,7 @@ install_docker_macos() {
   ok "Docker Desktop läuft."
 }
 
-step "Schritt 2/9 — Docker-Installation prüfen"
+step "Schritt 2/10 — Docker-Installation prüfen"
 
 if ! command -v docker >/dev/null 2>&1; then
   warn "Docker ist auf diesem Rechner nicht installiert."
@@ -479,7 +481,7 @@ ok "Docker gefunden: $(${DOCKER_SUDO} docker --version 2>/dev/null)"
 # "docker" existiert dann — nur antwortet niemand dahinter.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 3/9 — Docker-Daemon prüfen (läuft Docker gerade?)"
+step "Schritt 3/10 — Docker-Daemon prüfen (läuft Docker gerade?)"
 
 if ! ${DOCKER_SUDO} docker info >/dev/null 2>&1; then
   fail "Docker ist installiert, aber der Docker-Daemon antwortet nicht."
@@ -513,7 +515,7 @@ ok "Docker-Daemon läuft."
 # nicht das alte eigenständige Programm "docker-compose" (mit Bindestrich).
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 4/9 — Compose-Plugin prüfen (docker compose v2)"
+step "Schritt 4/10 — Compose-Plugin prüfen (docker compose v2)"
 
 if ! ${DOCKER_SUDO} docker compose version >/dev/null 2>&1; then
   fail "Der Unterbefehl \"docker compose\" ist nicht verfügbar."
@@ -539,7 +541,7 @@ ok "Compose gefunden: $(${DOCKER_SUDO} docker compose version 2>/dev/null | head
 # einer Sprache, die man erst mal übersetzen muss.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 5/9 — Ports prüfen (8787, 8095, 8788, 8790)"
+step "Schritt 5/10 — Ports prüfen (8787, 8095, 8788, 8790)"
 
 # Prüft, ob auf einem Port bereits etwas lauscht.
 # Rückgabe: 0 = belegt, 1 = frei.
@@ -589,7 +591,153 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 6 — Den Stack starten
+# Schritt 6 — Datenbank-Passwort für DIESE Installation
+#
+# Ohne eigenes Passwort läuft jede Installation weltweit auf demselben
+# Standardwert, der im öffentlichen Repo steht. Neue Installationen bekommen
+# deshalb hier ein zufälliges, eigenes.
+#
+# ACHTUNG, der wichtigste Satz in dieser Datei: Postgres übernimmt
+# POSTGRES_PASSWORD ausschließlich beim ALLERERSTEN Start eines Daten-Volumes.
+# Danach steht das Passwort in der Datenbank fest. Wer einer bestehenden
+# Installation nachträglich ein neues Passwort unterschiebt, sperrt sie aus
+# ihrer eigenen Datenbank aus — ein Totalausfall, ausgelöst durch ein Update.
+# Genau deshalb erzeugen wir nur dann eines, wenn beides zutrifft:
+#   • es gibt noch keine .env mit POSTGRES_PASSWORD  UND
+#   • es gibt noch kein Postgres-Volume dieser Installation.
+# Und wenn wir das nicht sicher feststellen können (Docker antwortet nicht,
+# Projektname unklar), passiert NICHTS. Ein Standardwert zu viel ist ärgerlich,
+# eine ausgesperrte Datenbank ist ein Datenverlust-Risiko.
+# ─────────────────────────────────────────────────────────────────────────────
+
+step "Schritt 6/10 — Datenbank-Passwort für diese Installation"
+
+# BEGIN db-password-bootstrap
+ENV_FILE=".env"
+
+# Erzeugt ein zufälliges Passwort — bewusst NUR Buchstaben und Ziffern.
+# Der Wert landet unverändert in einer postgres://…-URL (Sonderzeichen müsste
+# man dort prozentkodieren) und in einer .env, die Docker Compose selbst noch
+# einmal interpretiert ("$" wäre dort der Anfang einer Variablen).
+generate_db_password() {
+  local pw=""
+
+  # openssl liegt auf macOS und praktisch jedem Linux bei.
+  if command -v openssl >/dev/null 2>&1; then
+    pw="$(openssl rand -hex 24 2>/dev/null)"
+  fi
+
+  # Fallback ohne openssl: direkt aus dem Zufallsgerät des Systems.
+  if [ -z "${pw}" ] && [ -r /dev/urandom ]; then
+    pw="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 40)"
+  fi
+
+  # Lieber ehrlich scheitern als ein schwaches Passwort einbrennen.
+  if [ "${#pw}" -lt 24 ]; then
+    return 1
+  fi
+  printf '%s\n' "${pw}"
+}
+
+# Wie heißt das Compose-Projekt? Alle Regeln dafür kennt nur Compose selbst
+# (COMPOSE_PROJECT_NAME, ein "name:" in der Compose-Datei, die Bereinigung des
+# Ordnernamens) — also fragen wir Compose. Die erste Zeile von "config" ist
+# "name: <projekt>". Nur wenn das nicht klappt, leiten wir selbst ab.
+compose_project_name() {
+  local name=""
+
+  name="$(${DOCKER_SUDO} docker compose -f "${COMPOSE_FILE}" config 2>/dev/null \
+          | grep -m 1 '^name:' \
+          | sed 's/^name:[[:space:]]*//')"
+  if [ -n "${name}" ]; then
+    printf '%s\n' "${name}"
+    return 0
+  fi
+
+  name="$(printf '%s' "$(basename "${SCRIPT_DIR}")" \
+          | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+          | LC_ALL=C tr -c 'a-z0-9_-' '_')"
+  [ -z "${name}" ] && return 1
+  printf '%s\n' "${name}"
+}
+
+# Gibt es das Postgres-Volume dieser Installation schon?
+# Compose benennt Volumes "<projekt>_<schlüssel>"; der Schlüssel steht unten in
+# der Compose-Datei unter "volumes:" als postgres-data. Bewusst der exakte Name
+# und kein Suchmuster — ein Muster träfe womöglich das Volume eines fremden
+# Docker-Projekts auf demselben Rechner.
+postgres_volume_exists() {
+  local project
+  project="$1"
+  [ -z "${project}" ] && return 1
+  ${DOCKER_SUDO} docker volume inspect "${project}_postgres-data" >/dev/null 2>&1
+}
+
+if [ -f "${ENV_FILE}" ] && grep -q '^[[:space:]]*POSTGRES_PASSWORD=' "${ENV_FILE}" 2>/dev/null; then
+  ok "Diese Installation hat bereits ein eigenes Datenbank-Passwort (in .env)."
+
+# Antwortet Docker überhaupt? Wenn nicht, können wir das vorhandene Volume
+# nicht sehen — und dürfen dann auf keinen Fall ein Passwort erzeugen.
+elif ! ${DOCKER_SUDO} docker volume ls --quiet >/dev/null 2>&1; then
+  warn "Die vorhandenen Docker-Volumes lassen sich gerade nicht auflisten."
+  say  "    Wir lassen die Datenbank deshalb unangetastet — der Start läuft normal weiter."
+
+else
+  COMPOSE_PROJECT="$(compose_project_name)"
+
+  if [ -z "${COMPOSE_PROJECT}" ]; then
+    warn "Der Name des Compose-Projekts ließ sich nicht ermitteln."
+    say  "    Wir lassen die Datenbank deshalb unangetastet — der Start läuft normal weiter."
+
+  elif postgres_volume_exists "${COMPOSE_PROJECT}"; then
+    ok "Bestehende Installation erkannt — die Datenbank bleibt unverändert."
+    say "    Dein Datenbank-Passwort bleibt der mitgelieferte Standardwert. Von außen"
+    say "    ist die Datenbank nicht erreichbar (sie veröffentlicht keinen Port), du"
+    say "    musst also nichts tun. Wenn du trotzdem umstellen möchtest, steht der"
+    say "    Weg in der README unter \"Eigenes Datenbank-Passwort nachrüsten\"."
+
+  else
+    DB_PASSWORD="$(generate_db_password)"
+
+    if [ -z "${DB_PASSWORD}" ]; then
+      warn "Es ließ sich kein zufälliges Passwort erzeugen (weder openssl noch /dev/urandom)."
+      say  "    Die Installation läuft mit dem Standardwert weiter."
+
+    elif [ -f "${ENV_FILE}" ]; then
+      # .env gibt es schon (z. B. für API-Schlüssel), nur ohne Passwort-Zeile:
+      # anhängen, nie überschreiben.
+      {
+        printf '\n'
+        printf '# Von install.sh erzeugt — gilt nur für diese Installation.\n'
+        printf '# Nicht nachträglich ändern: siehe Kommentar in der README.\n'
+        printf 'POSTGRES_PASSWORD=%s\n' "${DB_PASSWORD}"
+      } >> "${ENV_FILE}"
+      ok "Eigenes Datenbank-Passwort erzeugt und an .env angehängt."
+
+    else
+      # Neu anlegen. umask in einer Subshell, damit die Datei von Anfang an
+      # nur für dich lesbar ist — nicht erst nach einem nachträglichen chmod.
+      (
+        umask 077
+        {
+          printf '# lokyy-brain — Einstellungen dieser Installation.\n'
+          printf '# Von install.sh angelegt. Gehört NICHT ins Git (steht in .gitignore).\n'
+          printf '#\n'
+          printf '# POSTGRES_PASSWORD wird beim allerersten Start fest in die Datenbank\n'
+          printf '# geschrieben. Änderst du den Wert hier einfach nachträglich, sperrst du\n'
+          printf '# dich aus deiner eigenen Datenbank aus — die kennt dann weiter den alten.\n'
+          printf '# Zum Wechseln siehe README, Abschnitt "Eigenes Datenbank-Passwort nachrüsten".\n'
+          printf 'POSTGRES_PASSWORD=%s\n' "${DB_PASSWORD}"
+        } > "${ENV_FILE}"
+      )
+      ok "Eigenes Datenbank-Passwort erzeugt und in .env hinterlegt (Datei bleibt lokal)."
+    fi
+  fi
+fi
+# END db-password-bootstrap
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Schritt 7 — Den Stack starten
 # Beim allerersten Mal werden hier Images gebaut und heruntergeladen.
 # Das dauert je nach Internetverbindung durchaus ein paar Minuten.
 #
@@ -600,7 +748,7 @@ fi
 # Build kaputt) werden NICHT wiederholt — das würde nur Zeit kosten.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 6/9 — Lokyy Brain starten (beim ersten Mal dauert das ein paar Minuten)"
+step "Schritt 7/10 — Lokyy Brain starten (beim ersten Mal dauert das ein paar Minuten)"
 
 if [ ! -f "${COMPOSE_FILE}" ]; then
   fail "Die Datei ${COMPOSE_FILE} liegt nicht im Projekt-Ordner."
@@ -738,7 +886,7 @@ rm -f "${COMPOSE_LOG}"
 ok "Container gestartet."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 7 — Warten, bis Web-UI UND API bereit sind
+# Schritt 8 — Warten, bis Web-UI UND API bereit sind
 # "Container gestartet" heißt noch nicht "Anwendung bereit": der Server muss
 # erst hochfahren, die Datenbank migrieren usw. Deshalb fragen wir alle paar
 # Sekunden nach, ob es schon so weit ist. Jeder Punkt = ein Versuch.
@@ -751,7 +899,7 @@ ok "Container gestartet."
 # zusätzlich darauf, dass die API wirklich antwortet.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 7/9 — Warten, bis Web-UI und API bereit sind (max. ${MAX_WAIT_SECONDS} Sekunden)"
+step "Schritt 8/10 — Warten, bis Web-UI und API bereit sind (max. ${MAX_WAIT_SECONDS} Sekunden)"
 
 # Rückgabe: 0 = die Seite antwortet, 1 = noch nicht.
 # Uns interessiert NUR, ob eine Verbindung zustande kommt — welcher HTTP-Status
@@ -818,12 +966,12 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 8 — Browser öffnen
+# Schritt 9 — Browser öffnen
 # macOS kennt "open", die meisten Linux-Desktops "xdg-open". Gibt es beides
 # nicht (z. B. auf einem Server ohne Oberfläche), geben wir nur die URL aus.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 8/9 — Browser öffnen"
+step "Schritt 9/10 — Browser öffnen"
 
 if command -v open >/dev/null 2>&1; then
   open "${PWA_URL}" >/dev/null 2>&1 &
@@ -837,10 +985,10 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 9 — Wie geht es weiter?
+# Schritt 10 — Wie geht es weiter?
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 9/9 — Fertig"
+step "Schritt 10/10 — Fertig"
 
 say ""
 say "${C_GREEN}${C_BOLD}Lokyy Brain läuft.${C_RESET}"
