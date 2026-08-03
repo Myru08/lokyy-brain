@@ -6,7 +6,7 @@
 # es installiert selbst kein Docker und baut auch keine Images neu.
 #
 # Die fünf Befehle:
-#   start     Stack starten, auf die Web-UI warten, Browser öffnen
+#   start     Stack starten, auf Web-UI und API warten, Browser öffnen
 #   stop      Stack anhalten (Container bleiben erhalten, nächster Start ist schnell)
 #   restart   Container neu starten
 #   status    Kurzer Überblick: Container + Erreichbarkeit (nur lesend)
@@ -58,7 +58,7 @@ $PortsToCheck = @(
     @{ Port = 8790; Label = 'Forgejo Web-UI' }
 )
 
-# Wie lange warten wir maximal, bis die Web-UI antwortet?
+# Wie lange warten wir maximal, bis Web-UI und API antworten?
 $MaxWaitSeconds      = 90
 $PollIntervalSeconds = 2
 
@@ -94,7 +94,7 @@ function Show-Usage {
     Write-Line ''
     Write-Line '  Aufruf:  .\lokyy.ps1 <Befehl>'
     Write-Line ''
-    Write-Line '    start     Stack starten, auf die Web-UI warten, Browser öffnen'
+    Write-Line '    start     Stack starten, auf Web-UI und API warten, Browser öffnen'
     Write-Line '    stop      Stack anhalten (Container bleiben erhalten)'
     Write-Line '    restart   Container neu starten'
     Write-Line '    status    Überblick: Container + Erreichbarkeit (nur lesend)'
@@ -240,13 +240,31 @@ function Show-PortHolder {
     }
 }
 
-# Wartet, bis die Web-UI antwortet. Jeder Punkt = ein Versuch.
-function Wait-PwaReady {
+# Ist die API wirklich bereit? Hier zählt — anders als bei Test-UrlReachable —
+# der HTTP-Status: /api/setup/status liefert erst dann eine 200, wenn der Server
+# hochgefahren ist und die Datenbank erreicht. Genau diese Antwort braucht die
+# Web-UI, um zu entscheiden, was sie anzeigt.
+function Test-ApiReady {
+    try {
+        $response = Invoke-WebRequest -Uri "$ApiUrl/api/setup/status" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        return ($response.StatusCode -eq 200)
+    } catch {
+        # Anders als bei der PWA gilt hier NICHT "irgendeine Antwort reicht":
+        # ein 4xx/5xx heißt, der Server ist noch nicht so weit.
+        return $false
+    }
+}
+
+# Wartet, bis Web-UI UND API antworten. Jeder Punkt = ein Versuch.
+# Die Web-UI allein reicht nicht: der nginx davor liefert schon aus, während
+# der Server dahinter noch hochfährt — der Browser bekäme dann eine Seite, die
+# den Einrichtungsstand nicht abfragen kann (siehe install.ps1, Schritt 7).
+function Wait-StackReady {
     $attempts = [int]($MaxWaitSeconds / $PollIntervalSeconds)
     Write-Host '    ' -NoNewline
 
     for ($i = 1; $i -le $attempts; $i++) {
-        if (Test-UrlReachable -Url $PwaUrl) {
+        if ((Test-UrlReachable -Url $PwaUrl) -and (Test-ApiReady)) {
             Write-Line ''
             return $true
         }
@@ -274,12 +292,12 @@ function Show-Endpoints {
 
 # Gemeinsamer Abschluss von start und restart: warten, Browser, Zusammenfassung.
 function Complete-WithPwa {
-    Write-Step "Warten, bis die Web-UI erreichbar ist (max. $MaxWaitSeconds Sekunden)"
+    Write-Step "Warten, bis Web-UI und API bereit sind (max. $MaxWaitSeconds Sekunden)"
 
-    if (Wait-PwaReady) {
-        Write-Ok "Web-UI antwortet unter $PwaUrl"
+    if (Wait-StackReady) {
+        Write-Ok "Web-UI und API antworten ($PwaUrl)"
     } else {
-        Write-Warn "Die Web-UI hat nach $MaxWaitSeconds Sekunden noch nicht geantwortet."
+        Write-Warn "Web-UI und API haben nach $MaxWaitSeconds Sekunden noch nicht beide geantwortet."
         Write-Line '    Wir öffnen den Browser trotzdem — lade die Seite in ein bis zwei'
         Write-Line '    Minuten einfach neu.'
         Write-Line '    Status ansehen:  .\lokyy.ps1 status'

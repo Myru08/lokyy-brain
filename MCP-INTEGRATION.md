@@ -68,12 +68,16 @@ anbindende System darf:
   ausschließlich die in der Oberfläche erzeugten Token — das ist der empfohlene
   Zustand.
 
-> ⚠️ **Der Default `local_dev_token_change_me_32_chars_min` aus
-> `docker-compose.local.yml` steht im öffentlichen Repo.** Er wird weiterhin
-> akzeptiert (damit laufende Installationen nicht brechen), aber jede
-> Installation, die ihn behält, teilt sich dasselbe Passwort. Die Einstellungen
-> markieren ihn sichtbar als unsicher: eigenen Token erzeugen und die Variable
-> anschließend aus dem Deployment entfernen.
+> **Zum Default `local_dev_token_change_me_32_chars_min` aus
+> `docker-compose.local.yml`:** er existiert, damit eine frische lokale
+> Installation ohne Vorarbeit sofort per MCP ansprechbar ist. Für einen
+> Laptop-Stack hinter der eigenen Firewall ist das ein sinnvoller Startwert —
+> sobald die Installation im Alltag oder remote läuft, ist er es nicht mehr,
+> denn er steht im Repo und ist damit allen bekannt. Er wird weiterhin
+> akzeptiert (laufende Installationen sollen nicht brechen); die Einstellungen
+> weisen darauf hin, solange er in Gebrauch ist. Empfohlener Zustand: eigenen
+> Token erzeugen und `LOKYY_MCP_TOKEN` anschließend aus dem Deployment
+> entfernen.
 
 Ein **unbekannter oder widerrufener Token → HTTP 401**. Der Token wird vom
 Nutzer/Operator im Lokyy-Brain-Dashboard kopiert; das Fremdsystem hinterlegt ihn

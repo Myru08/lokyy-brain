@@ -125,7 +125,9 @@ System-Neustart nötig ist (Windows/WSL2) oder ein neues Terminal-Fenster
 (frisch installiertes `brew`/`winget`), sagt das Skript das klar an — das ist
 kein Fehler, einfach einmal neu starten und den Befehl erneut aufrufen.
 Danach warnt der Installer bei Port-Konflikten, baut und startet den Stack,
-wartet auf die Web-UI und öffnet den Browser:
+wartet, bis **Web-UI und API** beide antworten (die Web-UI allein ist schon
+da, während der Server dahinter noch hochfährt — deshalb beides), und öffnet
+dann den Browser:
 
 ```bash
 # macOS / Linux
@@ -158,7 +160,10 @@ MCP     → http://localhost:8788/mcp
 ```
 
 Öffne `http://localhost:8095` im Browser — der Setup-Wizard startet
-automatisch. (Der Installer öffnet den Browser automatisch für dich.)
+automatisch. (Der Installer öffnet den Browser automatisch für dich, sobald
+API und Web-UI antworten. Dauert der erste Start länger als die 90 Sekunden,
+die der Installer wartet, öffnet er den Browser trotzdem — dann einfach nach
+ein bis zwei Minuten neu laden.)
 
 ## Befehle im Überblick
 
@@ -168,8 +173,8 @@ prüfen/installieren, Images bauen). Für den Alltag danach gibt es
 
 | Befehl (macOS/Linux) | Befehl (Windows) | Wann | Was passiert |
 |---|---|---|---|
-| `./install.sh` | `.\install.ps1` | Einmalig, beim ersten Mal | Docker prüfen/installieren, Stack bauen & starten, Browser öffnen |
-| `./lokyy.sh start` | `.\lokyy.ps1 start` | Alltag, nach Neustart falls nötig | Stack starten (kein Rebuild), Browser öffnen |
+| `./install.sh` | `.\install.ps1` | Einmalig, beim ersten Mal | Docker prüfen/installieren, Stack bauen & starten, auf Web-UI + API warten, Browser öffnen |
+| `./lokyy.sh start` | `.\lokyy.ps1 start` | Alltag, nach Neustart falls nötig | Stack starten (kein Rebuild), auf Web-UI + API warten, Browser öffnen |
 | `./lokyy.sh stop` | `.\lokyy.ps1 stop` | Feierabend | Stack anhalten, Container bleiben erhalten (nächster Start ist schnell) |
 | `./lokyy.sh restart` | `.\lokyy.ps1 restart` | Bei komischem Verhalten | Container neu starten |
 | `./lokyy.sh status` | `.\lokyy.ps1 status` | Schnellcheck | Läuft alles, ist es erreichbar? (rein lesend) |
@@ -204,8 +209,22 @@ mit, dafür musst du nichts extra tun. Ein `./lokyy.sh start` reicht für ein
 Update **nicht** — das startet bewusst ohne Neubau (siehe oben), du würdest
 also weiter die alte Version laufen haben.
 
+**Nach jedem Update einmal hart neu laden** — `Strg`+`Shift`+`R`, am Mac
+`Cmd`+`Shift`+`R`. Lokyy ist eine PWA und hält die Oberfläche zwischengespeichert,
+damit sie offline funktioniert; ohne hartes Neuladen siehst du sonst noch die
+alte Version, obwohl der Server längst die neue ausliefert.
+
 Was aktuell in welcher Version behoben/dazugekommen ist, steht in
 **[CHANGELOG.md](CHANGELOG.md)**.
+
+### Vor v1.11 installiert?
+
+Seit v1.11 bekommt jede Installation ihren eigenen MCP-Zugangsschlüssel; bis
+dahin lief alles auf dem mitgelieferten Standard-Token. Nach dem Update:
+**Einstellungen → MCP → „Token erzeugen"**, den Schlüssel sofort kopieren (er
+wird nur einmal angezeigt) und in deiner KI hinterlegen. Danach kannst du
+`LOKYY_MCP_TOKEN` aus deinem Deployment entfernen. Der alte Token funktioniert
+bis dahin weiter — es reißt dir also nichts ab, wenn du es nicht sofort machst.
 
 ### Vor v1.9 installiert?
 
@@ -303,10 +322,13 @@ Der Token wird **genau einmal** angezeigt — gespeichert wird nur sein Hash, al
 gleich kopieren. Er gilt sofort, ohne Neustart, und lässt sich jederzeit
 widerrufen oder neu erzeugen.
 
-> ⚠️ Bis v1.10 nutzte jede Installation den Default `LOKYY_MCP_TOKEN` aus
-> `docker-compose.local.yml` — der steht im öffentlichen Repo, ist also allen
-> bekannt. Er funktioniert weiterhin (damit nichts abreißt), wird dir in den
-> Einstellungen aber als unsicher markiert. Erzeuge dir einen eigenen.
+> **Seit v1.11 bekommt jede Installation ihren eigenen Schlüssel.** Bis v1.10
+> lieferte `docker-compose.local.yml` einen fertigen Standard-Token mit, damit
+> man ohne Vorarbeit sofort loslegen kann — für die lokale Beta-Phase der
+> richtige Kompromiss. Läuft deine Installation im Alltag oder gar remote,
+> erzeuge dir unter Einstellungen → MCP einen eigenen. Der Standard-Token
+> funktioniert weiterhin, damit nichts abreißt; die Einstellungen weisen darauf
+> hin, solange er in Gebrauch ist.
 
 Claude Code oder jeder andere MCP-Client verbindet sich mit genau diesen zwei
 Angaben; Tools werden automatisch entdeckt.

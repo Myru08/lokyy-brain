@@ -7,7 +7,7 @@
 # es installiert selbst kein Docker und baut auch keine Images neu.
 #
 # Die fünf Befehle:
-#   start     Stack starten, auf die Web-UI warten, Browser öffnen
+#   start     Stack starten, auf Web-UI und API warten, Browser öffnen
 #   stop      Stack anhalten (Container bleiben erhalten, nächster Start ist schnell)
 #   restart   Container neu starten
 #   status    Kurzer Überblick: Container + Erreichbarkeit (nur lesend)
@@ -52,7 +52,7 @@ FORGEJO_URL="http://localhost:8790"
 # assoziative Arrays dort nicht existieren.
 PORTS_TO_CHECK="8787:Server-API 8095:Web-UI-(PWA) 8788:MCP-Server 8790:Forgejo-Web-UI"
 
-# Wie lange warten wir maximal, bis die Web-UI antwortet?
+# Wie lange warten wir maximal, bis Web-UI und API antworten?
 MAX_WAIT_SECONDS=90
 POLL_INTERVAL_SECONDS=2
 
@@ -110,7 +110,7 @@ usage() {
   say ""
   say "  Aufruf:  ./lokyy.sh <Befehl>"
   say ""
-  say "    ${C_BOLD}start${C_RESET}     Stack starten, auf die Web-UI warten, Browser öffnen"
+  say "    ${C_BOLD}start${C_RESET}     Stack starten, auf Web-UI und API warten, Browser öffnen"
   say "    ${C_BOLD}stop${C_RESET}      Stack anhalten (Container bleiben erhalten)"
   say "    ${C_BOLD}restart${C_RESET}   Container neu starten"
   say "    ${C_BOLD}status${C_RESET}    Überblick: Container + Erreichbarkeit (nur lesend)"
@@ -245,16 +245,42 @@ print_port_holder() {
   fi
 }
 
-# Wartet, bis die Web-UI antwortet. Jeder Punkt = ein Versuch.
-# Rückgabe: 0 = die Seite antwortet, 1 = Zeit abgelaufen.
-wait_for_pwa() {
+# Ist die API wirklich bereit? Hier zählt — anders als bei is_url_reachable —
+# der HTTP-Status: /api/setup/status liefert erst dann eine 200, wenn der Server
+# hochgefahren ist und die Datenbank erreicht. Genau diese Antwort braucht die
+# Web-UI, um zu entscheiden, was sie anzeigt.
+# Rückgabe: 0 = bereit, 1 = noch nicht.
+is_api_ready() {
+  local status
+  if command -v curl >/dev/null 2>&1; then
+    status="$(curl --silent --output /dev/null --max-time 3 \
+      --write-out '%{http_code}' "${API_URL}/api/setup/status" 2>/dev/null)"
+    [ "${status}" = "200" ]
+    return $?
+  fi
+
+  # Fallback ohne curl: einen HTTP-Status können wir hier nicht lesen, also
+  # bleibt nur der TCP-Test auf den API-Port. Schwächer als die Statusprüfung,
+  # aber immer noch deutlich besser, als die API gar nicht zu beachten.
+  if (exec 3<>/dev/tcp/localhost/8787) >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+# Wartet, bis Web-UI UND API antworten. Jeder Punkt = ein Versuch.
+# Die Web-UI allein reicht nicht: der nginx davor liefert schon aus, während
+# der Server dahinter noch hochfährt — der Browser bekäme dann eine Seite, die
+# den Einrichtungsstand nicht abfragen kann (siehe install.sh, Schritt 7).
+# Rückgabe: 0 = beide antworten, 1 = Zeit abgelaufen.
+wait_for_stack() {
   local attempts i
   attempts=$((MAX_WAIT_SECONDS / POLL_INTERVAL_SECONDS))
 
   printf '    '
   i=1
   while [ "${i}" -le "${attempts}" ]; do
-    if is_url_reachable "${PWA_URL}" 8095; then
+    if is_url_reachable "${PWA_URL}" 8095 && is_api_ready; then
       printf '\n'
       return 0
     fi
@@ -298,12 +324,12 @@ print_endpoints() {
 
 # Gemeinsamer Abschluss von start und restart: warten, Browser, Zusammenfassung.
 finish_with_pwa() {
-  step "Warten, bis die Web-UI erreichbar ist (max. ${MAX_WAIT_SECONDS} Sekunden)"
+  step "Warten, bis Web-UI und API bereit sind (max. ${MAX_WAIT_SECONDS} Sekunden)"
 
-  if wait_for_pwa; then
-    ok "Web-UI antwortet unter ${PWA_URL}"
+  if wait_for_stack; then
+    ok "Web-UI und API antworten (${PWA_URL})"
   else
-    warn "Die Web-UI hat nach ${MAX_WAIT_SECONDS} Sekunden noch nicht geantwortet."
+    warn "Web-UI und API haben nach ${MAX_WAIT_SECONDS} Sekunden noch nicht beide geantwortet."
     say "    Wir öffnen den Browser trotzdem — lade die Seite in ein bis zwei"
     say "    Minuten einfach neu."
     say "    Status ansehen:  ${C_BOLD}./lokyy.sh status${C_RESET}"

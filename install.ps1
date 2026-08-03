@@ -15,7 +15,8 @@
 #   6. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
 #      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
 #       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
-#   7. Warten, bis die Web-UI erreichbar ist (erster Start baut Images = dauert)
+#   7. Warten, bis Web-UI UND API bereit sind (erster Start baut Images = dauert;
+#      die Web-UI allein antwortet schon, während der Server noch hochfährt)
 #   8. Browser öffnen
 #   9. Kurze Zusammenfassung "wie geht es weiter"
 #
@@ -60,7 +61,7 @@ $PortsToCheck = @(
     @{ Port = 8790; Label = 'Forgejo Web-UI' }
 )
 
-# Wie lange warten wir maximal, bis die Web-UI antwortet?
+# Wie lange warten wir maximal, bis Web-UI und API antworten?
 $MaxWaitSeconds      = 90
 $PollIntervalSeconds = 2
 
@@ -647,13 +648,20 @@ Remove-Item -Path $composeLog -Force -ErrorAction SilentlyContinue
 Write-Ok 'Container gestartet.'
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 7 — Warten, bis die Web-UI antwortet
+# Schritt 7 — Warten, bis Web-UI UND API bereit sind
 # "Container gestartet" heißt noch nicht "Anwendung bereit": der Server muss
 # erst hochfahren, die Datenbank migrieren usw. Deshalb fragen wir alle paar
-# Sekunden nach, ob die Seite schon antwortet. Jeder Punkt = ein Versuch.
+# Sekunden nach, ob es schon so weit ist. Jeder Punkt = ein Versuch.
+#
+# Wichtig: die Web-UI ALLEIN ist kein verlässliches "bereit". Vor der Web-UI
+# steht ein nginx, der schon Sekunden nach dem Container-Start ausliefert,
+# während der Server dahinter noch migriert. Öffnen wir in diesem Moment den
+# Browser, fragt die Seite den Einrichtungsstand ab, bekommt keine Antwort —
+# und zeigt statt des Setup-Wizards das Login-Formular. Deshalb warten wir
+# zusätzlich darauf, dass die API wirklich antwortet.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step "Schritt 7/9 — Warten, bis die Web-UI erreichbar ist (max. $MaxWaitSeconds Sekunden)"
+Write-Step "Schritt 7/9 — Warten, bis Web-UI und API bereit sind (max. $MaxWaitSeconds Sekunden)"
 
 # Uns interessiert NUR, ob eine Verbindung zustande kommt — welcher HTTP-Status
 # zurückkommt, ist an dieser Stelle egal.
@@ -675,13 +683,27 @@ function Test-PwaReachable {
     }
 }
 
-$pwaReady = $false
+# Hier zählt — anders als oben — der HTTP-Status: /api/setup/status liefert erst
+# dann eine 200, wenn der Server hochgefahren ist und die Datenbank erreicht.
+# Genau diese Antwort braucht die Web-UI, um den Setup-Wizard zu zeigen.
+function Test-ApiReady {
+    try {
+        $response = Invoke-WebRequest -Uri "$ApiUrl/api/setup/status" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop
+        return ($response.StatusCode -eq 200)
+    } catch {
+        # Anders als bei der PWA gilt hier NICHT "irgendeine Antwort reicht":
+        # ein 4xx/5xx heißt, der Server ist noch nicht so weit.
+        return $false
+    }
+}
+
+$stackReady = $false
 $attempts = [int]($MaxWaitSeconds / $PollIntervalSeconds)
 Write-Host '    ' -NoNewline
 
 for ($i = 1; $i -le $attempts; $i++) {
-    if (Test-PwaReachable) {
-        $pwaReady = $true
+    if ((Test-PwaReachable) -and (Test-ApiReady)) {
+        $stackReady = $true
         break
     }
     Write-Host '.' -NoNewline
@@ -689,10 +711,10 @@ for ($i = 1; $i -le $attempts; $i++) {
 }
 Write-Line ''
 
-if ($pwaReady) {
-    Write-Ok "Web-UI antwortet unter $PwaUrl"
+if ($stackReady) {
+    Write-Ok "Web-UI und API antworten ($PwaUrl)"
 } else {
-    Write-Warn "Die Web-UI hat nach $MaxWaitSeconds Sekunden noch nicht geantwortet."
+    Write-Warn "Web-UI und API haben nach $MaxWaitSeconds Sekunden noch nicht beide geantwortet."
     Write-Line '    Das ist beim allerersten Start normal (Images bauen dauert).'
     Write-Line '    Wir öffnen den Browser trotzdem — lade die Seite in ein bis zwei'
     Write-Line '    Minuten einfach neu.'

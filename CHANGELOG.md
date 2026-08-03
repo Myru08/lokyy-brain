@@ -27,16 +27,25 @@ aktuelle Version steht immer ganz oben.
   dir einmalig angezeigt. Bitte gleich kopieren: aus Sicherheitsgründen wird er
   nur verschlüsselt gespeichert und lässt sich später nicht wieder anzeigen —
   nur neu erzeugen.
+- **Jede Installation bekommt ihren eigenen Schlüssel.** Bis v1.10 lieferte
+  Lokyy einen fertigen Standard-Schlüssel mit, damit man sofort loslegen kann,
+  ohne sich vorher mit Schlüsseln zu beschäftigen — für die erste Beta-Phase
+  auf dem eigenen Rechner der richtige Kompromiss. Jetzt, wo Installationen im
+  Alltag und teils auf eigenen Servern laufen, bekommt jede ihren eigenen.
+  Bestehende Installationen: einmal unter Einstellungen → MCP „Token erzeugen"
+  und den neuen Schlüssel in der KI hinterlegen. Der Standard-Schlüssel
+  funktioniert weiterhin, damit nichts abreißt; die Einstellungen weisen darauf
+  hin, solange er in Gebrauch ist.
 
 ### Behoben
-- **Wichtig für alle bisherigen Installationen:** bis v1.10 hatte jede
-  Installation denselben Zugangsschlüssel, und der ist öffentlich einsehbar.
-  Bitte erzeuge dir unter Einstellungen → MCP einen eigenen. Der alte
-  funktioniert weiterhin, damit nichts abreißt — er wird dir in den
-  Einstellungen aber als unsicher markiert, solange er in Gebrauch ist.
 - **Die MCP-Anbindung funktioniert direkt nach der Installation.** Bisher
   blieb sie nach einer frischen Installation stumm, bis der Stack einmal neu
   gestartet wurde — auch mit korrektem Schlüssel.
+- **Der Installer öffnet den Browser erst, wenn wirklich alles bereit ist.**
+  Bisher konnte nach einer frischen Installation das Login-Formular statt des
+  Einrichtungsassistenten erscheinen: die Oberfläche war schon da, der Server
+  dahinter aber noch am Hochfahren. `install.sh`/`install.ps1` und
+  `lokyy.sh start`/`lokyy.ps1 start` warten jetzt auf beides.
 
 ---
 

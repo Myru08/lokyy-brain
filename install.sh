@@ -16,7 +16,8 @@
 #   6. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
 #      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
 #       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
-#   7. Warten, bis die Web-UI erreichbar ist (erster Start baut Images = dauert)
+#   7. Warten, bis Web-UI UND API bereit sind (erster Start baut Images = dauert;
+#      die Web-UI allein antwortet schon, während der Server noch hochfährt)
 #   8. Browser öffnen
 #   9. Kurze Zusammenfassung "wie geht es weiter"
 #
@@ -55,7 +56,7 @@ FORGEJO_URL="http://localhost:8790"
 # assoziative Arrays dort nicht existieren.
 PORTS_TO_CHECK="8787:Server-API 8095:Web-UI-(PWA) 8788:MCP-Server 8790:Forgejo-Web-UI"
 
-# Wie lange warten wir maximal, bis die Web-UI antwortet?
+# Wie lange warten wir maximal, bis Web-UI und API antworten?
 MAX_WAIT_SECONDS=90
 POLL_INTERVAL_SECONDS=2
 
@@ -737,13 +738,20 @@ rm -f "${COMPOSE_LOG}"
 ok "Container gestartet."
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Schritt 7 — Warten, bis die Web-UI antwortet
+# Schritt 7 — Warten, bis Web-UI UND API bereit sind
 # "Container gestartet" heißt noch nicht "Anwendung bereit": der Server muss
 # erst hochfahren, die Datenbank migrieren usw. Deshalb fragen wir alle paar
-# Sekunden nach, ob die Seite schon antwortet. Jeder Punkt = ein Versuch.
+# Sekunden nach, ob es schon so weit ist. Jeder Punkt = ein Versuch.
+#
+# Wichtig: die Web-UI ALLEIN ist kein verlässliches "bereit". Vor der Web-UI
+# steht ein nginx, der schon Sekunden nach dem Container-Start ausliefert,
+# während der Server dahinter noch migriert. Öffnen wir in diesem Moment den
+# Browser, fragt die Seite den Einrichtungsstand ab, bekommt keine Antwort —
+# und zeigt statt des Setup-Wizards das Login-Formular. Deshalb warten wir
+# zusätzlich darauf, dass die API wirklich antwortet.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 7/9 — Warten, bis die Web-UI erreichbar ist (max. ${MAX_WAIT_SECONDS} Sekunden)"
+step "Schritt 7/9 — Warten, bis Web-UI und API bereit sind (max. ${MAX_WAIT_SECONDS} Sekunden)"
 
 # Rückgabe: 0 = die Seite antwortet, 1 = noch nicht.
 # Uns interessiert NUR, ob eine Verbindung zustande kommt — welcher HTTP-Status
@@ -761,14 +769,36 @@ is_pwa_reachable() {
   return 1
 }
 
-PWA_READY=0
+# Rückgabe: 0 = die API ist wirklich bereit, 1 = noch nicht.
+# Hier zählt — anders als oben — der HTTP-Status: /api/setup/status liefert erst
+# dann eine 200, wenn der Server hochgefahren ist und die Datenbank erreicht.
+# Genau diese Antwort braucht die Web-UI, um den Setup-Wizard zu zeigen.
+is_api_ready() {
+  local status
+  if command -v curl >/dev/null 2>&1; then
+    status="$(curl --silent --output /dev/null --max-time 3 \
+      --write-out '%{http_code}' "${API_URL}/api/setup/status" 2>/dev/null)"
+    [ "${status}" = "200" ]
+    return $?
+  fi
+
+  # Fallback ohne curl: einen HTTP-Status können wir hier nicht lesen, also
+  # bleibt nur der TCP-Test auf den API-Port. Schwächer als die Statusprüfung,
+  # aber immer noch deutlich besser, als die API gar nicht zu beachten.
+  if (exec 3<>/dev/tcp/localhost/8787) >/dev/null 2>&1; then
+    return 0
+  fi
+  return 1
+}
+
+STACK_READY=0
 ATTEMPTS=$((MAX_WAIT_SECONDS / POLL_INTERVAL_SECONDS))
 printf '    '
 
 i=1
 while [ "${i}" -le "${ATTEMPTS}" ]; do
-  if is_pwa_reachable; then
-    PWA_READY=1
+  if is_pwa_reachable && is_api_ready; then
+    STACK_READY=1
     break
   fi
   printf '.'
@@ -777,10 +807,10 @@ while [ "${i}" -le "${ATTEMPTS}" ]; do
 done
 printf '\n'
 
-if [ "${PWA_READY}" -eq 1 ]; then
-  ok "Web-UI antwortet unter ${PWA_URL}"
+if [ "${STACK_READY}" -eq 1 ]; then
+  ok "Web-UI und API antworten (${PWA_URL})"
 else
-  warn "Die Web-UI hat nach ${MAX_WAIT_SECONDS} Sekunden noch nicht geantwortet."
+  warn "Web-UI und API haben nach ${MAX_WAIT_SECONDS} Sekunden noch nicht beide geantwortet."
   say "    Das ist beim allerersten Start normal (Images bauen dauert)."
   say "    Wir öffnen den Browser trotzdem — lade die Seite in ein bis zwei"
   say "    Minuten einfach neu."
