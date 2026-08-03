@@ -5,6 +5,11 @@ aktuelle Version steht immer ganz oben.
 
 ## Roadmap — woran gerade gearbeitet wird
 
+- **Update-Knopf direkt in Lokyy.** Beim Start wird geprüft, ob eine neue
+  Version da ist; ein Banner weist dich darauf hin, und ein Klick spielt sie
+  ein. Damit entfällt der Weg übers Terminal.
+- **Eigenes Datenbank-Passwort je Installation** statt des mitgelieferten
+  Standardwerts — bestehende Installationen laufen unverändert weiter.
 - **Import-Pipes** (YouTube-Transkripte, Webseiten, PDFs, Sprachnotizen
   direkt in den Vault).
 - **Graph-Ansicht ausbauen** und die "ähnliche Notizen"-Vorschläge in der
@@ -15,6 +20,19 @@ aktuelle Version steht immer ganz oben.
 ---
 
 ## v1.11 — 2026-08-03
+
+### Lokyy Brain ist jetzt Open Source
+- **Lizenz: AGPL-3.0.** Der Quellcode ist öffentlich. Du darfst Lokyy Brain
+  nutzen, verändern und weitergeben — privat wie geschäftlich, auch für deine
+  eigenen Kunden. Die einzige Bedingung greift, wenn jemand eine *veränderte*
+  Version als Netzwerkdienst anbietet: dann muss er seinen Quellcode
+  offenlegen. Wer normal betreibt, hat keinerlei Verpflichtung.
+- **Kein GitHub-Login mehr nötig**, um das Repo zu klonen. Der Umweg über die
+  Anmeldung entfällt ersatzlos.
+- **Fork ist beim Remote-Deployment keine Voraussetzung mehr**, nur noch eine
+  Option für alle, die eigene Änderungen deployen wollen. Kein Deploy-Key,
+  keine Zugangsdaten.
+- Beiträge sind willkommen — siehe `CONTRIBUTING.md`.
 
 ### Neu
 - **Dein MCP-Zugangsschlüssel wird jetzt in Lokyy selbst verwaltet.** Bisher
@@ -41,6 +59,12 @@ aktuelle Version steht immer ganz oben.
 - **Die MCP-Anbindung funktioniert direkt nach der Installation.** Bisher
   blieb sie nach einer frischen Installation stumm, bis der Stack einmal neu
   gestartet wurde — auch mit korrektem Schlüssel.
+- **Achtung, geänderte Adresse: Forgejo liegt jetzt auf Port 8790**, vorher
+  3001. Wenn du ein Lesezeichen auf `http://localhost:3001` hattest, zeigt es
+  ins Leere — die Oberfläche ist nicht weg, sie ist umgezogen:
+  `http://localhost:8790`. Grund: 3000/3001 sind auf vielen Rechnern schon von
+  anderen Programmen belegt. Der SSH-Port 2222 ist ersatzlos entfallen, er
+  wurde nie gebraucht und war eine häufige Konfliktquelle.
 - **Der Installer öffnet den Browser erst, wenn wirklich alles bereit ist.**
   Bisher konnte nach einer frischen Installation das Login-Formular statt des
   Einrichtungsassistenten erscheinen: die Oberfläche war schon da, der Server
