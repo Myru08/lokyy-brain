@@ -177,6 +177,13 @@ services:
       # "default" zeigt auf einen Vault, den es nicht gibt. Spiegelt LOKYY_VAULT_ID.
       - LOKYY_DEFAULT_VAULT=${LOKYY_VAULT_ID:-}
       - LOKYY_AGENT_ID=${LOKYY_AGENT_ID:-claude-code}
+      # Update-Verhalten. In .env.coolify.example dokumentiert, aber nie
+      # durchgereicht: "managed" sagt der App, dass Coolify die Container
+      # verwaltet — sie zeigt dann einen Hinweis statt eines Update-Knopfes
+      # (server/src/routes/systemUpdate.ts: resolveUpdateMode).
+      - LOKYY_UPDATE_MODE=${LOKYY_UPDATE_MODE:-managed}
+      - LOKYY_UPDATE_CHECK=${LOKYY_UPDATE_CHECK:-}
+      - LOKYY_UPDATE_CHECK_URL=${LOKYY_UPDATE_CHECK_URL:-}
       # OAuth 2.1 für den claude.ai-Connector; fallen ohne Wert auf
       # LOKYY_MCP_TOKEN zurück (siehe mcp/src/oauth.ts).
       - LOKYY_OAUTH_PASSWORD=${LOKYY_OAUTH_PASSWORD:-}
