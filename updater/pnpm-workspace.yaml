@@ -1,2 +1,18 @@
+# Install-Skripte von Abhängigkeiten laufen NICHT automatisch. Ohne eine
+# Entscheidung hier fragt pnpm bei jedem frischen `pnpm install` nach und gibt
+# bis dahin ein rotes ERR_PNPM_IGNORED_BUILDS aus.
+#
+# esbuild: false — bewusst. Das Postinstall-Skript von esbuild ist hier
+# überflüssig: das ausführbare Binary kommt aus dem Plattform-Paket
+# (@esbuild/<os>-<arch>, eine optionalDependency) und liegt auch dann vor, wenn
+# das Skript nie lief. Nachgeprüft mit gelöschtem node_modules und frischem
+# Install — Binary da, 70/70 Tests grün. esbuild ist ohnehin nur eine
+# Transitiv-Abhängigkeit von vitest und damit reine Test-Infrastruktur.
+#
+# Für ein öffentliches Repo ist das zugleich die sicherere Voreinstellung:
+# fremder Code wird beim Installieren nicht ungefragt ausgeführt.
+#
+# Dieses Paket hängt bewusst NICHT am Root-Workspace — der Updater kennt die
+# Anwendung nicht, die er aktualisiert, und wird in seinem eigenen Image gebaut.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: false
