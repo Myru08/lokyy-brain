@@ -133,7 +133,7 @@ export const topicSynthesisPass: SleepPass = {
           const titleMatch = synth.text.match(/^#\s+(.+)$/m);
           const title = titleMatch?.[1].trim() ?? `Topic Cluster ${communityId.slice(0, 8)}`;
           const slug = slugify(title);
-          const path = `70_pai/topics/auto-${slug}.md`;
+          const path = `70_pai/topics/auto-${slug}`;
 
           await createNote(path, synth.text, {
             type: "intervention",
