@@ -24,6 +24,12 @@
 # ⚠️ SYNC-PFLICHT: Ändert sich docker-compose.coolify.yml, muss diese Datei
 # nachgezogen werden — sie ist eine Kopie, kein Include.
 #
+# ⚠️ Diese Datei existiert AUCH im Dev-Repo (oliverhees/lokyy-brain-dev) und muss
+# dort inhaltsgleich sein. EINE bewusste Ausnahme: der Kommentarblock zu
+# POSTGRES_PASSWORD/install.sh oben steht nur hier, weil install.sh nur in
+# diesem Repo existiert. Alles andere gehört abgeglichen — sie sind schon
+# einmal auseinandergelaufen (Forgejo-Ports, siehe Issue #18).
+#
 # Host-Ports (nur diese sind von außen erreichbar):
 #   • PWA        → http://localhost:8095
 #   • Server-API → http://localhost:8787
