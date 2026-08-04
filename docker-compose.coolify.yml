@@ -65,6 +65,17 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    environment:
+      # Auf 4 vCPU / 16 GB ohne GPU gemessen (hermes-vps, 2026-08-02):
+      # Kaltstart eines 8b-Modells kostet ~49 s. KEEP_ALIVE deckt die
+      # 30-Minuten-Kadenz des Sleep-Agent ab, damit nicht jeder Lauf neu lädt.
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE:-2h}
+      # Alle drei Modelle gleichzeitig wären ~8,5 GB — neben Postgres, Brain
+      # und Forgejo zu eng auf 16 GB.
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS:-2}
+      # Ohne GPU teilen parallele Anfragen dieselben Kerne und vervielfachen
+      # nur den KV-Cache — seriell ist hier schneller.
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL:-1}
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
@@ -92,6 +103,9 @@ services:
         if [ "${OLLAMA_PULL_CHAT:-false}" = "true" ]; then \
           OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_CHAT_MODEL:-llama3.1:8b}; \
         fi && \
+        if [ -n "${OLLAMA_CHAT_MODEL_FAST:-}" ]; then \
+          OLLAMA_HOST=http://ollama:11434 ollama pull ${OLLAMA_CHAT_MODEL_FAST}; \
+        fi && \
         echo "[ollama-init] models ready"
     restart: "no"
 
@@ -106,6 +120,10 @@ services:
       - USER_UID=1000
       - USER_GID=1000
       - FORGEJO__database__DB_TYPE=sqlite3
+      # Ohne ROOT_URL baut Forgejo Links und OAuth-Redirects gegen localhost:3000.
+      # SERVICE_FQDN_FORGEJO_3000 setzt nur die Traefik-Route, nicht Forgejos
+      # eigene Vorstellung davon, unter welcher Adresse es erreichbar ist.
+      - FORGEJO__server__ROOT_URL=${FORGEJO_BASE_URL:-}
     volumes:
       - forgejo-data:/data
     healthcheck:
