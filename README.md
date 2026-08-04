@@ -16,10 +16,40 @@
   <img alt="Stack" src="https://img.shields.io/badge/stack-Hono%20%C2%B7%20Vite%20%C2%B7%20Postgres%20%C2%B7%20Ollama-333.svg">
 </p>
 
+<p align="center">
+  <a href="https://aiianer.de"><img alt="Community: Aiianer.de" src="https://img.shields.io/badge/Community-Aiianer.de-orange.svg?style=for-the-badge"></a>
+</p>
+
+---
+
+## Entwickelt von Oliver Hees — Der Aiianer
+
+Lokyy Brain entsteht nicht im stillen Kämmerlein, sondern zusammen mit einer
+Community von Selbstständigen und Unternehmern, die KI wirklich in ihren Alltag
+bauen. Jede Version hier kommt aus echten Rückmeldungen: was hakt, was fehlt,
+was niemand versteht.
+
+### 👉 Komm dazu: **[aiianer.de](https://aiianer.de)**
+
+Dort findest du:
+
+- **Schritt-für-Schritt-Anleitungen** zur Installation und Einrichtung — auch
+  wenn du noch nie ein Terminal geöffnet hast.
+- **Tutorials**, wie du deinen Vault an Claude, ChatGPT und andere KIs
+  anbindest und was du damit tatsächlich anstellst.
+- **Direkte Hilfe**, wenn etwas klemmt. Fragen werden beantwortet, Fehler
+  landen als Issue hier im Repo und werden behoben.
+- **Neue Versionen zuerst**, mit Erklärung was sich geändert hat und warum.
+
+Der Code ist offen und du kannst ihn allein betreiben. Aber der schnellste Weg
+von „interessant" zu „läuft bei mir und ich arbeite damit" führt über die
+Community — dort steht das Wissen, das nicht in eine README passt.
+
 ---
 
 ## Inhaltsverzeichnis
 
+- [Entwickelt von Oliver Hees — Der Aiianer](#entwickelt-von-oliver-hees--der-aiianer)
 - [Was Lokyy Brain ist](#was-lokyy-brain-ist)
 - [Warum Lokyy Brain](#warum-lokyy-brain)
 - [Features](#features)
@@ -458,6 +488,11 @@ zu fragen. Beiträge sind willkommen: wie du am besten einsteigst, steht in
 **[CONTRIBUTING.md](CONTRIBUTING.md)**. Fang mit einem Issue an, auch bei
 Kleinigkeiten.
 
+Du musst aber nichts programmieren, um beizutragen. Die meisten Verbesserungen
+hier kamen aus schlichten Beobachtungen — „das hat bei mir nicht funktioniert",
+„diesen Schritt habe ich nicht verstanden". Genau dafür ist die Community da:
+**[aiianer.de](https://aiianer.de)**.
+
 ## Lizenz
 
 **[AGPL-3.0](LICENSE)** — freie Software. Du darfst Lokyy Brain nutzen,
@@ -480,3 +515,18 @@ veröffentlichen: gerne. Deine Version "Lokyy Brain" nennen: bitte nicht,
 benenne sie um. "Basiert auf Lokyy Brain" ist ausdrücklich erwünscht.
 
 Details in [NOTICE](NOTICE), Beiträge in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+<p align="center">
+  <strong>Fragen? Hängengeblieben? Willst du sehen, wie andere damit arbeiten?</strong><br>
+  Die Anleitungen, Tutorials und die direkte Hilfe gibt es in der Community.
+</p>
+
+<p align="center">
+  <a href="https://aiianer.de"><img alt="Jetzt beitreten: Aiianer.de" src="https://img.shields.io/badge/Jetzt%20beitreten-Aiianer.de-orange.svg?style=for-the-badge"></a>
+</p>
+
+<p align="center">
+  <sub>Lokyy Brain — entwickelt von <strong>Oliver Hees · Der Aiianer</strong> · <a href="https://aiianer.de">aiianer.de</a></sub>
+</p>

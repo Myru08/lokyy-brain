@@ -82,3 +82,8 @@ als der Patch.
 4. Pull Request mit Bezug aufs Issue
 
 Fragen? Mach ein Issue auf oder schreib [@oliverhees](https://github.com/oliverhees).
+
+Und wenn du gar nicht programmierst, aber trotzdem helfen willst: die
+wertvollsten Hinweise kommen aus der Praxis — „das habe ich nicht verstanden",
+„hier bin ich hängengeblieben". Der Ort dafür ist die Community:
+**[aiianer.de](https://aiianer.de)**.
