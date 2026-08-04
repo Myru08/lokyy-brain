@@ -188,6 +188,16 @@ services:
       # LOKYY_MCP_TOKEN zurück (siehe mcp/src/oauth.ts).
       - LOKYY_OAUTH_PASSWORD=${LOKYY_OAUTH_PASSWORD:-}
       - LOKYY_OAUTH_SIGNING_SECRET=${LOKYY_OAUTH_SIGNING_SECRET:-}
+      # Master-Secret für die Verschlüsselung at-rest (AES-256-GCM, Schlüssel
+      # per PBKDF2 abgeleitet — packages/core/src/crypto/secrets.ts). Betrifft
+      # aktuell die Forgejo-OAuth-Tokens in forgejo_oauth_tokens. Der Code
+      # nennt sie "PRODUCTION MUST SET IT", durchgereicht wurde sie hier aber
+      # nie und in .env.coolify.example fehlt sie ebenfalls — ohne die Variable
+      # liegen die Tokens im Klartext in der DB.
+      # Leer lassen ist zulässig: encrypt/decrypt sind dann Pass-through.
+      # ACHTUNG: Geht der Wert verloren, sind bereits verschlüsselte Tokens
+      # unlesbar — Forgejo muss dann in den Einstellungen neu verbunden werden.
+      - LOKYY_DATA_KEY=${LOKYY_DATA_KEY:-}
       - PORT=8787
       - NODE_ENV=production
     volumes:
