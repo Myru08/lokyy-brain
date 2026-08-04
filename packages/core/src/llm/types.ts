@@ -110,6 +110,8 @@ export interface ProviderConfig {
   defaultModel?: string;
   enabled: boolean;
   monthlyBudgetUsd?: number;
+  /** Request-Timeout in ms. Lokale CPU-Modelle brauchen deutlich mehr als die 60s Default. */
+  timeoutMs?: number;
 }
 
 export interface LlmRoutingConfig {

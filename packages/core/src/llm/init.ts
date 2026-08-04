@@ -72,6 +72,7 @@ function instantiate(cfg: ProviderConfig): LlmProvider {
       return new OllamaProvider({
         baseUrl: cfg.baseUrl,
         defaultChatModel: cfg.defaultModel,
+        timeoutMs: cfg.timeoutMs ?? 600_000,
       });
     }
     case "openai-compat": {
