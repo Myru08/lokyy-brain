@@ -1,21 +1,24 @@
 # Lokyy Brain — Roadmap
 
-Hier steht, woran gerade gebaut wird und was als Nächstes drankommt. Ohne Datumsversprechen — die Reihenfolge kann sich ändern, vor allem durch euer Feedback. Was fertig ist, steht im [CHANGELOG](CHANGELOG.md) und in den Update-Posts in der Community.
+Diese Roadmap enthält ausschließlich **Funktionserweiterungen und Fehlerbehebungen**. Was fertig ist, steht im [CHANGELOG](CHANGELOG.md); ohne Datumsversprechen — die Reihenfolge kann sich durch euer Feedback ändern.
 
-## In Arbeit — v1.12
+## In Arbeit — v1.13
 
-- **Speichern funktioniert immer.** Wenn Forgejo mal nicht erreichbar ist (Container gestoppt, Rechner offline), wird deine Notiz trotzdem sicher lokal gespeichert — statt einer Fehlermeldung siehst du „Lokal gespeichert – Abgleich folgt". Sobald die Verbindung wieder da ist, gleicht Lokyy automatisch ab.
-- **Die KI sucht klüger.** Deine KI bekommt eine feste Suchreihenfolge (erst Überblick, dann Suche, dann genau eine Notiz öffnen) — das spart Kosten und liefert bessere Treffer. Dazu kann sie jetzt auf Wunsch die tiefe Suche nutzen, die bisher brachlag.
-- **Du siehst, was nachts passiert.** Der nächtliche Pflege-Lauf über deinen Vault bekommt ein Protokoll in der Oberfläche: wann er lief, was er getan hat, welche Notizen er berührt hat.
-- **Widersprüche werden sichtbar.** Wenn zwei deiner Notizen sich widersprechen, erscheint ein Warnkasten direkt in der Notiz — mit beiden Aussagen und beiden Quellen. Du entscheidest, was gilt, mit einem Klick.
+### Neue Funktionen
 
-## Als Nächstes — v1.13
+- **Der Beweis-Benchmark.** Ein Messlauf zeigt schwarz auf weiß, was die tiefe Suche bringt: Kosten, Zeit und Treffer — einmal mit, einmal ohne.
+- **Nachtlauf pflegt den Vault-Überblick.** Das Inhaltsverzeichnis (`INDEX.md`), das deine KI für die Suchreihenfolge nutzt, wird künftig automatisch jede Nacht aktualisiert statt nur bei Bedarf.
 
-- **Der Beweis.** Ein Messlauf zeigt schwarz auf weiß, was die tiefe Suche bringt: Kosten, Zeit, Treffer — mit und ohne.
-- **Nachtlauf erneuert den Vault-Überblick.** Das neue Inhaltsverzeichnis (`INDEX.md`) wird bisher bei Bedarf aufgefrischt; künftig hält der nächtliche Lauf es automatisch aktuell.
+### Verbesserungen & Fehlerbehebungen
 
-## Danach
+- **Notizen löschen, auch wenn Forgejo nicht erreichbar ist.** Speichern, Verschieben und Umbenennen sind seit v1.12 offline-tolerant — Löschen ist der letzte Vorgang, der in dem Fall noch einen Fehler meldet.
+- **Widerspruch auflösen wird ein Schritt.** Betrifft ein Widerspruch zwei Notizen, entstehen beim Auflösen aktuell zwei getrennte Speichervorgänge — künftig ist es einer.
+- **KI-Arbeitsnotizen landen im richtigen Ordner.** Session-Zusammenfassungen deiner KI können derzeit nicht im dafür vorgesehenen PAI-Bereich des Vaults abgelegt werden und weichen auf den Notizen-Ordner aus.
 
-- **Import-Pipes:** YouTube-Transkripte, Webseiten, PDFs und Sprachnotizen direkt in den Vault.
-- **Graph-Ansicht ausbauen** und „ähnliche Notizen"-Vorschläge in der Seitenleiste.
-- **Eure Wünsche:** Was euch im Alltag fehlt, meldet ihr am besten direkt in der Community — die Rückmeldungen der letzten Wochen haben diese Roadmap bereits zweimal umsortiert, und das ist gut so.
+## Geplant — danach
+
+### Neue Funktionen
+
+- **Import-Pipes ausbauen:** PDFs und Sprachnotizen direkt in den Vault (YouTube-Transkripte und Webseiten funktionieren bereits).
+- **Graph-Ansicht ausbauen** — mehr Filter und bessere Navigation im Wissensgraphen.
+- **„Ähnliche Notizen"-Vorschläge** in der Seitenleiste, auf Basis der semantischen Suche.
