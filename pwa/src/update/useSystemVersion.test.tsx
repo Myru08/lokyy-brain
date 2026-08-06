@@ -2,7 +2,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, type SystemVersion } from "../api.js";
 import { RELOAD_GUARD_KEY } from "./cacheRenewal.js";
-import { bundleVersion, useSystemVersion } from "./useSystemVersion.js";
+import {
+  bundleVersion,
+  resetSystemVersionStoreForTests,
+  useSystemVersion,
+} from "./useSystemVersion.js";
 
 /**
  * The hook is thin, but it is the production wiring for AC#7 path (a) — and
@@ -28,6 +32,10 @@ const PAYLOAD: SystemVersion = {
 };
 
 afterEach(() => {
+  // The payload lives in a module-level store shared by the banner and the
+  // settings tab (AC#5 of the manual-check story), so it outlives a render —
+  // including into the next test. Drop it explicitly.
+  resetSystemVersionStoreForTests();
   vi.restoreAllMocks();
   sessionStorage.clear();
 });

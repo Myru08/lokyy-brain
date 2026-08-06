@@ -1,18 +1,19 @@
-import { useContext } from "react";
+import { useContext, useState } from "react";
 import { SessionUserContext } from "../AuthGate.js";
 import { C, FONT } from "../theme.js";
 import { Highlights } from "./Highlights.js";
-import { useSystemVersion } from "./useSystemVersion.js";
+import { refreshSystemVersion, useSystemVersion } from "./useSystemVersion.js";
 
 /**
  * Story 7.12 Task 5 — version and update status in Einstellungen → System.
  *
  * The banner is the loud channel; this is the quiet one, for after it has been
- * dismissed. Read-only on purpose: the button lives in the banner, so there is
- * exactly one place that starts an update.
+ * dismissed. It carries exactly one action, „Jetzt prüfen" — a READ. Starting
+ * an update still happens in exactly one place, the banner.
  *
  * A failed check is not reported as a problem (AC#3) — it reads "zuletzt
- * geprüft: —", which is the truth without being alarming.
+ * geprüft: —", which is the truth without being alarming. The same applies to
+ * a manual check that cannot run: one quiet line, never a red alarm.
  */
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -39,6 +40,21 @@ export function SystemVersionInfo() {
   const { version } = useSystemVersion();
   const sessionUser = useContext(SessionUserContext);
   const isAdmin = sessionUser?.role === "admin";
+  const [checking, setChecking] = useState(false);
+  /** Set only when a manual check could not run at all. Cleared on retry. */
+  const [checkFailed, setCheckFailed] = useState(false);
+
+  async function checkNow(): Promise<void> {
+    setChecking(true);
+    setCheckFailed(false);
+    try {
+      // Never throws by contract; `null` means "could not run".
+      const payload = await refreshSystemVersion();
+      setCheckFailed(payload === null);
+    } finally {
+      setChecking(false);
+    }
+  }
 
   if (!version) {
     return <div style={{ fontSize: 13, color: C.textDim }}>Version wird geladen …</div>;
@@ -64,7 +80,45 @@ export function SystemVersionInfo() {
             : (version.latest ?? "unbekannt")
         }
       />
-      <Row label="Zuletzt geprüft" value={checked} />
+      <Row
+        label="Zuletzt geprüft"
+        value={
+          <span
+            style={{ display: "inline-flex", alignItems: "center", gap: 10 }}
+          >
+            {checked}
+            {version.status !== "disabled" && (
+              <button
+                type="button"
+                onClick={() => void checkNow()}
+                disabled={checking}
+                style={{
+                  background: "transparent",
+                  border: `1px solid ${C.border}`,
+                  borderRadius: 6,
+                  color: checking ? C.textDim : C.text,
+                  padding: "3px 9px",
+                  fontSize: 12,
+                  fontFamily: FONT.ui,
+                  cursor: checking ? "default" : "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {checking ? "Prüfe …" : "Jetzt prüfen"}
+              </button>
+            )}
+          </span>
+        }
+      />
+
+      {/* AC#4 — a check that cannot run is a non-event, not a fault of this
+          installation. One dim line, no red, and the previous answer stays
+          on screen above it. */}
+      {checkFailed && (
+        <div style={{ marginTop: 8, fontSize: 12, color: C.textDim }}>
+          Prüfung gerade nicht möglich — später noch einmal versuchen.
+        </div>
+      )}
 
       {version.updateAvailable && isAdmin && (
         <div style={{ marginTop: 14 }}>

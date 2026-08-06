@@ -14,9 +14,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  DEFAULT_UPDATE_CHECK_INTERVAL_HOURS,
   DEFAULT_UPDATE_CHECK_URL,
   checkForUpdate,
   compareVersions,
+  forceUpdateCheck,
   getBuildSha,
   getUpdateStatus,
   isUpdateAvailable,
@@ -25,7 +27,9 @@ import {
   readRunningVersion,
   refreshUpdateCheck,
   resetUpdateCheckCacheForTests,
+  startUpdateCheckTimer,
   updateCheckConfig,
+  updateCheckIntervalMs,
   type FetchLike,
 } from "./index.js";
 
@@ -435,6 +439,240 @@ describe("update-check cache", () => {
       refreshUpdateCheck(opts),
     ]);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Force check (Story „Update-Check manuell + periodisch", AC#1/AC#2) ──
+
+/** Newer changelog, used to prove that a force check really re-fetched. */
+const NEWER_CHANGELOG = [
+  "# Changelog",
+  "",
+  "## v1.12 — 2026-08-06",
+  "",
+  "- Jetzt-prüfen-Button",
+  "",
+].join("\n");
+
+describe("forceUpdateCheck", () => {
+  it("bypasses the cache — a warm cache does not stop a fresh fetch", async () => {
+    const first = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    await refreshUpdateCheck({ env: {}, runningVersion: "1.10.0", fetchImpl: first });
+    expect(getUpdateStatus().latest).toBe("v1.11");
+
+    const second = vi.fn(okFetch(NEWER_CHANGELOG));
+    const forced = await forceUpdateCheck({
+      env: {},
+      runningVersion: "1.10.0",
+      fetchImpl: second,
+    });
+
+    expect(second).toHaveBeenCalledTimes(1);
+    expect(forced.throttled).toBe(false);
+    expect(forced.result.latest).toBe("v1.12");
+    // …and the shared cache moved with it, so GET /version sees the new answer.
+    expect(getUpdateStatus().latest).toBe("v1.12");
+  });
+
+  it("refreshes checkedAt even when there is no update (AC#1)", async () => {
+    const fetchImpl = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    const forced = await forceUpdateCheck({
+      env: {},
+      runningVersion: "1.11.0",
+      fetchImpl,
+    });
+
+    expect(forced.result.updateAvailable).toBe(false);
+    expect(forced.result.status).toBe("ok");
+    expect(typeof forced.result.checkedAt).toBe("string");
+  });
+
+  it("stays silent and update-free when the fetch blows up", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const forced = await forceUpdateCheck({
+      env: {},
+      runningVersion: "1.10.0",
+      fetchImpl: async () => {
+        throw new Error("ENOTFOUND");
+      },
+      retries: 0,
+    });
+
+    expect(forced.result.status).toBe("unknown");
+    expect(forced.result.updateAvailable).toBe(false);
+    expect(typeof forced.result.checkedAt).toBe("string");
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("does not touch the network when the check is disabled", async () => {
+    const fetchImpl = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    const forced = await forceUpdateCheck({
+      env: { LOKYY_UPDATE_CHECK: "off" },
+      runningVersion: "1.10.0",
+      fetchImpl,
+    });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(forced.result.status).toBe("disabled");
+    expect(forced.throttled).toBe(false);
+  });
+});
+
+describe("forceUpdateCheck rate limit (AC#2)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("serves the cached result instead of a second fetch within 30 s", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    const opts = { env: {}, runningVersion: "1.10.0", fetchImpl };
+
+    const first = await forceUpdateCheck(opts);
+    expect(first.throttled).toBe(false);
+
+    vi.advanceTimersByTime(5_000);
+    const second = await forceUpdateCheck(opts);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(second.throttled).toBe(true);
+    // The answer is still the truthful one, just not freshly fetched.
+    expect(second.result.latest).toBe("v1.11");
+    expect(second.retryAfterSeconds).toBeGreaterThan(0);
+    expect(second.retryAfterSeconds).toBeLessThanOrEqual(30);
+  });
+
+  it("allows the next force check once the window has passed", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    const opts = { env: {}, runningVersion: "1.10.0", fetchImpl };
+
+    await forceUpdateCheck(opts);
+    vi.advanceTimersByTime(31_000);
+    const third = await forceUpdateCheck(opts);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(third.throttled).toBe(false);
+    expect(third.retryAfterSeconds).toBe(0);
+  });
+});
+
+// ─── Periodic re-check (AC#3) ───────────────────────────────────────────
+
+describe("updateCheckIntervalMs", () => {
+  it("defaults to 8 hours", () => {
+    expect(updateCheckIntervalMs({})).toBe(
+      DEFAULT_UPDATE_CHECK_INTERVAL_HOURS * 60 * 60 * 1000,
+    );
+  });
+
+  it("honours LOKYY_UPDATE_CHECK_INTERVAL_HOURS", () => {
+    expect(updateCheckIntervalMs({ LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "2" })).toBe(
+      2 * 60 * 60 * 1000,
+    );
+  });
+
+  it("falls back to the default on garbage rather than hammering the remote", () => {
+    const fallback = DEFAULT_UPDATE_CHECK_INTERVAL_HOURS * 60 * 60 * 1000;
+    expect(updateCheckIntervalMs({ LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "soon" })).toBe(
+      fallback,
+    );
+    expect(updateCheckIntervalMs({ LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "-3" })).toBe(
+      fallback,
+    );
+    expect(updateCheckIntervalMs({ LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "0" })).toBe(
+      fallback,
+    );
+  });
+
+  it("clamps an absurdly small interval to the 15-minute floor", () => {
+    expect(updateCheckIntervalMs({ LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "0.0001" })).toBe(
+      15 * 60 * 1000,
+    );
+  });
+
+  it("is null when the check is switched off entirely", () => {
+    expect(updateCheckIntervalMs({ LOKYY_UPDATE_CHECK: "off" })).toBeNull();
+    expect(
+      updateCheckIntervalMs({
+        LOKYY_UPDATE_CHECK: "off",
+        LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "1",
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("startUpdateCheckTimer", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("re-checks once per interval and stops on demand", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    const handle = startUpdateCheckTimer({
+      env: {},
+      runningVersion: "1.10.0",
+      fetchImpl,
+      intervalMs: 60_000,
+    });
+
+    expect(handle.intervalMs).toBe(60_000);
+    // Arming the timer must not fire a check — the startup warm-up does that.
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+
+    handle.stop();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("arms nothing when the check is disabled", () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(okFetch(SAMPLE_CHANGELOG));
+    const handle = startUpdateCheckTimer({
+      env: { LOKYY_UPDATE_CHECK: "off" },
+      fetchImpl,
+    });
+
+    expect(handle.intervalMs).toBeNull();
+    vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(() => handle.stop()).not.toThrow();
+  });
+
+  it("swallows a failing periodic check — no throw, no console.error", async () => {
+    vi.useFakeTimers();
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const handle = startUpdateCheckTimer({
+      env: {},
+      runningVersion: "1.10.0",
+      fetchImpl: async () => {
+        throw new Error("offline");
+      },
+      retries: 0,
+      intervalMs: 30_000,
+    });
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(error).not.toHaveBeenCalled();
+    expect(getUpdateStatus().updateAvailable).toBe(false);
+    handle.stop();
+  });
+
+  it("reads the interval from the environment when none is passed", () => {
+    vi.useFakeTimers();
+    const handle = startUpdateCheckTimer({
+      env: { LOKYY_UPDATE_CHECK_INTERVAL_HOURS: "3" },
+      fetchImpl: okFetch(SAMPLE_CHANGELOG),
+    });
+    expect(handle.intervalMs).toBe(3 * 60 * 60 * 1000);
+    handle.stop();
   });
 });
 

@@ -210,6 +210,12 @@ betrifft nur die Anwendung selbst.
 
 ### Der normale Weg: der Knopf in Lokyy
 
+Seit v1.12.1 prüft Lokyy automatisch **dreimal am Tag** auf neue Versionen
+(`LOKYY_UPDATE_CHECK_INTERVAL_HOURS`, abschaltbar via `LOKYY_UPDATE_CHECK=off`),
+und unter *Einstellungen → System* gibt es einen **„Jetzt prüfen"**-Knopf, der
+sofort nachsieht — die Prüfung ist ein unauthentifizierter GET auf die
+öffentliche `CHANGELOG.md` und überträgt keine Nutzerdaten.
+
 Seit v1.11 prüft Lokyy beim Start selbst, ob eine neue Version vorliegt. Wenn
 ja, erscheint oben ein Hinweis mit den wichtigsten Änderungen und einem Knopf
 **„Jetzt aktualisieren"**. Ein Klick holt die neue Version, baut sie und

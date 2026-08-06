@@ -16,6 +16,16 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.12.1 — 2026-08-06
+
+### Neu
+- **Lokyy sucht jetzt selbst nach Updates:** automatisch dreimal am Tag, plus ein „Jetzt prüfen"-Knopf unter Einstellungen → System, der sofort nachsieht.
+
+### Behoben
+- **Neue Versionen wurden bis zu sechs Stunden lang nicht angezeigt**, weil nur beim Start geprüft wurde — genau deshalb hättest du dieses Update sonst erst heute Nachmittag gesehen.
+
+---
+
 ## v1.12 — 2026-08-06
 
 ### Behoben

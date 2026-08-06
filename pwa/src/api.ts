@@ -673,6 +673,19 @@ export interface SystemVersion {
   status: "ok" | "disabled" | "unknown";
 }
 
+/**
+ * `POST /api/system/version/check` — the same payload plus why it is that.
+ *
+ * `throttled: true` means the server served its cached answer instead of
+ * re-checking (at most one real check per 30 s). Not an error: the numbers are
+ * still true, just up to half a minute old.
+ */
+export interface SystemVersionCheck extends SystemVersion {
+  throttled: boolean;
+  /** Seconds until another check is accepted. `0` when it really checked. */
+  retryAfterSeconds: number;
+}
+
 /** Why an installation cannot update itself. Shared by capability and 503s. */
 export type UpdateBlockedReason = "managed" | "off" | "blocked" | "unreachable";
 
@@ -810,6 +823,27 @@ export const api = {
       return (await res.json()) as SystemVersion;
     } catch {
       return offline;
+    }
+  },
+
+  /**
+   * „Jetzt prüfen" — force a check now, ignoring the server's 6 h cache.
+   *
+   * `null` means the check could not run at all (offline, server down, 5xx).
+   * The caller shows a quiet note for that; it must never be dressed up as a
+   * failure of the installation. A throttled answer is NOT null — it comes
+   * back as a normal payload with `throttled: true`.
+   */
+  checkSystemVersionNow: async (): Promise<SystemVersionCheck | null> => {
+    try {
+      const res = await fetch(`${BASE}/system/version/check`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as SystemVersionCheck;
+    } catch {
+      return null;
     }
   },
 

@@ -20,6 +20,7 @@ import {
   runMigrations,
   setLlmProviders,
   sleepAgent,
+  startUpdateCheckTimer,
   warmUpdateCheck,
 } from "@lokyy/core";
 import { notesRoutes } from "./routes/notes.js";
@@ -528,6 +529,21 @@ async function main() {
   // triggering a network request. `warmUpdateCheck` swallows every failure;
   // the extra .catch() only guards against future changes to that contract.
   void warmUpdateCheck().catch(() => {});
+
+  // ── …und danach periodisch nachprüfen (Default alle 8 h, 3×/Tag) ──────
+  // Ohne das sieht ein laufender Server ein frisches Release erst beim
+  // nächsten Neustart. Der Timer ist `unref`'d und schluckt jeden Fehler:
+  // weder Start noch Shutdown hängen daran. `LOKYY_UPDATE_CHECK=off` armiert
+  // gar nichts, `LOKYY_UPDATE_CHECK_INTERVAL_HOURS` verschiebt den Takt.
+  try {
+    startUpdateCheckTimer();
+  } catch (err) {
+    console.warn(
+      `[lokyy-brain] periodischer Update-Check nicht armiert — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 main().catch((err) => {

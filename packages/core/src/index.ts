@@ -788,9 +788,11 @@ export {
 // never throws, never blocks, never logs on `error` — a user who is offline
 // notices nothing. Served by GET /api/system/version, warmed once at startup.
 export {
+  DEFAULT_UPDATE_CHECK_INTERVAL_HOURS,
   DEFAULT_UPDATE_CHECK_URL,
   checkForUpdate,
   compareVersions,
+  forceUpdateCheck,
   getBuildSha,
   getUpdateStatus,
   isUpdateAvailable,
@@ -799,11 +801,17 @@ export {
   readRunningVersion,
   refreshUpdateCheck,
   resetUpdateCheckCacheForTests,
+  startUpdateCheckTimer,
   updateCheckConfig,
+  updateCheckIntervalMs,
   warmUpdateCheck,
   type ChangelogEntry,
   type CheckForUpdateOptions,
   type FetchLike,
+  type ForceUpdateCheckOptions,
+  type ForceUpdateCheckResult,
   type UpdateCheckConfig,
   type UpdateCheckResult,
+  type UpdateCheckTimerHandle,
+  type UpdateCheckTimerOptions,
 } from "./version/index.js";
