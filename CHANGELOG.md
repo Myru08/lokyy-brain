@@ -16,6 +16,14 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.12.5 — 2026-08-06
+
+### Behoben
+- **Speichern unter Windows funktioniert wieder.** Bei Windows-Installationen konnte die interne Prüfdatei des Vaults (`.githooks/pre-commit`) durch die anderen Zeilenende-Zeichen unausführbar werden — jedes Speichern brach dann mit „cannot run .githooks/pre-commit" ab. Lokyy repariert diese Datei jetzt automatisch beim Start; zusätzlich kann sie gar nicht mehr falsch ausgecheckt werden. **Notizen waren nie in Gefahr** — sie lagen die ganze Zeit auf der Festplatte, nur die Versionierung scheiterte.
+- **Der Update-Vorgang bleibt nicht mehr scheinbar hängen.** Blieb der Fortschritt in einem Schritt stehen, obwohl das Update längst lief, sah es aus wie ein Absturz. Jetzt weist Lokyy auf ungewöhnlich lange Schritte hin, erkennt selbstständig an der laufenden Version, dass das Update fertig ist, und endet notfalls mit einer klaren Ansage statt endlosem Drehen.
+
+---
+
 ## v1.12.4 — 2026-08-06
 
 ### Neu
