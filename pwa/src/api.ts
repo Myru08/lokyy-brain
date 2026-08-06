@@ -9,6 +9,20 @@ import type {
   TreeNode,
 } from "@lokyy/shared";
 
+/**
+ * A note as it comes back from a save, plus the sync verdict.
+ *
+ * `synced: false` does NOT mean "not saved" — the server has committed the
+ * note to git; only the push to Forgejo is outstanding (Forgejo unreachable,
+ * or the write is sitting in the offline queue). The next successful save or
+ * a manual sync carries it upstream, so the UI shows a quiet hint instead of
+ * an error. `undefined` = an older server that doesn't report the field; treat
+ * it as synced.
+ */
+export interface SavedNote extends Note {
+  synced?: boolean;
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
  * LLM provider / routing types — sync with packages/core/src/llm/types.ts.
  * Inlined here because @lokyy/core has node-only deps and is forbidden
@@ -868,7 +882,7 @@ export const api = {
   /** Speichern -> Server committet & pusht nach Forgejo.
    *  Bei Offline / Netzwerkfehler -> Eintrag in die Offline-Queue,
    *  Auto-Replay sobald wieder online (Story 4.2 + 4.3). */
-  putNote: async (id: string, body: string): Promise<Note> => {
+  putNote: async (id: string, body: string): Promise<SavedNote> => {
     const endpoint = `${BASE}/notes/${id}`;
     try {
       const res = await fetch(endpoint, {
@@ -878,12 +892,14 @@ export const api = {
         credentials: "include",
       });
       if (!res.ok) throw new ApiError(res.status, await res.text());
-      return (await res.json()) as Note;
+      return (await res.json()) as SavedNote;
     } catch (err) {
       if (!navigator.onLine || err instanceof TypeError) {
         const { enqueueWrite } = await import("./offline/queue.js");
         await enqueueWrite({ endpoint, method: "PUT", body: { body } });
         // Optimistic stub — caller treats this as "saved locally".
+        // `synced: false` is literally true here: the write sits in the
+        // offline queue and reaches Forgejo on replay.
         return {
           id,
           path: id + ".md",
@@ -893,6 +909,7 @@ export const api = {
           links: [],
           aliases: [],
           updatedAt: new Date().toISOString(),
+          synced: false,
         };
       }
       throw err;

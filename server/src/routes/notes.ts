@@ -7,6 +7,7 @@ import {
   getMemoryProvider,
   GitBackendError,
   getNote,
+  isSyncPending,
   isUlid,
   listNotes,
   logRetrieval,
@@ -197,7 +198,7 @@ notesRoutes.post("/create-managed", async (c) => {
   try {
     const result = await createManaged(intent as NoteCreateIntent);
     if (result.ok) {
-      return c.json(result.note, 201);
+      return c.json(withSyncStatus(result.note), 201);
     }
     // Expected, structured validation failures → 422 (the caller's to fix).
     return c.json(result.error, 422);
@@ -234,6 +235,19 @@ notesRoutes.get("/:id{.+}", async (c) => {
   return c.json(note);
 });
 
+/**
+ * Save-Antwort + Sync-Status (Story: offline-toleranter Save).
+ *
+ * `synced: false` heißt NICHT "nicht gespeichert" — der Commit liegt sicher in
+ * git, nur Forgejo war beim Push nicht erreichbar. Der nächste Sync (Button
+ * oder nächster erfolgreicher Save) holt ihn nach. Die PWA zeigt darauf einen
+ * dezenten Hinweis statt eines Fehlers; ein 503 gibt es nur noch, wenn schon
+ * der Commit scheitert oder der Backend-Fehler nicht transient ist.
+ */
+function withSyncStatus<T extends object>(payload: T): T & { synced: boolean } {
+  return { ...payload, synced: !isSyncPending() };
+}
+
 // PUT /api/notes/:id  { body: string }  -> committet & pusht
 notesRoutes.put("/:id{.+}", async (c) => {
   const id = c.req.param("id");
@@ -242,7 +256,7 @@ notesRoutes.put("/:id{.+}", async (c) => {
     return c.json({ error: "body (string) erforderlich" }, 400);
   }
   try {
-    return c.json(await saveNote(id, body));
+    return c.json(withSyncStatus(await saveNote(id, body)));
   } catch (err) {
     // Typisierte Git-/Frontmatter-Fehler -> passender Status (422/409/503).
     const mapped = mapSaveError(err);
@@ -422,15 +436,17 @@ notesRoutes.post("/:id{.+}/ai-polish", async (c) => {
     const { data: savedFrontmatter, body: savedBody } = parseFrontmatter(
       saved.body,
     );
-    return c.json({
-      ok: true,
-      noteId: id,
-      polished: {
-        frontmatter: savedFrontmatter,
-        body: savedBody,
-      },
-      rawPreserved: preserveRaw,
-    });
+    return c.json(
+      withSyncStatus({
+        ok: true,
+        noteId: id,
+        polished: {
+          frontmatter: savedFrontmatter,
+          body: savedBody,
+        },
+        rawPreserved: preserveRaw,
+      }),
+    );
   } catch (err) {
     // Mirror the PUT handler's typed-error mapping (422/409/503), keeping the
     // polish endpoint's `ok:false` envelope shape.
