@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, type UpdateJob } from "../api.js";
 import { UpdateProgress } from "./UpdateProgress.js";
 
@@ -118,5 +118,159 @@ describe("UpdateProgress", () => {
     );
     await waitFor(() => expect(poll).toHaveBeenCalledWith("running-job"));
     expect(await screen.findByText("Bauen")).toBeInTheDocument();
+  });
+});
+
+/**
+ * Issue #32 — a minutes-long phase with a motionless dot reads as "frozen".
+ * Three signals answer that, and all three have to survive a refactor: the
+ * active step MOVES, the longest step SAYS it is the longest, and a running
+ * clock proves the whole thing is alive.
+ */
+describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("animates the marker of the active step and leaves the others still", async () => {
+    const poll = vi.fn().mockResolvedValue(job({ phase: "build" }));
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "build" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={5000}
+        renew={noRenew}
+      />,
+    );
+
+    const active = screen.getByTestId("phase-marker-build");
+    expect(active.style.animation).toContain("lokyy-update-pulse");
+    // Neither the step already done nor the one still ahead may move.
+    expect(screen.getByTestId("phase-marker-pull").style.animation).toBe("");
+    expect(screen.getByTestId("phase-marker-verify").style.animation).toBe("");
+  });
+
+  it("stops the animation once the job has finished", async () => {
+    const poll = vi
+      .fn()
+      .mockResolvedValue(job({ phase: "done", running: false, result: "success" }));
+    render(
+      <UpdateProgress jobId="job-1" onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+    );
+
+    await screen.findByRole("heading", { name: /Update abgeschlossen/ });
+    for (const phase of ["build", "switch", "done"]) {
+      expect(screen.getByTestId(`phase-marker-${phase}`).style.animation).toBe("");
+    }
+  });
+
+  it("warns under the build step that it takes the longest — only while it runs", async () => {
+    const poll = vi.fn().mockResolvedValue(job({ phase: "build" }));
+    const { rerender } = render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "build" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={5000}
+        renew={noRenew}
+      />,
+    );
+
+    const hint = await screen.findByText(/dauert am längsten/i);
+    expect(hint).toHaveTextContent(/mehrere Minuten/i);
+    expect(hint).toHaveTextContent(/solange sich die zeit unten bewegt, arbeitet lokyy/i);
+
+    // A different phase, same component — the hint belongs to „Bauen" alone.
+    rerender(
+      <UpdateProgress
+        jobId="job-2"
+        initialJob={job({ phase: "verify" })}
+        onClose={() => {}}
+        poll={vi.fn().mockResolvedValue(job({ phase: "verify" }))}
+        pollMs={5}
+        renew={noRenew}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.queryByText(/dauert am längsten/i)).not.toBeInTheDocument(),
+    );
+  });
+
+  it("runs a clock from the job's own start time, second by second", async () => {
+    // Anchor the fake clock ON the job's `startedAt`, so 0 elapsed is the truth
+    // at first paint and every later value is purely the time we advance.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-03T10:00:00.000Z"));
+
+    const poll = vi.fn().mockResolvedValue(job({ phase: "build" }));
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "build" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={60_000}
+        renew={noRenew}
+      />,
+    );
+
+    const clock = screen.getByRole("timer");
+    expect(clock).toHaveTextContent("00:00");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(clock).toHaveTextContent("00:01");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(64_000);
+    });
+    expect(clock).toHaveTextContent("01:05");
+  });
+
+  it("keeps counting past an hour instead of wrapping back to zero", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-03T10:00:00.000Z"));
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "build" })}
+        onClose={() => {}}
+        poll={vi.fn().mockResolvedValue(job({ phase: "build" }))}
+        pollMs={60_000}
+        renew={noRenew}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_723_000); // 62:03
+    });
+    expect(screen.getByRole("timer")).toHaveTextContent("62:03");
+  });
+
+  it("falls back to the mount time when the job carries no usable start time", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-03T10:00:00.000Z"));
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "build", startedAt: "kaputt" })}
+        onClose={() => {}}
+        poll={vi.fn().mockResolvedValue(job({ phase: "build", startedAt: "kaputt" }))}
+        pollMs={60_000}
+        renew={noRenew}
+      />,
+    );
+
+    expect(screen.getByRole("timer")).toHaveTextContent("00:00");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+    expect(screen.getByRole("timer")).toHaveTextContent("00:02");
   });
 });

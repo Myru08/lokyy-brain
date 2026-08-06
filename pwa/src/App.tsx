@@ -39,6 +39,7 @@ import { BottomNav } from "./BottomNav.js";
 import { VoiceReviewSheet } from "./VoiceReviewSheet.js";
 import { SessionUserContext } from "./AuthGate.js";
 import { UpdateBanner } from "./update/UpdateBanner.js";
+import { HeaderUpdateIcon } from "./update/HeaderUpdateIcon.js";
 import { useSystemVersion } from "./update/useSystemVersion.js";
 import { C, FONT } from "./theme.js";
 
@@ -2290,6 +2291,7 @@ export function App() {
             <NetworkIcon size={20} style={{ color: C.accent }} />
           </button>
         )}
+        <HeaderUpdateIcon compact={isMobile} />
         <button
           onClick={() => setSettingsOpen(true)}
           title="Einstellungen"

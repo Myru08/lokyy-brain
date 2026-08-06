@@ -26,9 +26,35 @@ import {
  * 2. **After success, the page renews itself** (AC#7 path b): ask the service
  *    worker for the new build and reload once it takes control, so nobody has
  *    to press Ctrl+Shift+R.
+ *
+ * Issue #32 added a third: **the view has to look alive.** „Bauen" can sit
+ * there for many minutes, and a motionless orange dot is indistinguishable
+ * from a frozen app — observed in the wild, people closed the window mid-build.
+ * Three signals answer that, and none of them invents progress it cannot
+ * measure: the active step pulses, the long step says up front that it is the
+ * long one, and a clock counts up from the job's own start.
  */
 
 const POLL_MS = 2000;
+
+/** `mm:ss`, and past an hour simply `62:03` — never a wrap back to zero. */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function Keyframes() {
+  return (
+    <style data-lokyy-update-anim>{`
+      @keyframes lokyy-update-pulse {
+        0%, 100% { opacity: 1;    transform: scale(1); }
+        50%      { opacity: 0.35; transform: scale(0.72); }
+      }
+    `}</style>
+  );
+}
 
 export function UpdateProgress({
   jobId,
@@ -58,6 +84,8 @@ export function UpdateProgress({
     job: initialJob,
   });
   const [renewing, setRenewing] = useState(false);
+  /** Re-read once per second — the only reason this component re-renders idle. */
+  const [now, setNow] = useState(() => Date.now());
   // Guards the one-shot reload so a late poll can't trigger a second one.
   const renewedRef = useRef(false);
 
@@ -111,6 +139,29 @@ export function UpdateProgress({
   const outcome = job && finished ? resultMessage(job) : null;
   const activeIndex = job ? PHASE_ORDER.indexOf(job.phase) : -1;
 
+  /**
+   * The clock counts from the job's OWN `startedAt`, not from when this view
+   * opened — otherwise a tab reloaded mid-update would restart at 00:00 and
+   * quietly deny the ten minutes that already passed. Only when the server has
+   * not (yet) given us a usable timestamp does the mount time stand in.
+   */
+  const startedFallback = useRef(Date.now());
+  const parsed = Date.parse(job?.startedAt ?? "");
+  const startedAtMs = Number.isNaN(parsed) ? startedFallback.current : parsed;
+  const elapsed = formatElapsed(now - startedAtMs);
+  const running = !finished && state.error === null;
+
+  // Tick while it runs; freeze on the exact final value when it stops, so the
+  // last thing on screen is how long the update actually took.
+  useEffect(() => {
+    if (!running) {
+      setNow(Date.now());
+      return;
+    }
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+
   return (
     <div
       role="dialog"
@@ -141,6 +192,7 @@ export function UpdateProgress({
           boxShadow: "0 20px 60px rgba(0,0,0,0.55)",
         }}
       >
+        <Keyframes />
         <h2 style={{ margin: "0 0 4px", fontSize: 17, fontWeight: 600 }}>
           {finished ? "Update abgeschlossen" : "Lokyy Brain wird aktualisiert"}
         </h2>
@@ -169,23 +221,49 @@ export function UpdateProgress({
                 key={phase}
                 style={{
                   display: "flex",
-                  alignItems: "center",
-                  gap: 8,
+                  flexDirection: "column",
+                  gap: 3,
                   fontSize: 13,
                   color: active ? C.text : done ? C.textDim : C.textFaint,
                 }}
               >
-                <span
-                  aria-hidden
-                  style={{
-                    width: 16,
-                    textAlign: "center",
-                    color: done ? C.ok : active ? C.accent : C.textFaint,
-                  }}
-                >
-                  {done ? "✓" : active ? "●" : "○"}
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span
+                    aria-hidden
+                    data-testid={`phase-marker-${phase}`}
+                    style={{
+                      width: 16,
+                      textAlign: "center",
+                      color: done ? C.ok : active ? C.accent : C.textFaint,
+                      // The one moving thing on screen during a long phase.
+                      // CSS only: nothing here needs a timer to look alive.
+                      animation: active
+                        ? "lokyy-update-pulse 1.4s ease-in-out infinite"
+                        : undefined,
+                    }}
+                  >
+                    {done ? "✓" : active ? "●" : "○"}
+                  </span>
+                  <span style={{ fontWeight: active ? 600 : 400 }}>{PHASE_LABEL[phase]}</span>
                 </span>
-                <span style={{ fontWeight: active ? 600 : 400 }}>{PHASE_LABEL[phase]}</span>
+
+                {/* Issue #32 — „Bauen" is where people gave up. Say beforehand
+                    that the wait is expected, and point at the clock as the
+                    thing to watch instead of the dot. */}
+                {phase === "build" && active && (
+                  <span
+                    style={{
+                      marginLeft: 24,
+                      fontSize: 12,
+                      color: C.textDim,
+                      lineHeight: 1.45,
+                      fontWeight: 400,
+                    }}
+                  >
+                    {"Dauert am längsten — je nach Rechner mehrere Minuten. " +
+                      "Solange sich die Zeit unten bewegt, arbeitet Lokyy."}
+                  </span>
+                )}
               </li>
             );
           })}
@@ -285,7 +363,27 @@ export function UpdateProgress({
           </details>
         )}
 
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          {/* The living proof that nothing is stuck. `role="timer"` keeps a
+              screen reader from announcing every single second. */}
+          <span style={{ fontSize: 12, color: C.textDim, display: "flex", gap: 6 }}>
+            {finished || state.error ? "Gesamtdauer" : "Läuft seit"}
+            <span
+              role="timer"
+              aria-label={finished || state.error ? "Gesamtdauer" : "Laufzeit"}
+              style={{ fontFamily: FONT.mono, color: C.text }}
+            >
+              {elapsed}
+            </span>
+          </span>
           <button
             type="button"
             onClick={onClose}
