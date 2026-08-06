@@ -137,10 +137,11 @@ System-Neustart nötig ist (Windows/WSL2) oder ein neues Terminal-Fenster
 kein Fehler, einfach einmal neu starten und den Befehl erneut aufrufen.
 Danach warnt der Installer bei Port-Konflikten, legt für eine neue Installation
 ein **eigenes Datenbank-Passwort** an (zufällig erzeugt, landet in `.env` — du
-musst nichts eintippen und dir nichts merken), baut und startet den Stack,
-wartet, bis **Web-UI und API** beide antworten (die Web-UI allein ist schon
-da, während der Server dahinter noch hochfährt — deshalb beides), und öffnet
-dann den Browser:
+musst nichts eintippen und dir nichts merken), richtet den **Ein-Klick-Updater**
+ein (ebenfalls ein zufälliger Wert in `.env`, siehe „Update" weiter unten),
+baut und startet den Stack, wartet, bis **Web-UI und API** beide antworten (die
+Web-UI allein ist schon da, während der Server dahinter noch hochfährt —
+deshalb beides), und öffnet dann den Browser:
 
 ```bash
 # macOS / Linux
@@ -238,6 +239,15 @@ aktualisierst du über Coolify) und bei Installationen ohne den
 Updater-Dienst — Lokyy sagt dann, woran es liegt, statt einen toten Knopf zu
 zeigen. Wer vor v1.11 installiert hat, holt sich den Dienst mit dem manuellen
 Update unten einmalig ins Haus.
+
+**Du musst dafür nichts konfigurieren.** Brain und Updater verständigen sich
+über ein gemeinsames Geheimnis (`LOKYY_UPDATER_TOKEN`); das erzeugen
+`install.sh` und `install.ps1` bei jedem Lauf automatisch und legen es in
+`.env` ab — auch nachträglich, wenn deine Installation älter ist als der
+Updater. Ein bereits vorhandener Wert bleibt unverändert. Fehlt der Wert (z. B.
+weil du die `.env` von Hand gebaut hast), verweigert der Updater jedes Update
+und die Oberfläche sagt dir genau das — einmal `./install.sh` bzw.
+`.\install.ps1` laufen lassen genügt.
 
 ### Der manuelle Weg
 
