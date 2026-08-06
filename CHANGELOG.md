@@ -5,17 +5,27 @@ aktuelle Version steht immer ganz oben.
 
 ## Roadmap — woran gerade gearbeitet wird
 
-- **Update-Knopf direkt in Lokyy.** Beim Start wird geprüft, ob eine neue
-  Version da ist; ein Banner weist dich darauf hin, und ein Klick spielt sie
-  ein. Damit entfällt der Weg übers Terminal.
-- **Eigenes Datenbank-Passwort je Installation** statt des mitgelieferten
-  Standardwerts — bestehende Installationen laufen unverändert weiter.
-- **Import-Pipes** (YouTube-Transkripte, Webseiten, PDFs, Sprachnotizen
-  direkt in den Vault).
+- **Der Beweis:** ein Messlauf, der zeigt, was die tiefe Suche bringt —
+  Kosten, Zeit, Treffer, mit und ohne.
+- **Nachtlauf pflegt den Vault-Überblick:** das neue Inhaltsverzeichnis
+  (`INDEX.md`) wird künftig automatisch nachts aktualisiert.
+- **Import-Pipes ausbauen** (PDFs und Sprachnotizen direkt in den Vault).
 - **Graph-Ansicht ausbauen** und die "ähnliche Notizen"-Vorschläge in der
   Seitenleiste.
-- **Weitere Rückmeldungen aus der Community** — meldet gerne, was euch
-  auffällt.
+- Die vollständige Liste steht in der [ROADMAP.md](ROADMAP.md).
+
+---
+
+## v1.12 — 2026-08-06
+
+### Behoben
+- **Speichern meldet keinen Fehler mehr, wenn Forgejo gerade nicht erreichbar ist.** Die Notiz war in diesem Fall schon immer lokal sicher gespeichert — jetzt sagt Lokyy das auch: ein goldener Hinweis „Lokal gespeichert – Sync ausstehend" statt einer roten Fehlermeldung. Der nächste Save oder Sync gleicht automatisch ab.
+
+### Neu
+- **Widersprüche stehen jetzt in der Notiz.** Findet Lokyy widersprüchliche Aussagen, erscheint ein farbiger Warnkasten direkt in der betroffenen Notiz — mit beiden Aussagen und beiden Quellen. Du entscheidest, was gilt, und löst den Fund per Klick auf. Dazu eine Liste aller offenen Funde im Kopfbereich.
+- **Deine KI sucht klüger und günstiger.** Feste Suchreihenfolge für angebundene KIs (erst Vault-Überblick, dann Suche, dann genau eine Notiz), ein automatisch gepflegtes Inhaltsverzeichnis (`get_index`) — und die tiefe 8-Stufen-Suche ist jetzt zuschaltbar, die normale Suche bleibt sofort und kostenlos.
+- **Nacht-Protokoll:** Die neue Ansicht zeigt, wann der nächtliche Pflege-Lauf lief, was er getan hat und welche Notizen er berührt hat.
+- **Öffentliche Roadmap:** In der neuen [ROADMAP.md](ROADMAP.md) steht, woran als Nächstes gebaut wird.
 
 ---
 
