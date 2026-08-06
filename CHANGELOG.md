@@ -16,6 +16,16 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.12.4 — 2026-08-06
+
+### Neu
+- **Update-Punkt direkt in der Kopfleiste.** Ein Klick prüft sofort auf neue Versionen („Alles aktuell" mit Zeitpunkt) — und gibt es eine, wird das Symbol orange, zeigt die neue Version an und startet das Update direkt. Kein Weg mehr über die Einstellungen nötig.
+
+### Behoben
+- **Der Update-Dialog wirkt beim Bauen nicht mehr eingefroren:** Der aktive Schritt pulsiert sichtbar, beim längsten Schritt („Bauen") steht ehrlich dabei, dass er je nach Rechner mehrere Minuten dauert, und eine mitlaufende Zeitanzeige zeigt, dass gearbeitet wird.
+
+---
+
 ## v1.12.3 — 2026-08-06
 
 ### Behoben
