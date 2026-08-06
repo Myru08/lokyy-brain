@@ -16,6 +16,13 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.12.6 — 2026-08-06
+
+### Behoben
+- **Der Update-Fortschritt bewegt sich jetzt wirklich.** Die Anzeige blieb beim ersten Schritt („Prüfen") stehen, während das Update im Hintergrund komplett durchlief. Ursache war ausgerechnet die Laufzeit-Uhr aus v1.12.4: Sie ließ das Fenster jede Sekunde neu zeichnen und setzte dabei die Statusabfrage zurück, bevor diese je stattfinden konnte. Behoben — die Abfrage läuft jetzt unabhängig davon weiter, und die Schritte wandern wieder mit.
+
+---
+
 ## v1.12.5 — 2026-08-06
 
 ### Behoben
