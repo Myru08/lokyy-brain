@@ -16,6 +16,14 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.12.3 — 2026-08-06
+
+### Behoben
+- **Der Aktualisieren-Knopf steht jetzt direkt in den Einstellungen.** Bisher zeigte die Versions-Karte nur einen Hinweis auf den Banner „oben in der App" — jetzt startest du das Update genau dort, wo du es entdeckst. Und der Banner erscheint nach einer manuellen Prüfung sofort, ohne die Seite neu laden zu müssen.
+- **Der Installer richtet den Ein-Klick-Updater automatisch ein.** Bei vielen Installationen fehlte das dafür nötige Geheimnis in der `.env` — der Update-Knopf konnte deshalb nichts ausführen und verwies auf den manuellen Weg. `./install.sh` bzw. `.\install.ps1` erzeugen es ab sofort selbst; einmal ausführen genügt, bestehende Werte werden nie überschrieben.
+
+---
+
 ## v1.12.2 — 2026-08-06
 
 ### Behoben
