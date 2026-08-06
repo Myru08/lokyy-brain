@@ -275,8 +275,23 @@ export const PHASE_LABEL: Record<UpdateJob["phase"], string> = {
   done: "Fertig",
 };
 
-/** The phases we show as a progress track, in order. */
+/**
+ * The phases we show as a progress track, in order.
+ *
+ * `queued` belongs in here even though it is usually invisible. The updater
+ * creates the job in `queued` and only reaches `preflight` inside `runUpdate`
+ * — synchronously, before its first `await`, which is why the `POST` snapshot
+ * normally already says `preflight` (updater/src/index.ts:119-128 starts the
+ * run BEFORE taking that snapshot). "Normally" is the problem: leave `queued`
+ * out and any job observed in it renders `indexOf(...) === -1`, i.e. a dialog
+ * with SIX grey steps, nothing active, nothing pulsing, and no hint that
+ * anything is happening — indistinguishable from the frozen view of Issue #36.
+ * One `await` moving above that assignment in the updater would be enough to
+ * make it the normal case, and the UI would go quiet without a single line of
+ * PWA code changing. Listing it costs one row and removes that coupling.
+ */
 export const PHASE_ORDER: UpdateJob["phase"][] = [
+  "queued",
   "preflight",
   "pull",
   "build",

@@ -2,7 +2,7 @@ import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, api, type UpdateJob } from "../api.js";
 import { UpdateProgress } from "./UpdateProgress.js";
-import { PHASE_STALL_MS, type VersionProbe } from "./pollState.js";
+import { PHASE_ORDER, PHASE_STALL_MS, type VersionProbe } from "./pollState.js";
 
 /**
  * Story 7.12 Task 5, AC#6 — the single most damaging way this feature can be
@@ -572,5 +572,96 @@ describe("UpdateProgress — Stillstand (Issue #36)", () => {
     await tick(PHASE_STALL_MS.preflight + 30_000);
     expect(screen.queryByText(/dauert länger als üblich/)).not.toBeInTheDocument();
     expect(screen.queryByText(/nicht sicher feststellen/)).not.toBeInTheDocument();
+  });
+
+  /**
+   * The `queued` hole. The updater creates every job in `queued` and only sets
+   * `preflight` inside `runUpdate` — synchronously, before the first `await`,
+   * which is why the `POST` snapshot normally already says `preflight`. Observe
+   * a job in `queued` anyway and, before `queued` joined PHASE_ORDER, the whole
+   * track rendered grey with nothing active: a dialog that looks exactly as
+   * dead as the one this issue is about, for a job that is perfectly healthy.
+   */
+  it("shows an active step even while the job is still queued", async () => {
+    startFakeClock();
+    const poll = vi.fn().mockResolvedValue(job({ phase: "queued" }));
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "queued" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={1000}
+        renew={noRenew}
+        probeVersion={noProbe}
+      />,
+    );
+
+    expect(screen.getByText("Vorbereiten")).toBeInTheDocument();
+    expect(screen.getByTestId("phase-marker-queued").style.animation).toContain(
+      "lokyy-update-pulse",
+    );
+    // Exactly one step may claim to be the current one.
+    const pulsing = PHASE_ORDER.filter((p) =>
+      screen.getByTestId(`phase-marker-${p}`).style.animation.includes("lokyy-update-pulse"),
+    );
+    expect(pulsing).toEqual(["queued"]);
+  });
+
+  /**
+   * The whole observed incident as one test, on the REAL wiring (no `poll`
+   * prop — that is what starved). Timeline taken from `docker logs
+   * lokyy-updater`, job 45d2bfd6 on 2026-08-06: queued → preflight → pull →
+   * build → the brain restarts and three polls fail → verify → done/success.
+   *
+   * It pins all three things the incident showed at once: the phase KEEPS
+   * MOVING (it did not), a dropped connection surfaces as „startet neu" (it
+   * never appeared, because a starved loop produces no failed polls to report),
+   * and the job is followed through the restart to its real end (the updater
+   * keeps job state, so the id stays resolvable).
+   */
+  it("follows the real updater timeline through the restart to done", async () => {
+    startFakeClock();
+    const getJob = vi
+      .spyOn(api, "getUpdateJob")
+      .mockResolvedValueOnce(job({ phase: "preflight" }))
+      .mockResolvedValueOnce(job({ phase: "pull" }))
+      .mockResolvedValueOnce(job({ phase: "build" }))
+      // 14:40:16 — the brain is replaced and comes back; the poll cannot land.
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce(job({ phase: "verify" }))
+      .mockResolvedValue(job({ phase: "done", running: false, result: "success" }));
+
+    render(
+      <UpdateProgress
+        jobId="45d2bfd6"
+        initialJob={job({ phase: "queued" })}
+        onClose={() => {}}
+        renew={noRenew}
+        probeVersion={noProbe}
+      />,
+    );
+
+    expect(screen.getByText("Vorbereiten")).toBeInTheDocument();
+
+    // One second per step, so the clock's render lands between the polls —
+    // the interleaving that starved the loop in production.
+    let sawRestarting = false;
+    for (let second = 0; second < 24; second += 1) {
+      await tick(1000);
+      if (screen.queryByText(/startet gerade neu/)) sawRestarting = true;
+    }
+
+    // It kept asking — the default 2000 ms interval over 24 s, not 0 calls.
+    expect(getJob.mock.calls.length).toBeGreaterThanOrEqual(8);
+    // The restart was reported as a restart, not swallowed and not an error.
+    expect(sawRestarting).toBe(true);
+    // And it followed the job to its real end instead of sitting on „Prüfen".
+    expect(screen.getByRole("heading", { name: /Update abgeschlossen/ })).toBeInTheDocument();
+    expect(screen.getByText(/lädt gleich in der neuen Version neu/)).toBeInTheDocument();
+    expect(screen.getByTestId("phase-marker-queued")).toHaveTextContent("✓");
   });
 });

@@ -3,6 +3,8 @@ import { ApiError, UpdateApiError, type UpdateJob } from "../api.js";
 import {
   INITIAL_POLL_STATE,
   MAX_RESTART_POLLS,
+  PHASE_LABEL,
+  PHASE_ORDER,
   PHASE_STALL_MS,
   classifyPollError,
   isFinished,
@@ -291,5 +293,32 @@ describe("Versionsvergleich als Rettungsleine (Issue #36 AC#3)", () => {
     // No baseline version at all: a probe cannot prove a change from nothing.
     const blank = versionBaseline({ running: null, latest: null });
     expect(versionConfirmsUpdate(blank, { running: "1.12.4", latest: null })).toBe(false);
+  });
+});
+
+describe("PHASE_ORDER deckt jede Phase ab (Issue #36)", () => {
+  it("führt `queued` als ersten Schritt", () => {
+    // Der Updater legt jeden Job in `queued` an. Fehlt die Phase hier, liefert
+    // `indexOf` −1 und der Dialog rendert KEINEN aktiven Schritt — genau das
+    // tote Bild, um das es in diesem Issue geht, für einen gesunden Job.
+    expect(PHASE_ORDER[0]).toBe("queued");
+  });
+
+  it("lässt keine Phase ohne Platz im Fortschritt — außer rollback", () => {
+    // `rollback` wird bewusst separat gerendert (eigene Zeile, eigenes Symbol),
+    // weil es kein Schritt vorwärts ist. Jede andere Phase, die der Updater
+    // setzen kann, MUSS im Track vorkommen; sonst entsteht wieder ein Zustand,
+    // in dem die Oberfläche nichts anzeigt und niemand es merkt.
+    const renderedSeparately: UpdateJob["phase"][] = ["rollback"];
+    for (const phase of Object.keys(PHASE_LABEL) as UpdateJob["phase"][]) {
+      if (renderedSeparately.includes(phase)) continue;
+      expect(PHASE_ORDER).toContain(phase);
+    }
+  });
+
+  it("gibt jeder Phase im Track eine Stall-Schwelle", () => {
+    for (const phase of PHASE_ORDER) {
+      expect(PHASE_STALL_MS[phase]).toBeGreaterThan(0);
+    }
   });
 });
