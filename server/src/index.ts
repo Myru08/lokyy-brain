@@ -12,6 +12,7 @@ import { config } from "./config.js";
 import {
   ensureRepo,
   getLlmProviders,
+  healVaultHook,
   initCore,
   initDb,
   initLlmFromConfig,
@@ -440,6 +441,32 @@ async function main() {
         }`,
       );
     }
+  }
+
+  // ── Pre-Commit-Hook heilen (Windows-CRLF-Blocker) ──────────────────────
+  // Ein mit CRLF ausgecheckter Hook macht den Vault KOMPLETT schreibunfähig:
+  // der Kernel sucht den Interpreter `/bin/sh\r` und jeder Commit stirbt mit
+  // `fatal: cannot exec '.githooks/pre-commit'`. Deshalb direkt nach dem
+  // Klon/Pull und VOR dem ersten möglichen Write. Idempotent (ein gesunder
+  // Hook kostet einen stat), wirft per Vertrag nie, und schreibt nur, wenn
+  // sich wirklich etwas ändert.
+  try {
+    const heal = await healVaultHook();
+    if (heal.status === "healed") {
+      console.log(
+        `[lokyy-brain] Pre-Commit-Hook repariert (Zeilenenden: ${heal.lineEndingsFixed}, ` +
+          `Rechte: ${heal.modeFixed}, committet: ${heal.committed})`,
+      );
+    }
+    if (heal.error) console.warn(`[lokyy-brain] Hook-Reparatur unvollständig — ${heal.error}`);
+  } catch (err) {
+    // healVaultHook wirft per Vertrag nicht; dieser catch schützt nur gegen
+    // künftige Änderungen an diesem Vertrag — der Start darf hier nie sterben.
+    console.warn(
+      `[lokyy-brain] Hook-Selbstheilung übersprungen — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 
   // ── LLM registry init (Phase-0 Wave C-Backend) ─────────────────────────

@@ -7,6 +7,7 @@ import {
   getMemoryProvider,
   GitBackendError,
   getNote,
+  HookExecutionError,
   isSyncPending,
   isUlid,
   listNotes,
@@ -45,6 +46,21 @@ type SaveErrorResponse = {
 };
 
 function mapSaveError(err: unknown): SaveErrorResponse | null {
+  // Muss VOR PreCommitHookError stehen — ein unausführbarer Hook ist ein
+  // Infrastruktur-Defekt (jeder Commit stirbt, egal was der User schreibt),
+  // kein Frontmatter-Problem. 503 statt 422, weil es am Inhalt nichts zu
+  // reparieren gibt; die Meldung nennt die Reparatur (Neustart).
+  if (err instanceof HookExecutionError) {
+    return {
+      status: 503,
+      body: {
+        error: "vault-hook-broken",
+        message: err.message,
+        detail: err.stderr || undefined,
+        retryable: false,
+      },
+    };
+  }
   if (err instanceof PreCommitHookError) {
     return {
       status: 422,

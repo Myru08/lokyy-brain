@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   classifyGitError,
+  HookExecutionError,
   PreCommitHookError,
   MergeConflictError,
   GitBackendError,
@@ -69,5 +70,61 @@ describe("classifyGitError (Story 10.6 AC#3) — three distinct cases", () => {
     const out = classifyGitError(gitErr("something totally unexpected happened"));
     expect(out).toBeInstanceOf(GitBackendError);
     expect((out as GitBackendError).transient).toBe(false);
+  });
+});
+
+describe("AC4 — ein NICHT AUSFÜHRBARER Hook ist kein Frontmatter-Fehler", () => {
+  // Die Signatur aus dem echten Windows-CRLF-Fall, verifiziert gegen git 2.43:
+  // ein CRLF-Shebang lässt den Kernel `/bin/sh\r` suchen.
+  const SIGNATURES = [
+    "fatal: cannot exec '.githooks/pre-commit': No such file or directory",
+    "error: cannot run .githooks/pre-commit: No such file or directory",
+    "error: cannot spawn .git/hooks/pre-commit: Exec format error",
+  ];
+
+  it.each(SIGNATURES)("klassifiziert %s als HookExecutionError", (stderr) => {
+    const out = classifyGitError(gitErr(stderr), "20_notes/x.md");
+    expect(out).toBeInstanceOf(HookExecutionError);
+    // Das ist der eigentliche Bug: die Meldung enthält „pre-commit" und wurde
+    // deshalb als „ungültige Frontmatter" gemeldet — falsche Fährte.
+    expect(out).not.toBeInstanceOf(PreCommitHookError);
+    expect(out).not.toBeInstanceOf(MergeConflictError);
+  });
+
+  it("erklärt dem User, was zu tun ist (Reparatur beim nächsten Start)", () => {
+    const out = classifyGitError(
+      gitErr("fatal: cannot exec '.githooks/pre-commit': No such file or directory"),
+    );
+    expect(out.message).toContain("beschädigt");
+    expect(out.message).toContain("neu starten");
+    expect(out.message).not.toContain("Frontmatter");
+  });
+
+  it("lässt eine ECHTE Frontmatter-Ablehnung unverändert PreCommitHookError", () => {
+    const out = classifyGitError(
+      gitErr(
+        [
+          "FAIL 20_notes/x.md",
+          "     missing required frontmatter field(s): id",
+          "",
+          "1 file(s) violate the vault SPEC. Commit aborted.",
+        ].join("\n"),
+      ),
+      "20_notes/x.md",
+    );
+    expect(out).toBeInstanceOf(PreCommitHookError);
+    expect(out).not.toBeInstanceOf(HookExecutionError);
+  });
+
+  // Abgrenzung: das Verb allein reicht nicht — nach „cannot run" muss auch der
+  // Hook-Pfad stehen. Sonst würde eine Hook-AUSGABE, die zufällig „cannot run"
+  // enthält, als Infrastruktur-Defekt gemeldet und die echte Ursache
+  // (kaputte Frontmatter) verschwinden.
+  it("stuft eine Hook-Ausgabe mit dem Wort „cannot run\" weiter als PreCommitHookError ein", () => {
+    const out = classifyGitError(
+      gitErr("pre-commit: cannot run the checks on this file — frontmatter missing"),
+    );
+    expect(out).toBeInstanceOf(PreCommitHookError);
+    expect(out).not.toBeInstanceOf(HookExecutionError);
   });
 });

@@ -303,6 +303,7 @@ export { FrontmatterValidationError } from "./errors/FrontmatterValidationError.
 // blanket "Merge-Konflikt". Route maps each to a distinct HTTP status.
 export {
   GitSyncError,
+  HookExecutionError,
   PreCommitHookError,
   MergeConflictError,
   GitBackendError,
@@ -781,6 +782,19 @@ export {
   VAULT_SCHEMA_DIR,
   type ScaffoldFile,
 } from "./vault/scaffold.js";
+
+// Hook-Gesundheit: CRLF-Normalisierung beim Installieren + Self-Heal beim
+// Serverstart. Ein CRLF-Hook macht den Vault komplett schreibunfähig
+// (`fatal: cannot exec '.githooks/pre-commit'`), siehe `vault/hookHealth.ts`.
+export {
+  HOOK_FILE_MODE,
+  HOOK_HEAL_COMMIT_MESSAGE,
+  healVaultHook,
+  installExecutableScript,
+  normalizeShellScript,
+  type HealVaultHookOptions,
+  type HealVaultHookResult,
+} from "./vault/hookHealth.js";
 
 // ─── Version identity + update check (Story 7.12) ───────────────────────
 // Running version comes from the `package.json` shipped inside the image;

@@ -1,6 +1,6 @@
 {
   "name": "lokyy-brain",
-  "version": "1.12.4",
+  "version": "1.12.5",
   "private": true,
   "description": "Eigenständiges, Obsidian-nahes Knowledge-Tool mit Forgejo als Wahrheit.",
   "scripts": {

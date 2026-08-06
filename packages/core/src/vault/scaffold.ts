@@ -40,12 +40,12 @@ import {
   type VaultProfile,
 } from "../frontmatter/profiles.js";
 import { getVaultConventions } from "../conventions/index.js";
+import { normalizeShellScript, VAULT_HOOK_PATH } from "./hookHealth.js";
 
-/** Directory git is pointed at via `core.hooksPath` in a scaffolded vault. */
-export const VAULT_HOOKS_DIR = ".githooks";
-
-/** Vault-relative install path of the SPEC-enforcing pre-commit hook. */
-export const VAULT_HOOK_PATH = `${VAULT_HOOKS_DIR}/pre-commit`;
+// Der Hook-Pfad (und alles, was seine Datei-Eigenschaften angeht) gehört
+// `hookHealth.ts`; hier nur re-exportiert, damit jeder bestehende Import
+// `from "./scaffold.js"` unverändert weiterläuft.
+export { VAULT_HOOKS_DIR, VAULT_HOOK_PATH } from "./hookHealth.js";
 
 /** Where the machine-readable schemas land inside the vault. */
 export const VAULT_SCHEMA_DIR = "00_meta/schemas";
@@ -142,9 +142,15 @@ export async function buildVaultScaffold(
 
   // 1) The SPEC-enforcing hook. Executable, and only effective once the writer
   // points `core.hooksPath` at VAULT_HOOKS_DIR.
+  //
+  // LF-normalisiert: das Asset ist ein endungsloses POSIX-Skript, das ein
+  // Windows-Checkout (`core.autocrlf=true`) mit CRLF auf die Platte legt — und
+  // ein CRLF-Shebang macht den Hook im Linux-Container unausführbar, womit der
+  // Vault komplett schreibunfähig wird. `.gitattributes` verhindert die
+  // CRLF-Quelle, das hier verhindert, dass sie je in einen Vault gelangt.
   files.push({
     path: VAULT_HOOK_PATH,
-    content: await readFile(assetPath("./hooks/pre-commit"), "utf8"),
+    content: normalizeShellScript(await readFile(assetPath("./hooks/pre-commit"), "utf8")),
     executable: true,
   });
 
