@@ -29,9 +29,35 @@ let current: SystemVersion | null = null;
 const listeners = new Set<() => void>();
 /** The one in-flight (or completed) initial load — never fetched per consumer. */
 let initialLoad: Promise<void> | null = null;
+/** Guards against stacking background reloads when events arrive in bursts. */
+let reloading = false;
 
 function emit(): void {
   for (const listener of listeners) listener();
+}
+
+/**
+ * The store holds the most recent ANSWER, not the most recent response.
+ *
+ * The initial `GET` and a manual check race: a slow GET that was computed
+ * before the user pressed „Jetzt prüfen" can land after it and would otherwise
+ * overwrite the fresh answer with the stale one — the update disappears again
+ * and only comes back on the next page load. `checkedAt` says which answer is
+ * older; when it cannot say (missing or unparseable on either side), the newer
+ * response wins, because refusing to publish is the worse failure.
+ */
+function isStale(next: SystemVersion): boolean {
+  if (!current) return false;
+  const mine = Date.parse(current.checkedAt ?? "");
+  const theirs = Date.parse(next.checkedAt ?? "");
+  if (Number.isNaN(mine) || Number.isNaN(theirs)) return false;
+  return theirs < mine;
+}
+
+function publish(payload: SystemVersion): void {
+  if (isStale(payload)) return;
+  current = payload;
+  emit();
 }
 
 function subscribe(listener: () => void): () => void {
@@ -59,11 +85,32 @@ function loadOnce(): Promise<void> {
   if (initialLoad) return initialLoad;
   initialLoad = (async () => {
     const payload = await api.getSystemVersion();
-    current = payload;
-    emit();
+    publish(payload);
     await reconcileBundleVersion(bundleVersion(), payload.running);
   })();
   return initialLoad;
+}
+
+/**
+ * Re-read the server's answer and publish it — the cheap `GET`, not the forced
+ * check, so it costs nothing and is never throttled.
+ *
+ * Runs whenever the app regains attention (tab visible again, window focused).
+ * Without it the version state is only ever as fresh as the moment the page was
+ * loaded: an installation that gets a new release while the tab sits open would
+ * announce it only after a reload, which is exactly the complaint behind
+ * Issue #28.
+ */
+export async function reloadSystemVersion(): Promise<void> {
+  if (reloading) return;
+  reloading = true;
+  try {
+    const payload = await api.getSystemVersion();
+    publish(payload);
+    await reconcileBundleVersion(bundleVersion(), payload.running);
+  } finally {
+    reloading = false;
+  }
 }
 
 /**
@@ -76,6 +123,8 @@ function loadOnce(): Promise<void> {
 export async function refreshSystemVersion(): Promise<SystemVersionCheck | null> {
   const payload = await api.checkSystemVersionNow();
   if (payload) {
+    // Deliberately not through `publish`: the user asked for this answer, so it
+    // wins over whatever the store holds, timestamps notwithstanding.
     current = payload;
     emit();
   }
@@ -93,6 +142,24 @@ export function useSystemVersion(): { version: SystemVersion | null } {
     void loadOnce();
   }, []);
 
+  // Catch up whenever the app comes back into view. A PWA tab stays open for
+  // days; `pageshow` also covers the back/forward cache, where the whole JS
+  // heap — this store included — is restored exactly as it was left.
+  useEffect(() => {
+    function catchUp(): void {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void reloadSystemVersion();
+    }
+    document.addEventListener("visibilitychange", catchUp);
+    window.addEventListener("focus", catchUp);
+    window.addEventListener("pageshow", catchUp);
+    return () => {
+      document.removeEventListener("visibilitychange", catchUp);
+      window.removeEventListener("focus", catchUp);
+      window.removeEventListener("pageshow", catchUp);
+    };
+  }, []);
+
   return { version };
 }
 
@@ -100,5 +167,6 @@ export function useSystemVersion(): { version: SystemVersion | null } {
 export function resetSystemVersionStoreForTests(): void {
   current = null;
   initialLoad = null;
+  reloading = false;
   listeners.clear();
 }

@@ -44,6 +44,27 @@ export function isDismissed(
   }
 }
 
+/**
+ * Forget the dismissal — the banner for this version may show again.
+ *
+ * Called when the user runs an explicit „Jetzt prüfen" and the answer is "yes,
+ * there is an update": pressing that button is intent, and honouring a
+ * dismissal from an hour ago would swallow the very answer they asked for. Only
+ * the matching version is lifted, so this can never resurrect an unrelated one.
+ */
+export function undismiss(
+  version: unknown,
+  storage: DismissStorage | null = defaultStorage(),
+): void {
+  const k = key(version);
+  if (k === null || !storage) return;
+  try {
+    if (storage.getItem(DISMISS_KEY) === k) storage.removeItem(DISMISS_KEY);
+  } catch {
+    /* storage blocked — nothing was stored either */
+  }
+}
+
 /** Remember that this version's banner was closed. Storage failure = no-op. */
 export function dismiss(
   version: unknown,
