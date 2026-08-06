@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg">
   <img alt="Status" src="https://img.shields.io/badge/status-beta-orange.svg">
-  <img alt="MCP" src="https://img.shields.io/badge/MCP-29%20tools-6f42c1.svg">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-30%20tools-6f42c1.svg">
   <img alt="Stack" src="https://img.shields.io/badge/stack-Hono%20%C2%B7%20Vite%20%C2%B7%20Postgres%20%C2%B7%20Ollama-333.svg">
 </p>
 
@@ -87,7 +87,7 @@ anbindest, über dieselbe Wahrheit.
 | | Lokyy Brain | Obsidian & Co. | Reiner Vector-Store / "KI-Memory" |
 |---|---|---|---|
 | **Speicherformat** | Klartext-Markdown + Frontmatter, git-versioniert | Klartext-Markdown, kein Server | Proprietäres DB-Format |
-| **KI-Zugriff** | Nativ über MCP, 29 Tools, modell-agnostisch | Nur über Community-Plugins | Meist an einen Anbieter gebunden |
+| **KI-Zugriff** | Nativ über MCP, 30 Tools, modell-agnostisch | Nur über Community-Plugins | Meist an einen Anbieter gebunden |
 | **Wahrheit** | Git (Forgejo lokal oder remote) — volle Historie, Diffs, Rollback | Lokale Datei, kein eingebautes Sync | Kein Diff, keine Historie |
 | **Selbst hostbar** | Ja, komplett — ein `docker compose up` | Teilweise (Sync-Server kostenpflichtig) | Selten |
 | **Multi-Tenant** | Ja — isolierte Kundenvaults, gescopte Tokens | Nein | Variiert |
@@ -99,7 +99,7 @@ anbindest, über dieselbe Wahrheit.
 - **Wissensgraph** aus Wikilinks, automatisch abgeleitet
 - **Zwei-Stufen-Suche**: Volltext (Tier 1) + semantische Embeddings (Tier 2,
   `nomic-embed-text` via Ollama + pgvector), gemerged
-- **MCP-Server** mit 29 Tools — Lesen, Suchen, Schreiben, Skills, Health,
+- **MCP-Server** mit 30 Tools — Lesen, Suchen, Schreiben, Skills, Health,
   Import — für jeden MCP-fähigen Client
 - **Skills-System**: wiederverwendbare Prompt-Workflows als Notizen, über MCP
   auflist- und ausführbar
@@ -365,6 +365,8 @@ Fünf Schritte, geführt:
 Danach landest du im Dashboard: Notiz-Baum links, Editor in der Mitte, Graph
 und Suche über die Kommandopalette (`⌘/Ctrl K`).
 
+**Was als Nächstes kommt:** siehe [ROADMAP.md](ROADMAP.md).
+
 ## Architektur
 
 ```
@@ -383,7 +385,7 @@ und Suche über die Kommandopalette (`⌘/Ctrl K`).
                                         │
                                  ┌──────┴───────┐
                                  │  MCP-Server  │  ← Claude Code, Claude Desktop,
-                                 │  (29 Tools)  │    eigene Agenten, jeder MCP-Client
+                                 │  (30 Tools)  │    eigene Agenten, jeder MCP-Client
                                  └──────────────┘
 ```
 
@@ -394,7 +396,10 @@ Vier Bausteine, klare Verantwortung:
 2. **Server (Hono)** — hält die einzige Git-Working-Copy, stellt Notizen,
    Graph und Pipes als JSON-API bereit. Git ist dabei immer ein first-class
    State: mit Remote committet & pusht jeder Save, ohne Remote committet er
-   trotzdem lokal — nie ein Datenverlust-Risiko.
+   trotzdem lokal — nie ein Datenverlust-Risiko. Ist das Remote vorübergehend
+   nicht erreichbar, antwortet der Save mit `synced: false` („lokal
+   gespeichert – Sync ausstehend"); der nächste Save oder Sync holt den Push
+   nach.
 3. **Postgres (ParadeDB) + Ollama** — semantische Suche, lokal, ohne
    Cloud-API-Abhängigkeit.
 4. **MCP-Server** — macht denselben Vault für jeden KI-Agenten verfügbar,
@@ -416,7 +421,7 @@ Drei Stufen hinter einem gemeinsamen Interface:
 
 ## MCP-Integration — KI-Agenten anbinden
 
-Der MCP-Server exponiert **29 Tools** — Lesen, Suchen, Schreiben, Skills,
+Der MCP-Server exponiert **30 Tools** — Lesen, Suchen, Schreiben, Skills,
 Health, Import — für jeden MCP-fähigen Client: Claude Code, Claude Desktop,
 den claude.ai Custom Connector, oder einen eigenen Agenten.
 
@@ -475,7 +480,7 @@ Details: **[→ docs/DEPLOY.md](docs/DEPLOY.md)**
 - Notes-, Graph- und Pipes-Service, voller Datei-Baum mit Struktur-Bearbeitung
 - CM6-Editor mit Live-Preview + Wikilink-Parsing
 - Setup-Wizard inkl. lokalem Vault ohne externe Abhängigkeit
-- MCP-Server mit 29 Tools, Multi-Tenant-Token-Scoping
+- MCP-Server mit 30 Tools, Multi-Tenant-Token-Scoping
 - Semantische Suche (Tier 1 + Tier 2)
 
 Offen: Tier-3-Knowledge-Graph (siehe oben), Graph-Frontend
@@ -530,3 +535,7 @@ Details in [NOTICE](NOTICE), Beiträge in [CONTRIBUTING.md](CONTRIBUTING.md).
 <p align="center">
   <sub>Lokyy Brain — entwickelt von <strong>Oliver Hees · Der Aiianer</strong> · <a href="https://aiianer.de">aiianer.de</a></sub>
 </p>
+
+## Roadmap
+
+Woran als Nächstes gebaut wird, steht in der [ROADMAP.md](ROADMAP.md).
