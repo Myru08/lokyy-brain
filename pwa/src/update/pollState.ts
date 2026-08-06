@@ -14,7 +14,7 @@
  */
 
 import { ApiError, UpdateApiError } from "../api.js";
-import type { UpdateJob } from "../api.js";
+import type { SystemVersion, UpdateJob } from "../api.js";
 
 /** What one poll produced. */
 export type PollOutcome =
@@ -48,6 +48,27 @@ export const INITIAL_POLL_STATE: PollState = {
  * that comes back has to run database migrations first (Story 1.8).
  */
 export const MAX_RESTART_POLLS = 150;
+
+/**
+ * The one thing we say when the job never reached a terminal state AND the
+ * version never changed. It is deliberately an admission, not a verdict: at
+ * that point the UI genuinely does not know, and both alternatives — "erfolg-
+ * reich" and "fehlgeschlagen" — would be a guess with real consequences.
+ * Used by both dead ends, an unreachable brain and a phase that never moved.
+ */
+export const UNCERTAIN_END_MESSAGE =
+  "Wir konnten nicht sicher feststellen, ob das Update durchgelaufen ist. " +
+  "Lade die Seite neu und sieh unter Einstellungen → System nach, welche Version läuft.";
+
+/** Shown while a phase overruns its budget. Calm on purpose — nothing failed. */
+export const STALL_NOTICE =
+  "Dieser Schritt dauert länger als üblich. Lokyy prüft im Hintergrund weiter, " +
+  "ob die neue Version schon läuft.";
+
+/** The rescue line landed: the server reports the new version as running. */
+export const VERSION_SUCCESS_MESSAGE =
+  "Die neue Version läuft bereits — das Update ist durch. Der Fortschritt oben " +
+  "ist unterwegs stehen geblieben; entscheidend ist, was tatsächlich läuft.";
 
 /**
  * Map a thrown error from `api.getUpdateJob` to an outcome.
@@ -125,9 +146,7 @@ export function nextPollState(
       ...prev,
       restarting: false,
       failures,
-      error:
-        "Lokyy Brain ist seit mehreren Minuten nicht erreichbar. " +
-        "Das Update läuft im Hintergrund weiter — lade die Seite später neu.",
+      error: "Lokyy Brain ist seit mehreren Minuten nicht erreichbar. " + UNCERTAIN_END_MESSAGE,
     };
   }
   return { ...prev, restarting: true, failures, error: null };
@@ -141,6 +160,107 @@ export function isFinished(job: UpdateJob | null): boolean {
 /** `true` when the installation now runs the new version. */
 export function isSuccess(job: UpdateJob | null): boolean {
   return job?.result === "success" || job?.result === "already-up-to-date";
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * Stall detection and the version rescue line.
+ *
+ * Everything above assumes the job report is trustworthy. Observed v1.12.3 →
+ * v1.12.4: it is not always. A poll can keep answering 200 with a phase that
+ * never advances (a lost updater log line, a job object the sidecar stopped
+ * writing to, a UI that stopped asking) while the update itself runs to
+ * completion. From inside the phase machine that is indistinguishable from
+ * "still working" — so the answer cannot come from the phases. It comes from
+ * the one fact nobody can fake: which version the server actually runs.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/**
+ * How long a phase may sit unchanged before we say so out loud.
+ *
+ * Not one number: `preflight` is a handful of git commands and has no business
+ * taking a minute, while `build` legitimately compiles for ten. A single
+ * threshold would either cry wolf during the build or stay silent for the whole
+ * five minutes in which the user is actually staring at a dead „Prüfen".
+ */
+export const PHASE_STALL_MS: Record<UpdateJob["phase"], number> = {
+  queued: 45_000,
+  preflight: 45_000,
+  pull: 60_000,
+  build: 600_000,
+  switch: 180_000,
+  verify: 180_000,
+  rollback: 300_000,
+  done: 60_000,
+};
+
+/** `true` once `phase` has been unchanged for longer than its own budget. */
+export function isPhaseStalled(phase: UpdateJob["phase"] | null, msInPhase: number): boolean {
+  if (phase === null) return false;
+  return msInPhase >= PHASE_STALL_MS[phase];
+}
+
+/**
+ * `true` once waiting has stopped being reasonable: the phase budget plus one
+ * full restart window (`MAX_RESTART_POLLS × pollMs`, the same five minutes we
+ * grant an unreachable brain) with neither a terminal job nor a version change.
+ * Spinning past this point is not patience, it is a lie about what we know.
+ */
+export function isPhaseGivenUp(
+  phase: UpdateJob["phase"] | null,
+  msInPhase: number,
+  restartWindowMs: number,
+): boolean {
+  if (phase === null) return false;
+  return msInPhase >= PHASE_STALL_MS[phase] + restartWindowMs;
+}
+
+/** What the version rescue line reads from `GET /api/system/version`. */
+export type VersionProbe = Pick<SystemVersion, "running" | "latest">;
+
+/** The two versions the probe is judged against, taken once at dialog open. */
+export interface VersionBaseline {
+  /** What ran before the update — a change away from this proves it landed. */
+  running: string | null;
+  /** What should run after it. `null` when the check could not say. */
+  target: string | null;
+}
+
+/** Tolerate `v1.12.4` vs `1.12.4` and stray whitespace; `null` for "unusable". */
+function normalizeVersion(value: string | null | undefined): string | null {
+  const trimmed = (value ?? "").trim().replace(/^v/i, "");
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function versionBaseline(probe: VersionProbe | null): VersionBaseline {
+  return { running: probe?.running ?? null, target: probe?.latest ?? null };
+}
+
+/**
+ * Does this probe prove the update landed?
+ *
+ * Two independent proofs, either is enough:
+ *
+ * 1. The server runs exactly the version we were updating TO. Only counted
+ *    when it was not already running it at the start — otherwise "up to date
+ *    before, up to date now" would certify a job that never did anything.
+ * 2. The running version simply CHANGED. This one needs no `latest` at all,
+ *    which matters because the update check is allowed to be unavailable
+ *    (`status: "unknown"`), and a restart into a different version is proof
+ *    on its own terms.
+ *
+ * Anything less stays `false`. A wrong "Fertig" here sends someone away from a
+ * half-finished update, which is worse than a dialog that admits uncertainty.
+ */
+export function versionConfirmsUpdate(
+  baseline: VersionBaseline | null,
+  probe: VersionProbe | null,
+): boolean {
+  const now = normalizeVersion(probe?.running);
+  if (now === null || baseline === null) return false;
+  const before = normalizeVersion(baseline.running);
+  const target = normalizeVersion(baseline.target);
+  if (target !== null && before !== target && now === target) return true;
+  return before !== null && now !== before;
 }
 
 /** German phase labels — the user sees these, not `switch`/`verify`. */

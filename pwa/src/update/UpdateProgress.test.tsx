@@ -1,7 +1,8 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type UpdateJob } from "../api.js";
+import { ApiError, api, type UpdateJob } from "../api.js";
 import { UpdateProgress } from "./UpdateProgress.js";
+import { PHASE_STALL_MS, type VersionProbe } from "./pollState.js";
 
 /**
  * Story 7.12 Task 5, AC#6 — the single most damaging way this feature can be
@@ -23,12 +24,14 @@ function job(over: Partial<UpdateJob> = {}): UpdateJob {
 }
 
 const noRenew = async (): Promise<void> => {};
+/** A version endpoint that knows nothing — the rescue line stays silent. */
+const noProbe = async (): Promise<VersionProbe> => ({ running: null, latest: null });
 
 describe("UpdateProgress", () => {
   it("reads a dropped connection as 'restarting', not as a failure (AC#6)", async () => {
     const poll = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
 
     expect(await screen.findByText(/startet gerade neu/)).toBeInTheDocument();
@@ -41,7 +44,7 @@ describe("UpdateProgress", () => {
   it("treats a 502 from the proxy in front of a booting brain the same way", async () => {
     const poll = vi.fn().mockRejectedValue(new ApiError(502, "Bad Gateway"));
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
     expect(await screen.findByText(/startet gerade neu/)).toBeInTheDocument();
   });
@@ -53,7 +56,7 @@ describe("UpdateProgress", () => {
       .mockResolvedValue(job({ phase: "verify" }));
 
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
     await screen.findByText(/startet gerade neu/);
     await waitFor(() =>
@@ -68,7 +71,7 @@ describe("UpdateProgress", () => {
       .mockResolvedValue(job({ phase: "done", running: false, result: "success" }));
 
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={renew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={renew} probeVersion={noProbe} />,
     );
 
     await waitFor(() => expect(renew).toHaveBeenCalledTimes(1));
@@ -83,7 +86,7 @@ describe("UpdateProgress", () => {
       .fn()
       .mockResolvedValue(job({ phase: "build", running: false, result: "build-failed" }));
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
     expect(await screen.findByText(/nicht angefasst/)).toBeInTheDocument();
   });
@@ -93,7 +96,7 @@ describe("UpdateProgress", () => {
       .fn()
       .mockResolvedValue(job({ phase: "done", running: false, result: "rolled-back" }));
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
     await screen.findByText(/zurückgesetzt/);
     const calls = poll.mock.calls.length;
@@ -104,7 +107,7 @@ describe("UpdateProgress", () => {
   it("surfaces a lost session immediately instead of retrying forever", async () => {
     const poll = vi.fn().mockRejectedValue(new ApiError(403, "forbidden"));
     render(
-      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" initialJob={job()} onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
     expect(await screen.findByText(/Anmeldung gilt nicht mehr/)).toBeInTheDocument();
   });
@@ -114,7 +117,7 @@ describe("UpdateProgress", () => {
     // for the interval — otherwise the panel opens empty.
     const poll = vi.fn().mockResolvedValue(job({ phase: "build" }));
     render(
-      <UpdateProgress jobId="running-job" onClose={() => {}} poll={poll} pollMs={5000} renew={noRenew} />,
+      <UpdateProgress jobId="running-job" onClose={() => {}} poll={poll} pollMs={5000} renew={noRenew} probeVersion={noProbe} />,
     );
     await waitFor(() => expect(poll).toHaveBeenCalledWith("running-job"));
     expect(await screen.findByText("Bauen")).toBeInTheDocument();
@@ -142,6 +145,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
         poll={poll}
         pollMs={5000}
         renew={noRenew}
+        probeVersion={noProbe}
       />,
     );
 
@@ -157,7 +161,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
       .fn()
       .mockResolvedValue(job({ phase: "done", running: false, result: "success" }));
     render(
-      <UpdateProgress jobId="job-1" onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} />,
+      <UpdateProgress jobId="job-1" onClose={() => {}} poll={poll} pollMs={5} renew={noRenew} probeVersion={noProbe} />,
     );
 
     await screen.findByRole("heading", { name: /Update abgeschlossen/ });
@@ -176,6 +180,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
         poll={poll}
         pollMs={5000}
         renew={noRenew}
+        probeVersion={noProbe}
       />,
     );
 
@@ -192,6 +197,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
         poll={vi.fn().mockResolvedValue(job({ phase: "verify" }))}
         pollMs={5}
         renew={noRenew}
+        probeVersion={noProbe}
       />,
     );
     await waitFor(() =>
@@ -214,6 +220,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
         poll={poll}
         pollMs={60_000}
         renew={noRenew}
+        probeVersion={noProbe}
       />,
     );
 
@@ -243,6 +250,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
         poll={vi.fn().mockResolvedValue(job({ phase: "build" }))}
         pollMs={60_000}
         renew={noRenew}
+        probeVersion={noProbe}
       />,
     );
 
@@ -264,6 +272,7 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
         poll={vi.fn().mockResolvedValue(job({ phase: "build", startedAt: "kaputt" }))}
         pollMs={60_000}
         renew={noRenew}
+        probeVersion={noProbe}
       />,
     );
 
@@ -272,5 +281,264 @@ describe("UpdateProgress — Lebenszeichen (Issue #32)", () => {
       await vi.advanceTimersByTimeAsync(2000);
     });
     expect(screen.getByRole("timer")).toHaveTextContent("00:02");
+  });
+});
+
+/**
+ * Issue #36 — observed v1.12.3 → v1.12.4: the dialog sat on „Prüfen" from the
+ * first frame to the end while the update completed perfectly in the
+ * background. Everything below is about never showing a dead process again.
+ */
+describe("UpdateProgress — Stillstand (Issue #36)", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The regression test for the actual bug, and the reason it does NOT pass a
+   * `poll` prop: the fault lived in the DEFAULT parameter. A test that hands in
+   * its own stable function reproduces nothing — which is exactly why every
+   * existing test here was green while production froze.
+   */
+  it("keeps polling although the clock re-renders it every second (root cause)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-03T10:00:00.000Z"));
+    const getJob = vi
+      .spyOn(api, "getUpdateJob")
+      .mockResolvedValue(job({ phase: "preflight" }));
+    vi.spyOn(api, "getSystemVersion").mockResolvedValue({
+      running: "1.12.3",
+      buildSha: null,
+      latest: "1.12.4",
+      updateAvailable: true,
+      highlights: [],
+      checkedAt: null,
+      status: "ok",
+    });
+
+    // No `poll`, no `pollMs`: the production wiring, verbatim (UpdateBanner.tsx).
+    render(<UpdateProgress jobId="job-1" initialJob={job({ phase: "preflight" })} onClose={() => {}} />);
+
+    // ONE SECOND PER STEP, and that is the whole point. A single nine-second
+    // advance would pass even with the bug, because `act` holds every render
+    // back until its scope closes and the poll timers then run undisturbed —
+    // the browser has no such mercy. Stepping makes the clock's render land
+    // BETWEEN the poll timers, which is exactly the interleaving that starved
+    // the loop in production: with the bug this ends at 0 calls.
+    for (let second = 0; second < 9; second += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+    }
+    expect(getJob.mock.calls.length).toBeGreaterThanOrEqual(3);
+  });
+
+  it("shows a calm notice once a phase overruns its budget (AC#2)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(new Date("2026-08-03T10:00:00.000Z"));
+    const poll = vi.fn().mockResolvedValue(job({ phase: "preflight" }));
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "preflight" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={1000}
+        renew={noRenew}
+        probeVersion={noProbe}
+      />,
+    );
+
+    // Well inside the budget: nothing is said, because nothing is wrong yet.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(screen.queryByText(/dauert länger als üblich/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PHASE_STALL_MS.preflight);
+    });
+    expect(screen.getByText(/dauert länger als üblich/)).toBeInTheDocument();
+    // A notice, not a failure — and the dialog keeps working in the background.
+    expect(screen.queryByText(/fehlgeschlagen/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Hintergrund/ })).toBeInTheDocument();
+  });
+
+  it("leaves the long build alone for as long as a build takes (AC#2)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const poll = vi.fn().mockResolvedValue(job({ phase: "build" }));
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "build" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={5000}
+        renew={noRenew}
+        probeVersion={noProbe}
+      />,
+    );
+
+    // Three minutes into „Bauen" is normal and must stay silent — the same
+    // three minutes in „Prüfen" would already have raised the notice.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180_000);
+    });
+    expect(screen.queryByText(/dauert länger als üblich/)).not.toBeInTheDocument();
+  });
+
+  it("declares success when the server reports the new version (AC#3)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    // The job never moves and never finishes — the phases are useless here.
+    const poll = vi.fn().mockResolvedValue(job({ phase: "preflight" }));
+    const probeVersion = vi
+      .fn<() => Promise<VersionProbe>>()
+      .mockResolvedValueOnce({ running: "1.12.3", latest: "1.12.4" }) // baseline
+      .mockResolvedValue({ running: "1.12.4", latest: "1.12.4" }); // it landed
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "preflight" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={1000}
+        renew={noRenew}
+        probeVersion={probeVersion}
+        versionProbeMs={10_000}
+      />,
+    );
+
+    // Two advances on purpose: `act` commits the render that starts the rescue
+    // line only when its scope closes, so the probe's own timer belongs to the
+    // next one. A browser has no such boundary — it fires straight away.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PHASE_STALL_MS.preflight + 2000);
+    });
+    expect(screen.getByText(/dauert länger als üblich/)).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    expect(screen.getByRole("heading", { name: /Update abgeschlossen/ })).toBeInTheDocument();
+    expect(screen.getByText(/neue Version läuft bereits/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Jetzt neu laden/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Schließen/ })).toBeInTheDocument();
+
+    // Verdict reached — nothing keeps asking.
+    const pollCalls = poll.mock.calls.length;
+    const probeCalls = probeVersion.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(poll.mock.calls.length).toBeLessThanOrEqual(pollCalls + 1);
+    expect(probeVersion.mock.calls.length).toBe(probeCalls);
+  });
+
+  it("offers the reload rather than performing it (AC#3)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const renew = vi.fn(async () => {});
+    const probeVersion = vi
+      .fn<() => Promise<VersionProbe>>()
+      .mockResolvedValueOnce({ running: "1.12.3", latest: "1.12.4" })
+      .mockResolvedValue({ running: "1.12.4", latest: "1.12.4" });
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "preflight" })}
+        onClose={() => {}}
+        poll={vi.fn().mockResolvedValue(job({ phase: "preflight" }))}
+        pollMs={1000}
+        renew={renew}
+        probeVersion={probeVersion}
+        versionProbeMs={10_000}
+      />,
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PHASE_STALL_MS.preflight + 2000);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    // The job never confirmed, so the page is not yanked out from under anyone.
+    expect(renew).not.toHaveBeenCalled();
+
+    await act(async () => {
+      screen.getByRole("button", { name: /Jetzt neu laden/ }).click();
+    });
+    expect(renew).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends honestly when neither the job nor the version ever answers (AC#4)", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const poll = vi.fn().mockResolvedValue(job({ phase: "preflight" }));
+    // The server keeps answering, and keeps saying the old version.
+    const probeVersion = vi
+      .fn<() => Promise<VersionProbe>>()
+      .mockResolvedValue({ running: "1.12.3", latest: "1.12.4" });
+
+    const pollMs = 500;
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "preflight" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={pollMs}
+        renew={noRenew}
+        probeVersion={probeVersion}
+        versionProbeMs={10_000}
+      />,
+    );
+
+    // Stall threshold plus one full restart window (150 × 500 ms).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PHASE_STALL_MS.preflight + 150 * pollMs + 2000);
+    });
+
+    expect(screen.getByText(/nicht sicher feststellen/)).toBeInTheDocument();
+    expect(screen.getByText(/Einstellungen → System/)).toBeInTheDocument();
+    // No spinner-forever, no invented verdict.
+    expect(screen.getByRole("button", { name: /Schließen/ })).toBeInTheDocument();
+    expect(screen.queryByText(/abgeschlossen/i)).not.toBeInTheDocument();
+
+    const calls = poll.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20_000);
+    });
+    expect(poll.mock.calls.length).toBeLessThanOrEqual(calls + 1);
+  });
+
+  it("keeps a real phase change clear of all of it", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const poll = vi
+      .fn()
+      .mockResolvedValueOnce(job({ phase: "preflight" }))
+      .mockResolvedValue(job({ phase: "build" }));
+
+    render(
+      <UpdateProgress
+        jobId="job-1"
+        initialJob={job({ phase: "preflight" })}
+        onClose={() => {}}
+        poll={poll}
+        pollMs={1000}
+        renew={noRenew}
+        probeVersion={noProbe}
+      />,
+    );
+
+    // Moves into „Bauen" early, so the phase clock restarts against the build's
+    // own budget — a healthy update never sees a word of this.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PHASE_STALL_MS.preflight + 30_000);
+    });
+    expect(screen.queryByText(/dauert länger als üblich/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nicht sicher feststellen/)).not.toBeInTheDocument();
   });
 });
