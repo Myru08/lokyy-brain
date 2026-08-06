@@ -1,9 +1,10 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, writeFile, chmod, stat } from "node:fs/promises";
+import { mkdir, writeFile, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   buildVaultScaffold,
+  installExecutableScript,
   resolveVaultProfile,
   VAULT_HOOKS_DIR,
   type VaultProfile,
@@ -167,9 +168,16 @@ export async function scaffoldVault(
   for (const file of await buildVaultScaffold(profile)) {
     if (!toCreate.has(file.path)) continue;
     const abs = join(vaultDir, file.path);
+    if (file.executable) {
+      // Der einzige Installationspfad für Shell-Skripte im Vault: LF-normalisiert
+      // (ein CRLF-Shebang macht den Hook im Container unausführbar und damit den
+      // ganzen Vault schreibunfähig) und ausführbar (git überspringt einen Hook
+      // ohne x-Bit stillschweigend).
+      await installExecutableScript(abs, file.content);
+      continue;
+    }
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, file.content, "utf8");
-    if (file.executable) await chmod(abs, 0o755);
   }
 
   // Git führt Hooks ausschließlich aus `core.hooksPath` (bzw. `.git/hooks`) aus
