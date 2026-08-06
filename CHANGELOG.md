@@ -16,6 +16,14 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.12.2 — 2026-08-06
+
+### Behoben
+- **Nacht-Protokoll repariert:** Die Einträge wurden zusammengequetscht dargestellt und zeigten aufgeklappt kaum Inhalt. Jetzt: nach Tagen gruppiert, volle Karten, und aufgeklappt eine verständliche Liste der Arbeitsschritte — inklusive ehrlicher Fehleranzeige, wenn ein Schritt nicht geklappt hat.
+- **Ein interner Fehler im nächtlichen Aufräum-Schritt** (Datum statt Text übergeben) ließ diesen Schritt bei jedem Lauf scheitern — behoben; ab jetzt liefert der Nachtlauf wieder vollständige Ergebnisse.
+
+---
+
 ## v1.12.1 — 2026-08-06
 
 ### Neu
