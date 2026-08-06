@@ -204,7 +204,14 @@ export async function coRetrievalPairs(
   minCount = 2,
 ): Promise<Array<{ noteIdA: string; noteIdB: string; count: number }>> {
   const db = database();
-  const since = daysAgo(sinceDays);
+  // ISO string, NOT a Date: raw `db.execute(sql`…`)` goes out through
+  // `postgres.unsafe(query, params)`, which writes bind parameters without
+  // the Date→timestamp serialization that typed columns get from Drizzle's
+  // `mapToDriverValue()`. A Date here reaches `Buffer.byteLength()` raw and
+  // throws `The "string" argument must be of type string or an instance of
+  // Buffer or ArrayBuffer. Received an instance of Date` — which killed the
+  // whole synaptic-pruning pass on every run. Postgres casts the string.
+  const since = daysAgo(sinceDays).toISOString();
 
   // Raw SQL — the canonical-order self-join is awkward to express in
   // Drizzle's relational builder. We still rely on the index on

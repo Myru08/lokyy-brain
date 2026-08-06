@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { Profiler } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 const fetchSleepAgentRuns = vi.fn();
@@ -7,6 +8,7 @@ vi.mock("./api.sleepAgent.js", () => ({
 }));
 
 import { SleepAgentProtocol } from "./SleepAgentProtocol.js";
+import realRuns from "./sleepAgentRuns.fixture.json";
 import type { MenuItem } from "./sidebar/views/registry.js";
 
 /**
@@ -81,6 +83,152 @@ describe("SleepAgentProtocol", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/karpathy-lint/)).not.toBeInTheDocument();
   });
+
+  it("lässt Karten nicht zusammenquetschen (kein Clipping)", async () => {
+    // Der Bug: die Liste ist eine Flex-Spalte, die Karte hat
+    // `overflow: hidden` — damit fällt ihre automatische Mindesthöhe
+    // (`min-height: auto`) weg und der Flex-Algorithmus staucht jede Karte
+    // auf ~12px zusammen. Sichtbar bleibt eine Pille, der Text steckt
+    // vollständig im DOM. Gegenmittel ist `flex-shrink: 0`.
+    fetchSleepAgentRuns.mockResolvedValue(
+      Array.from({ length: 6 }, (_, i) => ({
+        id: `01JRUN000000000000000${String(i).padStart(4, "0")}`,
+        phase: "nrem",
+        trigger: "idle",
+        status: "completed",
+        startedAt: `2026-08-05T0${i + 1}:00:00.000Z`,
+        finishedAt: `2026-08-05T0${i + 1}:00:20.000Z`,
+        passesCompleted: ["importance-recompute"],
+        passStats: { "importance-recompute": { processed: 2, errors: 0 } },
+        notesProcessed: 2,
+      })),
+    );
+    renderView();
+
+    const cards = await screen.findAllByTestId("sleep-run-card");
+    expect(cards).toHaveLength(6);
+    for (const card of cards) {
+      expect(card.style.flexShrink).toBe("0");
+      expect(card.style.height).toBe("");
+      expect(card.style.maxHeight).toBe("");
+    }
+  });
+
+  it("zeigt einen abgebrochenen Arbeitsschritt als Fehler statt ihn zu verschlucken", async () => {
+    fetchSleepAgentRuns.mockResolvedValue([
+      {
+        id: "01JRUN0000000000000000003",
+        phase: "nrem",
+        trigger: "idle",
+        status: "completed",
+        startedAt: "2026-08-05T01:00:00.000Z",
+        finishedAt: "2026-08-05T01:00:10.000Z",
+        passesCompleted: ["importance-recompute", "synaptic-pruning"],
+        passStats: {
+          "importance-recompute": { processed: 10, errors: 0 },
+          "synaptic-pruning": {
+            processed: 0,
+            errors: 1,
+            notes: "pass-error: Die Verbindung zur Datenbank brach ab",
+          },
+        },
+        notesProcessed: 10,
+      },
+    ]);
+    renderView();
+
+    expect(
+      await screen.findByText("Veraltete Verknüpfungen aufgeräumt"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Die Verbindung zur Datenbank brach ab/),
+    ).toBeInTheDocument();
+    // Fehleranzahl und bearbeitete Anzahl gehören beide in die Zeile.
+    // Exakte Treffer, damit nicht der Fließtext weiter unten mitzählt.
+    expect(screen.getByText("0 Notizen · 1 Fehler")).toBeInTheDocument();
+    expect(screen.getByText("10 Notizen")).toBeInTheDocument();
+    // Das technische Präfix bleibt draußen.
+    expect(screen.queryByText(/pass-error/)).not.toBeInTheDocument();
+  });
+
+  it("bündelt Läufe nach Tag und blendet ältere erst auf Klick ein", async () => {
+    // 12 Läufe: 11 heute, 1 gestern → initial nur 10 Karten.
+    const runs = [
+      ...Array.from({ length: 11 }, (_, i) => ({
+        id: `01JRUNHEUTE0000000000${String(i).padStart(4, "0")}`,
+        startedAt: new Date(Date.now() - i * 1_800_000).toISOString(),
+      })),
+      {
+        id: "01JRUNGESTERN00000000000",
+        startedAt: new Date(Date.now() - 26 * 3_600_000).toISOString(),
+      },
+    ].map((r) => ({
+      ...r,
+      phase: "nrem",
+      trigger: "idle",
+      status: "completed",
+      finishedAt: r.startedAt,
+      passesCompleted: ["importance-recompute"],
+      passStats: { "importance-recompute": { processed: 1, errors: 0 } },
+      notesProcessed: 1,
+    }));
+    fetchSleepAgentRuns.mockResolvedValue(runs);
+    renderView();
+
+    expect(await screen.findByText("Heute")).toBeInTheDocument();
+    expect(screen.getAllByTestId("sleep-run-card")).toHaveLength(10);
+
+    const more = screen.getByRole("button", { name: /Ältere anzeigen/ });
+    fireEvent.click(more);
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("sleep-run-card")).toHaveLength(12),
+    );
+    expect(screen.getByText("Gestern")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Ältere anzeigen/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("rendert das ECHTE 30-Run-Fixture ohne Render-Schleife", async () => {
+    // Regression: die Sichtprüfung fror den Chrome-Renderer ein, während
+    // jsdom-Tests mit synthetischen Daten grün blieben. Dieser Test nimmt
+    // deshalb die unveränderte Antwort von GET /api/sleep-agent/runs —
+    // 30 Läufe über drei Kalendertage, jeder mit einem `errors: 1`-Schritt.
+    //
+    // Zwei Fangnetze: der Commit-Zähler schlägt bei einer Effekt-Schleife an
+    // (die sonst nur die Zeit auffrisst), und das knappe Test-Timeout fängt
+    // eine synchrone Endlosschleife.
+    let commits = 0;
+    fetchSleepAgentRuns.mockResolvedValue(realRuns);
+    render(
+      <Profiler id="protokoll" onRender={() => void commits++}>
+        <SleepAgentProtocol item={ITEM} onOpenNote={vi.fn()} />
+      </Profiler>,
+    );
+
+    expect(await screen.findAllByTestId("sleep-run-card")).toHaveLength(10);
+
+    // Alle Stufen durchklicken, bis nichts mehr verborgen ist.
+    for (let i = 0; i < 5; i++) {
+      const more = screen.queryByRole("button", { name: /Ältere anzeigen/ });
+      if (!more) break;
+      fireEvent.click(more);
+    }
+
+    await waitFor(() =>
+      expect(screen.getAllByTestId("sleep-run-card")).toHaveLength(
+        realRuns.length,
+      ),
+    );
+    expect(
+      screen.queryByRole("button", { name: /Ältere anzeigen/ }),
+    ).not.toBeInTheDocument();
+
+    // Laden + vier Klickstufen sind eine Handvoll Commits. Dreistellig heißt
+    // Schleife, nicht Nutzerinteraktion.
+    expect(commits).toBeLessThan(30);
+  }, 10_000);
 
   it("öffnet eine berührte Notiz über den Callback", async () => {
     fetchSleepAgentRuns.mockResolvedValue([

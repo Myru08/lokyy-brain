@@ -279,17 +279,39 @@ function describeAction(passName: string): string {
   return PASS_LABELS[passName] ?? `Arbeitsschritt „${passName}“`;
 }
 
+/**
+ * Präfix, mit dem ein Arbeitsschritt seinen EIGENEN Abbruch meldet.
+ *
+ * Zwei Fehlerformen kommen vom Server, und beide müssen sichtbar werden:
+ *   1. Der Schritt wirft → `sleep-agent/index.ts` schreibt `{ error: "…" }`.
+ *   2. Der Schritt fängt selbst → `{ processed, errors, notes: "pass-error: …" }`.
+ * Form 2 sah lange aus wie ein erfolgreicher Schritt mit einem technischen
+ * Kommentar; der `synaptic-pruning`-Schritt war so über Wochen unbemerkt
+ * kaputt. Der Wortlaut stammt aus den `catch`-Blöcken der Passes.
+ */
+const SELF_REPORTED_ERROR_PREFIX = "pass-error:";
+
 function toAction(passName: string, rawStat: unknown): ProtocolAction {
   const stat = isRecord(rawStat) ? rawStat : {};
-  const error = typeof stat.error === "string" ? stat.error : null;
+  const thrown = typeof stat.error === "string" ? stat.error : null;
+  const notes = typeof stat.notes === "string" ? stat.notes : null;
+  const selfReported =
+    notes !== null && notes.trimStart().startsWith(SELF_REPORTED_ERROR_PREFIX)
+      ? notes.trimStart().slice(SELF_REPORTED_ERROR_PREFIX.length).trim()
+      : null;
+  const errorMessage = thrown ?? selfReported;
+
   return {
     passName,
     label: describeAction(passName),
     processed: asCount(stat.processed),
+    // Zähler bleibt auch bei Teil-Fehlern erhalten: ein Schritt darf
+    // durchlaufen und trotzdem einzelne Notizen verloren haben.
     errors: asCount(stat.errors),
-    detail: typeof stat.notes === "string" ? stat.notes : null,
-    failed: error !== null,
-    errorMessage: error,
+    // Der Fehlertext ist kein Kommentar — sonst stünde er doppelt.
+    detail: selfReported === null ? notes : null,
+    failed: errorMessage !== null,
+    errorMessage,
     touchedNotes: readTouchedNotes(stat),
   };
 }
@@ -400,4 +422,68 @@ export function toProtocolEntries(
     const tb = b.startedAt?.getTime() ?? 0;
     return tb - ta;
   });
+}
+
+/* ── Bündelung nach Kalendertag ─────────────────────────────────────── */
+
+/** Ein Kalendertag mit allen Läufen dieses Tages, neueste zuerst. */
+export interface ProtocolGroup {
+  /** Stabiler Schlüssel für React (`2026-08-06`, sonst `unbekannt`). */
+  key: string;
+  /** „Heute“ / „Gestern“ / „01.08.2026“ / „Zeitpunkt unbekannt“. */
+  label: string;
+  entries: ProtocolEntry[];
+}
+
+/** `2026-08-06` in LOKALER Zeit — der Nutzer denkt in seinem Kalender. */
+function localDayKey(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Bündelt Läufe nach Kalendertag.
+ *
+ * Der Leerlauf-Auslöser produziert dutzende Läufe pro Tag; ungruppiert stapelt
+ * die Liste sie zu einer unlesbaren Wand. Die Reihenfolge innerhalb einer
+ * Gruppe und die der Gruppen bleibt „neueste zuerst“ — `toProtocolEntries`
+ * hat bereits sortiert, hier wird nur segmentiert. Läufe ohne Zeitpunkt
+ * landen in einer eigenen Gruppe ganz am Ende, statt „Heute“ vorzutäuschen.
+ */
+export function groupEntriesByDay(
+  entries: ProtocolEntry[],
+  now: Date = new Date(),
+): ProtocolGroup[] {
+  const groups: ProtocolGroup[] = [];
+  const byKey = new Map<string, ProtocolGroup>();
+  let undated: ProtocolGroup | null = null;
+
+  for (const entry of entries) {
+    if (!entry.startedAt) {
+      undated ??= { key: "unbekannt", label: "Zeitpunkt unbekannt", entries: [] };
+      undated.entries.push(entry);
+      continue;
+    }
+
+    const key = localDayKey(entry.startedAt);
+    let group = byKey.get(key);
+    if (!group) {
+      const daysAgo = calendarDaysApart(entry.startedAt, now);
+      group = {
+        key,
+        label:
+          daysAgo === 0
+            ? "Heute"
+            : daysAgo === 1
+              ? "Gestern"
+              : formatDate(entry.startedAt),
+        entries: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.entries.push(entry);
+  }
+
+  return undated ? [...groups, undated] : groups;
 }

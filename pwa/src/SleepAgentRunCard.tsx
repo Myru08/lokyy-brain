@@ -29,11 +29,20 @@ const TONE_COLORS: Record<StatusTone, string> = {
   muted: C.textFaint,
 };
 
+/**
+ * `flexShrink: 0` ist hier NICHT Kosmetik, sondern der Fix gegen gequetschte
+ * Karten: die Liste in `SleepAgentProtocol.tsx` ist eine Flex-Spalte, und
+ * `overflow: hidden` setzt die automatische Mindesthöhe eines Flex-Elements
+ * (`min-height: auto`) außer Kraft. Ohne die Sperre staucht der Flex-
+ * Algorithmus bei vielen Läufen jede Karte auf wenige Pixel zusammen — der
+ * Text steht vollständig im DOM und wird trotzdem weggeschnitten.
+ */
 const CARD_STYLE: CSSProperties = {
   border: `1px solid ${C.border}`,
   borderRadius: 10,
   background: C.panel,
   overflow: "hidden",
+  flexShrink: 0,
 };
 
 const HEAD_STYLE: CSSProperties = {
@@ -130,6 +139,11 @@ const ERROR_BOX_STYLE: CSSProperties = {
   lineHeight: 1.5,
 };
 
+/** `countLabel(1,"Notiz","Notizen")` → „1 Notiz“. */
+function countLabel(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
 export interface SleepAgentRunCardProps {
   entry: ProtocolEntry;
   /** Öffnet eine Notiz — delegiert nach oben in `App.open()`. */
@@ -148,7 +162,7 @@ export function SleepAgentRunCard({
   const Chevron = open ? ChevronDown : ChevronRight;
 
   return (
-    <div style={CARD_STYLE}>
+    <div style={CARD_STYLE} data-testid="sleep-run-card">
       <button
         type="button"
         style={HEAD_STYLE}
@@ -215,12 +229,13 @@ export function SleepAgentRunCard({
                         color: C.err,
                         fontSize: 11.5,
                         marginTop: 2,
+                        wordBreak: "break-word",
                       }}
                     >
                       Dieser Schritt hat nicht geklappt: {action.errorMessage}
                     </div>
                   )}
-                  {!action.failed && action.detail && (
+                  {action.detail && (
                     <div
                       style={{
                         color: C.textFaint,
@@ -234,19 +249,23 @@ export function SleepAgentRunCard({
                     </div>
                   )}
                 </span>
-                {!action.failed && (
-                  <span
-                    style={{
-                      color: C.textFaint,
-                      fontSize: 11.5,
-                      flexShrink: 0,
-                    }}
-                  >
-                    {action.processed === 1
-                      ? "1 Notiz"
-                      : `${action.processed} Notizen`}
-                  </span>
-                )}
+                {/*
+                  Zähler stehen bei JEDEM Schritt — auch beim abgebrochenen.
+                  „0 Notizen · 1 Fehler“ ist genau die Zeile, an der man einen
+                  dauerhaft kaputten Schritt erkennt.
+                */}
+                <span
+                  style={{
+                    color: action.errors > 0 ? C.err : C.textFaint,
+                    fontSize: 11.5,
+                    flexShrink: 0,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {countLabel(action.processed, "Notiz", "Notizen")}
+                  {action.errors > 0 &&
+                    ` · ${countLabel(action.errors, "Fehler", "Fehler")}`}
+                </span>
               </div>
             ))
           )}

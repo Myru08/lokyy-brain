@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatDuration,
   formatRunStart,
+  groupEntriesByDay,
   toProtocolEntries,
   type SleepRunDto,
 } from "./sleepAgentProtocol.js";
@@ -237,6 +238,134 @@ describe("berührte Notizen", () => {
 
     expect(entry.touchedNotes).toEqual([]);
     expect(entry.actions[0].detail).toBe("3 demoted, 1 pruned to graveyard");
+  });
+});
+
+describe("selbst gemeldete Schritt-Fehler (`pass-error:`)", () => {
+  /**
+   * Zwei Fehlerformen liefert der Server, und beide müssen sichtbar werden:
+   *
+   *   1. Der Schritt WIRFT   → `passStats[name] = { error: "…" }`
+   *      (`sleep-agent/index.ts` fängt die Ausnahme ab)
+   *   2. Der Schritt FÄNGT SELBST → `{ processed, errors, notes: "pass-error: …" }`
+   *      (jeder Pass hat ein eigenes try/catch, das so zurückmeldet)
+   *
+   * Form 2 landete bislang im Freitext-Kommentar und wurde als „erfolgreich"
+   * mit 0 Notizen gerendert — der `synaptic-pruning`-Pass war dadurch bei
+   * jedem Lauf unbemerkt kaputt.
+   */
+  it("wertet einen selbst gemeldeten `pass-error` als Fehlschlag", () => {
+    const [entry] = toProtocolEntries([
+      run({
+        passesCompleted: ["synaptic-pruning"],
+        passStats: {
+          "synaptic-pruning": {
+            processed: 0,
+            errors: 1,
+            notes:
+              'pass-error: The "string" argument must be of type string or an instance of Buffer or ArrayBuffer. Received an instance of Date',
+          },
+        },
+      }),
+    ]);
+
+    const action = entry.actions[0];
+    expect(action.failed).toBe(true);
+    expect(action.errorMessage).toBe(
+      'The "string" argument must be of type string or an instance of Buffer or ArrayBuffer. Received an instance of Date',
+    );
+    // Das Präfix ist Technik-Rauschen und darf nicht in die Anzeige lecken.
+    expect(action.errorMessage).not.toMatch(/^pass-error:/);
+    expect(action.errors).toBe(1);
+  });
+
+  it("hält Teil-Fehler fest, ohne den Schritt als gescheitert zu führen", () => {
+    const [entry] = toProtocolEntries([
+      run({
+        passesCompleted: ["synaptic-pruning"],
+        passStats: {
+          "synaptic-pruning": {
+            processed: 42,
+            errors: 3,
+            notes: "3 demoted, 0 pruned to graveyard",
+          },
+        },
+      }),
+    ]);
+
+    const action = entry.actions[0];
+    expect(action.failed).toBe(false);
+    expect(action.errors).toBe(3);
+    expect(action.processed).toBe(42);
+    expect(action.detail).toBe("3 demoted, 0 pruned to graveyard");
+  });
+});
+
+describe("groupEntriesByDay", () => {
+  const NOW = new Date("2026-08-06T12:00:00.000Z");
+
+  function entriesFrom(...isoStamps: string[]) {
+    return toProtocolEntries(
+      isoStamps.map((startedAt, i) =>
+        run({ id: `lauf-${i}`, startedAt, finishedAt: startedAt }),
+      ),
+      NOW,
+    );
+  }
+
+  it("bündelt Läufe nach Kalendertag mit „Heute“ und „Gestern“", () => {
+    const groups = groupEntriesByDay(
+      entriesFrom(
+        "2026-08-06T10:39:00.000Z",
+        "2026-08-06T09:39:00.000Z",
+        "2026-08-05T03:00:00.000Z",
+        "2026-08-01T03:00:00.000Z",
+      ),
+      NOW,
+    );
+
+    expect(groups.map((g) => g.label)).toEqual([
+      "Heute",
+      "Gestern",
+      "01.08.2026",
+    ]);
+    expect(groups[0].entries).toHaveLength(2);
+    expect(groups[1].entries).toHaveLength(1);
+    expect(groups[2].entries).toHaveLength(1);
+  });
+
+  it("behält die Reihenfolge neueste zuerst bei", () => {
+    const groups = groupEntriesByDay(
+      entriesFrom("2026-08-06T09:00:00.000Z", "2026-08-06T11:00:00.000Z"),
+      NOW,
+    );
+
+    // Zeitzonenfrei geprüft: verglichen werden Zeitstempel, nicht Labels.
+    expect(groups).toHaveLength(1);
+    expect(groups[0].entries.map((e) => e.startedAt?.toISOString())).toEqual([
+      "2026-08-06T11:00:00.000Z",
+      "2026-08-06T09:00:00.000Z",
+    ]);
+  });
+
+  it("sammelt Läufe ohne Zeitpunkt in einer eigenen Gruppe am Ende", () => {
+    const groups = groupEntriesByDay(
+      toProtocolEntries(
+        [
+          run({ id: "mit", startedAt: "2026-08-06T10:00:00.000Z" }),
+          run({ id: "ohne", startedAt: null, finishedAt: null }),
+        ],
+        NOW,
+      ),
+      NOW,
+    );
+
+    expect(groups.at(-1)?.label).toBe("Zeitpunkt unbekannt");
+    expect(groups.at(-1)?.entries).toHaveLength(1);
+  });
+
+  it("liefert für eine leere Liste keine Gruppen", () => {
+    expect(groupEntriesByDay([], NOW)).toEqual([]);
   });
 });
 

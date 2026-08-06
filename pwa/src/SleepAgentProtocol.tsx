@@ -4,7 +4,7 @@ import { AlertTriangle, Moon, RefreshCw } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { Spinner } from "./Spinner.js";
 import { fetchSleepAgentRuns, type SleepRunDto } from "./api.sleepAgent.js";
-import { toProtocolEntries } from "./sleepAgentProtocol.js";
+import { groupEntriesByDay, toProtocolEntries } from "./sleepAgentProtocol.js";
 import { SleepAgentRunCard } from "./SleepAgentRunCard.js";
 import type { ViewProps } from "./sidebar/views/registry.js";
 
@@ -33,6 +33,9 @@ import type { ViewProps } from "./sidebar/views/registry.js";
 
 /** Wie viele Läufe geladen werden. Server deckelt zusätzlich bei 200. */
 const RUN_LIMIT = 30;
+
+/** Karten pro Stufe — initial sichtbar und Zuwachs je „Ältere anzeigen". */
+const RUNS_PER_STEP = 10;
 
 const SHELL_STYLE: CSSProperties = {
   display: "flex",
@@ -95,6 +98,38 @@ const LIST_STYLE: CSSProperties = {
   flex: 1,
 };
 
+/** Ein Kalendertag mit seinen Karten. `flexShrink: 0` aus demselben Grund
+ *  wie bei der Karte selbst — sonst staucht die Flex-Spalte die Gruppe. */
+const GROUP_STYLE: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  flexShrink: 0,
+};
+
+const GROUP_TITLE_STYLE: CSSProperties = {
+  color: C.textFaint,
+  fontSize: 11,
+  fontWeight: 700,
+  letterSpacing: "0.05em",
+  textTransform: "uppercase",
+  padding: "4px 2px 0",
+};
+
+const MORE_BTN_STYLE: CSSProperties = {
+  alignSelf: "center",
+  flexShrink: 0,
+  padding: "7px 14px",
+  background: "transparent",
+  border: `1px solid ${C.border}`,
+  borderRadius: 8,
+  color: C.textDim,
+  fontFamily: FONT.ui,
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: "pointer",
+};
+
 const CENTER_BOX_STYLE: CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -152,6 +187,18 @@ export function SleepAgentProtocol({ onOpenNote }: ViewProps) {
   // `toProtocolEntries` liest die Uhrzeit für „Heute"/„Gestern" — an `runs`
   // gebunden, damit die Labels bei jedem Neuladen frisch berechnet werden.
   const entries = useMemo(() => toProtocolEntries(runs), [runs]);
+
+  // Der Leerlauf-Auslöser produziert dutzende Läufe pro Tag. Sichtbar sind
+  // zunächst nur die neuesten `RUNS_PER_STEP`; „Ältere anzeigen" schaltet
+  // weitere aus der BEREITS geladenen Antwort frei — kein zweiter Request.
+  const [visibleCount, setVisibleCount] = useState(RUNS_PER_STEP);
+  useEffect(() => setVisibleCount(RUNS_PER_STEP), [runs]);
+
+  const hiddenCount = Math.max(0, entries.length - visibleCount);
+  const groups = useMemo(
+    () => groupEntriesByDay(entries.slice(0, visibleCount)),
+    [entries, visibleCount],
+  );
 
   return (
     <div style={SHELL_STYLE}>
@@ -228,14 +275,29 @@ export function SleepAgentProtocol({ onOpenNote }: ViewProps) {
 
       {state === "ready" && entries.length > 0 && (
         <div style={LIST_STYLE}>
-          {entries.map((entry, index) => (
-            <SleepAgentRunCard
-              key={entry.id || `${entry.startedAtLabel}-${index}`}
-              entry={entry}
-              onOpenNote={onOpenNote}
-              defaultOpen={index === 0}
-            />
+          {groups.map((group) => (
+            <div key={group.key} style={GROUP_STYLE}>
+              <div style={GROUP_TITLE_STYLE}>{group.label}</div>
+              {group.entries.map((entry, index) => (
+                <SleepAgentRunCard
+                  key={entry.id || `${group.key}-${index}`}
+                  entry={entry}
+                  onOpenNote={onOpenNote}
+                  defaultOpen={entry === entries[0]}
+                />
+              ))}
+            </div>
           ))}
+
+          {hiddenCount > 0 && (
+            <button
+              type="button"
+              style={MORE_BTN_STYLE}
+              onClick={() => setVisibleCount((n) => n + RUNS_PER_STEP)}
+            >
+              Ältere anzeigen ({hiddenCount} weitere)
+            </button>
+          )}
         </div>
       )}
     </div>
