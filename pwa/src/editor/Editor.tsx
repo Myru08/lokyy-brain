@@ -24,6 +24,7 @@ import {
   frontmatterHideExtension,
   frontmatterHideTheme,
 } from "./frontmatterHide.js";
+import { calloutExtension, calloutTheme } from "./callouts.js";
 
 /**
  * Per-note cursor persistence (Story: editor save-lifecycle overhaul).
@@ -217,6 +218,11 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
         // Speichern verliert das Frontmatter NICHT. Früh eingehängt, damit der
         // Block-Range vor allen Inhalts-Previews greift.
         frontmatterHideExtension, frontmatterHideTheme,
+        // Warnkasten-Rendering (Lint-Callouts). Direkt hinter frontmatterHide:
+        // beide liefern Block-Decorations, und der Kasten muss vor livePreview
+        // greifen, damit dessen Inline-Decorations nicht in den Block hinein
+        // rendern.
+        calloutExtension, calloutTheme,
         livePreview,
         wikilinkExtension(
           (target) => onOpenRef.current(target),

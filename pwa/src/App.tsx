@@ -1,8 +1,9 @@
 import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Note, TreeNode } from "@lokyy/shared";
-import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot, Menu as MenuIcon, X as XIcon } from "lucide-react";
+import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot, AlertTriangle, Menu as MenuIcon, X as XIcon } from "lucide-react";
 import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
 import { AgentReviewPanel } from "./AgentReviewPanel.js";
+import { LintFindingsPanel } from "./LintFindingsPanel.js";
 import { Settings } from "./Settings.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { BacklinksPanel } from "./BacklinksPanel.js";
@@ -59,9 +60,9 @@ import { C, FONT } from "./theme.js";
  *   idle      — nothing in flight, nothing dirty, no recent activity
  *   dirty     — local changes not yet sent (debounce timer running or paused)
  *   saving    — PUT in flight to /api/notes/:id
- *   saved     — server returned 2xx within the last 30s
- *   synced    — git push confirmed (we treat any 2xx PUT as synced, since the
- *               server runs add→commit→pull→push synchronously inside putNote)
+ *   saved     — committed locally, push to Forgejo still outstanding (server
+ *               reported `synced: false` — offline/unreachable, not an error)
+ *   synced    — git push confirmed (`synced` true or absent on the PUT response)
  *   conflict  — server returned 409 (rebase failed)
  *   error     — last save threw (network / 5xx / etc.)
  */
@@ -366,6 +367,13 @@ export function App() {
   // via `onCountChange` after every accept/reject/dismiss action.
   const [agentReviewOpen, setAgentReviewOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState<number>(0);
+  // Paket B — Widerspruchs-Funde. Anders als der Review-Badge pollt App hier
+  // NICHT: das Panel besitzt den Fetch (`/api/lint/findings`) und meldet die
+  // Anzahl offener Funde über `onCountChange` zurück. Der Badge ist deshalb
+  // erst nach dem ersten Öffnen des Panels gefüllt — bewusst, solange die
+  // Lint-Routen noch nicht im zentralen `api.ts`-Client liegen.
+  const [lintPanelOpen, setLintPanelOpen] = useState(false);
+  const [openLintCount, setOpenLintCount] = useState<number>(0);
   // Story 7.12 — laufende Version + Update-Check. Der Hook stößt beim Laden
   // außerdem den Cache-Abgleich an (Bundle-Version ↔ `running`): weicht sie
   // ab, wird der Service Worker verworfen und genau EINMAL neu geladen. Das
@@ -831,7 +839,8 @@ export function App() {
   /**
    * Push the in-memory dirty body to the server. No-op if the body matches
    * what the server last returned (avoids zero-diff git commits). Surfaces
-   * the lifecycle: dirty → saving → synced → (idle after SAVED_FADE_MS).
+   * the lifecycle: dirty → saving → synced|saved → (idle after SAVED_FADE_MS),
+   * where "saved" is the offline case (commit landed, push outstanding).
    *
    * Returns the saved Note on success, null on no-op. Errors are surfaced
    * via syncState + errorMsg; the function does NOT re-throw to keep the
@@ -899,11 +908,13 @@ export function App() {
         );
       }
       setLastSavedAt(Date.now());
-      // The server runs add → commit → pull --rebase → push synchronously
-      // inside putNote, so a 2xx response means the change is in Forgejo.
-      // Surface that as "synced" directly — the intermediate "saved"
-      // sub-state is reserved for the future case where push becomes async.
-      setSync("synced");
+      // The server runs add → commit → pull --rebase → push inside putNote and
+      // reports the push verdict as `saved.synced`. `false` means the commit
+      // landed locally but Forgejo was unreachable — that is the "saved"
+      // sub-state, NOT an error: the next successful save or a manual sync
+      // carries it upstream. `undefined` = older server without the field →
+      // treat as synced.
+      setSync(saved.synced === false ? "saved" : "synced");
       // Clean iff the user didn't keep typing during the PUT. `dirtyBody` was
       // advanced to the server-canonical body above only when it still equalled
       // what we sent; if it advanced (user typed on), the note is still dirty.
@@ -1536,8 +1547,9 @@ export function App() {
     try {
       const saved = await api.putNote(targetNoteId, restored);
       savedBodyRef.current = restored;
-      // Match the standard save-success branch: surface "synced" + timestamp.
-      setSync("synced");
+      // Match the standard save-success branch: honour the server's push
+      // verdict ("saved" = committed locally, push outstanding) + timestamp.
+      setSync(saved.synced === false ? "saved" : "synced");
       setDirty(false);
       setLastSavedAt(Date.now());
       setErrorMsg(null);
@@ -1552,8 +1564,8 @@ export function App() {
         // Best-effort — the local body is already correct.
       }
       setBacklinksRefresh((n) => n + 1);
-      // Discard `saved` — the refetch above (when it succeeds) supersedes it.
-      void saved;
+      // Only `saved.synced` is consumed above — the note body itself comes
+      // from the refetch, which supersedes the PUT response.
     } catch (err) {
       setSync("error");
       setErrorMsg(err instanceof Error ? err.message : "Undo fehlgeschlagen");
@@ -2166,6 +2178,46 @@ export function App() {
               )}
             </button>
             <button
+              onClick={() => setLintPanelOpen(true)}
+              title="Widersprüche"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                padding: "5px 10px",
+                cursor: "pointer",
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                position: "relative",
+                minHeight: 36,
+              }}
+            >
+              <AlertTriangle size={18} style={{ color: C.gold }} />
+              Widersprüche
+              {openLintCount > 0 && (
+                <span
+                  style={{
+                    background: C.gold,
+                    color: "#1a1110",
+                    borderRadius: 10,
+                    padding: "0 6px",
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    fontFamily: FONT.mono,
+                    minWidth: 16,
+                    textAlign: "center",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {openLintCount > 99 ? "99+" : openLintCount}
+                </span>
+              )}
+            </button>
+            <button
               onClick={() => setImportOpen(true)}
               style={{
                 display: "flex",
@@ -2709,6 +2761,19 @@ export function App() {
           void openNoteById(id);
         }}
         onCountChange={setPendingCount}
+      />
+
+      {/* Widerspruchs-Funde (⚠ Widersprüche Toolbar-Button, Paket B). Gleiche
+          Slide-over-Mechanik wie das Review-Panel; der Badge im Header wird
+          über onCountChange gefüttert. */}
+      <LintFindingsPanel
+        open={lintPanelOpen}
+        onClose={() => setLintPanelOpen(false)}
+        onOpenNote={(noteId) => {
+          setLintPanelOpen(false);
+          void openNoteById(noteId);
+        }}
+        onCountChange={setOpenLintCount}
       />
 
       {/* Workspace-Menü-Editor (Zahnrad in der Sidebar-Rail, Story 11.2).

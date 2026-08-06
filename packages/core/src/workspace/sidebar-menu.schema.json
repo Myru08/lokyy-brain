@@ -40,7 +40,7 @@
         },
         "viewType": {
           "type": "string",
-          "enum": ["tree", "skills", "dashboard"]
+          "enum": ["tree", "skills", "dashboard", "sleepProtocol"]
         },
         "shortcut": {
           "type": ["string", "null"],

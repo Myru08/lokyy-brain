@@ -17,7 +17,7 @@ import {
 describe("VIEW_REGISTRY", () => {
   it("hat genau die geschlossene ViewType-Liste als Keys", () => {
     expect(Object.keys(VIEW_REGISTRY).sort()).toEqual(
-      ["dashboard", "skills", "tree"].sort(),
+      ["dashboard", "skills", "sleepProtocol", "tree"].sort(),
     );
   });
 
@@ -32,7 +32,7 @@ describe("VIEW_REGISTRY", () => {
 
 describe("resolveView", () => {
   it("mappt jeden bekannten viewType auf seinen eigenen Renderer", () => {
-    const types: ViewType[] = ["tree", "skills", "dashboard"];
+    const types: ViewType[] = ["tree", "skills", "dashboard", "sleepProtocol"];
     for (const t of types) {
       expect(resolveView(t)).toBe(VIEW_REGISTRY[t]);
     }

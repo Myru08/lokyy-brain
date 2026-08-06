@@ -38,7 +38,7 @@ import menuSchema from "./sidebar-menu.schema.json" with { type: "json" };
 
 // ─── Types (architecture addendum §1, verbatim) ─────────────────────────────
 
-export type ViewType = "tree" | "skills" | "dashboard"; // closed list v1
+export type ViewType = "tree" | "skills" | "dashboard" | "sleepProtocol"; // closed list v1
 
 export interface MenuItem {
   id: string; // ULID for custom items; reserved "system:*" for system items
@@ -75,6 +75,17 @@ export const SYSTEM_ITEMS: MenuItem[] = [
     icon: "wand-2",
     folder: "70_pai/skills",
     viewType: "skills",
+    shortcut: null,
+    kind: "system",
+  },
+  {
+    // The night-agent protocol reads `GET /api/sleep-agent/runs`, not a vault
+    // folder — hence the empty `folder`. The renderer ignores `item.folder`.
+    id: "system:sleep-protocol",
+    label: "Nacht-Protokoll",
+    icon: "moon",
+    folder: "",
+    viewType: "sleepProtocol",
     shortcut: null,
     kind: "system",
   },

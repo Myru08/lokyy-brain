@@ -38,6 +38,10 @@ export {
   // Story: separate Save & Sync buttons — reconcile (pull --rebase + push
   // unpushed) without writing note content. Consumed by POST /api/vault/sync.
   sync,
+  // Story: offline-toleranter Save — true while a local commit waits for an
+  // unreachable Forgejo. Consumed by the save routes to answer HTTP 200 +
+  // `synced:false` instead of a 503 "not saved".
+  isSyncPending,
   save,
   saveBinary,
   remove,
@@ -69,6 +73,7 @@ export {
   type ProvisionRemote,
   type ProvisionVaultOpts,
   type SaveVaultFileOpts,
+  type SaveResult,
   type NoteHistoryEntry,
   type NoteDiff,
   type SyncResult,
@@ -614,6 +619,27 @@ export {
   type NewLintFindingRow,
 } from "./db/schema/lintFindings.js";
 
+// Callout-Writer — schreibt offene Findings als sichtbaren Markdown-Kasten in
+// die betroffene Notiz (und entfernt ihn beim Auflösen wieder). Schreibpfad
+// ist ausschließlich `saveNote`, das Frontmatter bleibt unangetastet.
+export {
+  buildCalloutBlock,
+  insertCalloutBlock,
+  stripCalloutBlock,
+  stripAllCalloutBlocks,
+  hasCalloutBlock,
+  excerptStatement,
+  buildStatements,
+  writeFindingCallout,
+  removeFindingCallout,
+  openAnchor,
+  closeAnchor,
+  type CalloutFinding,
+  type CalloutStatement,
+  type CalloutWriteResult,
+  type CalloutRemoveResult,
+} from "./lint/calloutWriter.js";
+
 // ─── Honcho-Peer-Abstraction (Phase C Wave C2 / Story 3) ────────────────
 // Peer-notes are an evolving profile of any person/org/agent the user
 // interacts with. The DB sidecar `peer_profiles` is an index; the note
@@ -642,6 +668,28 @@ export {
   type SearchPipelineResult,
   type PipelineStepTrace,
 } from "./pipeline/index.js";
+
+// ─── Deterministic vault INDEX (Suchleiter, AC#1) ───────────────────────
+// `00_meta/INDEX.md` — the first, cheapest rung of the Brain-First search
+// ladder. Pure function of the vault tree (NO LLM), so an unchanged vault
+// regenerates to byte-identical output and the write is skipped. Served by
+// the MCP `get_index` tool. See packages/core/src/index/indexGenerator.ts.
+export {
+  VAULT_INDEX_PATH,
+  VAULT_INDEX_REL_PATH,
+  INDEX_MAX_AGE_MS,
+  collectIndexFolders,
+  renderVaultIndex,
+  readmePurpose,
+  buildVaultIndexBody,
+  isIndexStale,
+  generateVaultIndex,
+  type IndexNoteEntry,
+  type IndexFolderEntry,
+  type BuildIndexDeps,
+  type GenerateIndexOpts,
+  type GenerateIndexResult,
+} from "./index/indexGenerator.js";
 
 // ─── At-rest secret encryption ──────────────────────────────────────────
 // AES-256-GCM helpers used by Forgejo OAuth (and future secret-bearing
