@@ -79,6 +79,15 @@ import {
   buildGraph,
   enqueue,
   listJobs,
+  // Suchleiter (Paket A) — `search_vault mode:"deep"` routes into the same
+  // 8-step retrieval pipeline the HTTP `/api/search/pipeline` route uses, and
+  // `get_index` serves/regenerates the deterministic `00_meta/INDEX.md`. Both
+  // only CALL core (incl. gitService's `save`); neither owns any of it.
+  buildSearchPipeline,
+  generateVaultIndex,
+  isIndexStale,
+  save,
+  VAULT_INDEX_PATH,
   type CoreConfig,
   type BulkCreateItem,
   type BulkUpdateItem,
@@ -105,11 +114,18 @@ import { currentMcpSession } from "./sessionContext.js";
  * Keep this short. Long instructions waste tokens on every conversation
  * turn. Six trigger patterns, each one-line.
  */
-const LOKYY_BRAIN_INSTRUCTIONS = `You have access to Lokyy-Brain — the user's personal knowledge vault (git-backed, SPEC-compliant Markdown notes). It is the single source of truth: prefer it over guessing, and write findings back so the vault compounds over time. There are many tools, but everyday work uses only the handful below — ignore the rest unless a task explicitly needs it.
+export const LOKYY_BRAIN_INSTRUCTIONS = `You have access to Lokyy-Brain — the user's personal knowledge vault (git-backed, SPEC-compliant Markdown notes). It is the single source of truth: prefer it over guessing, and write findings back so the vault compounds over time. There are many tools, but everyday work uses only the handful below — ignore the rest unless a task explicitly needs it.
+
+## Brain First — the search ladder (VERBINDLICH)
+Answer from the vault before you answer from memory, and climb these rungs IN ORDER. Each rung costs more tokens than the one above it, so never skip ahead and never run a lower rung "just in case".
+1. \`get_index\` — the deterministic \`00_meta/INDEX.md\`: every folder, its purpose, its notes. ONE cheap call that tells you WHERE to look. Start here when you don't already know the exact note.
+2. \`search_vault\` with the default \`mode: "fast"\` — full-text + semantic. Free and instant. This answers the large majority of questions.
+3. \`search_vault\` with \`mode: "deep"\` — ONLY if \`fast\` came back empty or clearly off-target. It runs the 8-step pipeline (intent classification, RAG-Fusion, graph spreading-activation, re-ranking) and COSTS LLM calls plus seconds of latency. Justify it to yourself before you use it.
+4. \`read_note\` on exactly ONE file — the single best hit from step 2/3. Opening three notes "to be safe" burns the budget the ladder just saved; if that one note turns out wrong, go back to step 2 with better terms instead of opening more files.
 
 ## Which tool, when
 - LEARN THE VAULT FIRST: \`get_vault_conventions\` returns the folders, doc-types and required frontmatter of THIS specific vault. Call it before your first write — structure differs per vault, so never assume folder names or types.
-- FIND / RECALL: \`search_vault\` (keyword + semantic) for "what do we know about X"; \`list_notes\` for structured filters (type/tag/status/folder); \`list_tree\` to browse the structure.
+- FIND / RECALL: \`get_index\` for orientation, then \`search_vault\` (keyword + semantic) for "what do we know about X"; \`list_notes\` for structured filters (type/tag/status/folder); \`list_tree\` to browse the structure.
 - READ: \`read_note\` (by path) or \`resolve_by_id\` (by 26-char ULID).
 - CREATE A NOTE → use \`create_managed_note\`. Pass ONLY the intent — { type, title, body? } — and the vault derives the path, the ULID and SPEC-valid frontmatter for you, auto-filling required fields. This is the sanctioned write path: you do NOT need to know folders or frontmatter rules to use it. This is your default for "save this", "remember", "write it down", and for persisting insights after a substantial conversation — don't ask, just do it.
 - UPDATE an existing note: \`update_note\`. While editing, add \`[[Other Note Title]]\` links to related notes — this grows the knowledge graph organically.
@@ -315,14 +331,37 @@ export function createServer(): Server {
       {
         name: "search_vault",
         description:
-          "Search Lokyy-Brain (Tier 1 full-text + Tier 2 semantic embeddings, merged). CALL FIRST whenever the user asks 'what do we know about X', 'have we covered Y', 'where did we discuss Z', or before stating anything about the user's projects/workflows/history. Multi-token queries are scored per-word with title-bonus — use 1–4 keyword tokens for best results. Returns scored hits with snippets and noteIds.",
+          "Search Lokyy-Brain (Tier 1 full-text + Tier 2 semantic embeddings, merged). CALL FIRST whenever the user asks 'what do we know about X', 'have we covered Y', 'where did we discuss Z', or before stating anything about the user's projects/workflows/history. Multi-token queries are scored per-word with title-bonus — use 1–4 keyword tokens for best results. Returns scored hits with snippets and noteIds. Rung 2 of the search ladder: orient with `get_index` first, then search here, then open exactly ONE note with `read_note`.",
         inputSchema: {
           type: "object",
           properties: {
             query: { type: "string" },
             limit: { type: "number", default: 10 },
+            mode: {
+              type: "string",
+              enum: ["fast", "deep"],
+              default: "fast",
+              description:
+                "`fast` (default) = merged full-text + semantic search: free, instant, and right for almost every query. `deep` = the full 8-step retrieval pipeline (intent classification, RAG-Fusion, graph spreading-activation, re-ranking) — it COSTS LLM calls and seconds of latency, so use it only after `fast` returned nothing useful.",
+            },
           },
           required: ["query"],
+        },
+      },
+      {
+        name: "get_index",
+        description:
+          "Read `00_meta/INDEX.md` — the deterministic, whole-vault map: every folder with its purpose and the notes inside it. This is RUNG 1 of the search ladder and the cheapest orientation there is: call it BEFORE `search_vault` whenever you don't already know the exact note, then search with `search_vault`, then open exactly ONE file with `read_note`. The index is generated from the vault tree without any LLM; if it is missing or older than 24h it is regenerated on the fly (fast) and written back. Pass `refresh: true` to force a rebuild after bulk changes.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            refresh: {
+              type: "boolean",
+              default: false,
+              description:
+                "Force a rebuild even when the stored index is younger than 24h.",
+            },
+          },
         },
       },
       {
@@ -844,6 +883,63 @@ export function createServer(): Server {
         case "search_vault": {
           const query = String(args.query ?? "");
           const limit = Number(args.limit ?? 10);
+          // AC#5 — an unknown mode is a client bug. Reject it loudly instead
+          // of falling back to `fast`, which would make `deep` silently
+          // unreliable and impossible to debug from the client side.
+          const modeRes = resolveSearchMode(args);
+          if (!modeRes.ok) return text(modeRes.error, { isError: true });
+
+          if (modeRes.mode === "deep") {
+            // Rung 3 — the 8-step pipeline. Same entry point the HTTP
+            // `/api/search/pipeline` route uses; `generate` stays off because
+            // the CALLING model is the generator here, so paying for a second
+            // synthesis pass would be pure waste.
+            const pipeline = await buildSearchPipeline();
+            const result = await pipeline.execute({ query, vaultId });
+            const readable = result.rerankedHits
+              .filter((h) => canRead(`${h.noteId}.md`))
+              .slice(0, limit);
+            const results = await Promise.all(
+              readable.map(async (h) => {
+                // Titles/snippets are a convenience for the caller: a failed
+                // read degrades that one hit, never the whole search.
+                let title = h.noteId;
+                let snippet = "";
+                try {
+                  const note = await getNote(h.noteId);
+                  if (note) {
+                    title = note.title;
+                    snippet = parseFrontmatter(note.body)
+                      .body.trim()
+                      .replace(/\s+/g, " ")
+                      .slice(0, 240);
+                  }
+                } catch {
+                  // keep the noteId-only fallback
+                }
+                return { noteId: h.noteId, title, score: h.finalScore, snippet };
+              }),
+            );
+            if (results.length === 0) {
+              return text({
+                mode: "deep",
+                results: [],
+                empty: true,
+                intent: result.intent,
+                degraded: result.degraded,
+                hint: emptySearchHint(query),
+              });
+            }
+            return text({
+              mode: "deep",
+              results,
+              intent: result.intent,
+              hops: result.hops,
+              durationMs: result.totalDurationMs,
+              degraded: result.degraded,
+            });
+          }
+
           const provider = getMemoryProvider(vaultId);
           const hits = await provider.search(query, { limit });
           const filtered = hits.filter((h) => canRead(`${h.noteId}.md`));
@@ -854,16 +950,57 @@ export function createServer(): Server {
             return text({
               results: [],
               empty: true,
-              hint:
-                `Keine Treffer für "${query}". Das ist KEIN Fehler — die Suche lief korrekt, ` +
-                `der Vault enthält zu diesem Begriff (noch) nichts. Bevor du aufgibst, formuliere ` +
-                `die Suche 1–2× um: Synonyme, Wortstamm/Teilwort, deutscher UND englischer Begriff, ` +
-                `Tippfehler-Varianten. Hilft das nicht, nutze list_tree (Struktur) oder list_notes ` +
-                `(vorhandene Notizen). Erfinde KEINE Treffer; gib nur Notizen zurück, die wirklich ` +
-                `zur Frage passen. Nutze für den Vault NIE eine Shell/ExecCommand.`,
+              hint: emptySearchHint(query),
             });
           }
           return text({ results: filtered });
+        }
+        case "get_index": {
+          // Rung 1 of the ladder. Read-scope is checked against the index note
+          // itself so a restricted agent can't use it as a whole-vault leak.
+          if (!canRead(`${VAULT_INDEX_PATH}.md`)) {
+            throw new ScopeViolation("read", VAULT_INDEX_PATH);
+          }
+          const forceRefresh = args.refresh === true;
+
+          let existing: string | null = null;
+          try {
+            const note = await getNote(VAULT_INDEX_PATH);
+            existing = note?.body ?? null;
+          } catch {
+            // A missing/unreadable index is not an error — it just means we
+            // regenerate. Only a failing REGENERATION is worth reporting.
+            existing = null;
+          }
+
+          if (
+            existing !== null &&
+            !forceRefresh &&
+            !isIndexStale(parseFrontmatter(existing).data)
+          ) {
+            return text({
+              path: VAULT_INDEX_PATH,
+              generated: false,
+              content: existing,
+            });
+          }
+
+          const result = await generateVaultIndex({
+            getTree,
+            getNote,
+            save,
+            existing,
+            profile,
+          });
+          return text({
+            path: VAULT_INDEX_PATH,
+            generated: true,
+            // Persisting is best effort: with Forgejo down the agent still
+            // gets a correct, current index rather than a failed turn.
+            persisted: result.written,
+            ...(result.saveError ? { persist_error: result.saveError } : {}),
+            content: result.content,
+          });
         }
         case "list_tree": {
           const tree = await getTree();
@@ -1897,6 +2034,74 @@ export function resolveCreateNoteInput(
       expectedFolder: folderForType(type, profile),
     },
   };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Suchleiter (Paket A) — `search_vault` mode resolution.
+ * ------------------------------------------------------------------ */
+
+/** The two rungs of `search_vault`. `fast` is and stays the default. */
+export type SearchMode = "fast" | "deep";
+
+export const SEARCH_MODES: readonly SearchMode[] = ["fast", "deep"];
+
+export type SearchModeError = {
+  error: "invalid-mode";
+  got: unknown;
+  allowed: SearchMode[];
+  message: string;
+};
+
+export type SearchModeInput =
+  | { ok: true; mode: SearchMode }
+  | { ok: false; error: SearchModeError };
+
+/**
+ * Resolve the `mode` argument of `search_vault` (AC#3/AC#5).
+ *
+ * Two rules, both deliberate:
+ *   - ABSENT (or explicitly null/undefined) means `fast`. That keeps every
+ *     pre-existing caller on the exact path it has always taken — no client
+ *     change, no behaviour change, no new cost.
+ *   - PRESENT BUT UNKNOWN is a hard rejection, never a silent fallback to
+ *     `fast`. A client asking for a mode that does not exist has a bug; if we
+ *     quietly answered with the cheap path it would look like `deep` "worked"
+ *     and just found nothing, which is the worst possible failure mode for a
+ *     retrieval tool.
+ */
+export function resolveSearchMode(args: Record<string, unknown>): SearchModeInput {
+  const raw = args.mode;
+  if (raw === undefined || raw === null) return { ok: true, mode: "fast" };
+  if (typeof raw === "string" && (SEARCH_MODES as readonly string[]).includes(raw)) {
+    return { ok: true, mode: raw as SearchMode };
+  }
+  return {
+    ok: false,
+    error: {
+      error: "invalid-mode",
+      got: raw,
+      allowed: [...SEARCH_MODES],
+      message:
+        'Unknown search mode. Use "fast" (default: full-text + semantic, free and instant) ' +
+        'or "deep" (8-step pipeline — costs LLM calls, only after "fast" found nothing useful).',
+    },
+  };
+}
+
+/**
+ * The self-explaining empty-result hint, shared by both modes so a small
+ * model never reads `[]` as a broken tool (and never reaches for a shell).
+ * Byte-identical to the text `fast` has always returned.
+ */
+function emptySearchHint(query: string): string {
+  return (
+    `Keine Treffer für "${query}". Das ist KEIN Fehler — die Suche lief korrekt, ` +
+    `der Vault enthält zu diesem Begriff (noch) nichts. Bevor du aufgibst, formuliere ` +
+    `die Suche 1–2× um: Synonyme, Wortstamm/Teilwort, deutscher UND englischer Begriff, ` +
+    `Tippfehler-Varianten. Hilft das nicht, nutze list_tree (Struktur) oder list_notes ` +
+    `(vorhandene Notizen). Erfinde KEINE Treffer; gib nur Notizen zurück, die wirklich ` +
+    `zur Frage passen. Nutze für den Vault NIE eine Shell/ExecCommand.`
+  );
 }
 
 /* ------------------------------------------------------------------ *
