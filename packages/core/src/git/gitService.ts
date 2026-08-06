@@ -91,9 +91,70 @@ function serialize<T>(fn: () => Promise<T>, targetDir?: string): Promise<T> {
 interface Pending {
   content: string;
   message: string;
-  waiters: Array<{ resolve: (sha: string) => void; reject: (err: unknown) => void }>;
+  waiters: Array<{
+    resolve: (result: SaveResult) => void;
+    reject: (err: unknown) => void;
+  }>;
 }
 const pendingSaves = new Map<string, Pending>();
+
+/**
+ * Outcome of a write. Forgejo stays the truth — but its *availability* must
+ * never make a locally-committed note look lost.
+ *
+ * `synced` answers "did this write reach the remote"; `pending` answers the
+ * only question the UI actually needs: "is a safe local commit stuck waiting
+ * for an unreachable remote". They are NOT inverses:
+ *
+ *   | situation                        | synced | pending |
+ *   | no remote configured (local-only)| false  | false   |
+ *   | pushed / already upstream        | true   | false   |
+ *   | remote unreachable after commit  | false  | true    |
+ *
+ * A local-only vault has nothing to sync, so it is `pending: false` and must
+ * never raise the "Sync ausstehend" hint.
+ */
+export interface SaveResult {
+  /** HEAD after the write — the new commit, or the unchanged HEAD on a no-op. */
+  sha: string;
+  /** True when the commit is confirmed on the remote. */
+  synced: boolean;
+  /**
+   * True when a remote EXISTS but was unreachable: the commit is safe locally
+   * and the next `sync()` (or the next successful save) carries it upstream.
+   */
+  pending: boolean;
+}
+
+/**
+ * Working copies that hold at least one commit the remote has not confirmed
+ * (Story: offline-toleranter Save). Keyed by working-copy dir so a tenant vault
+ * cannot mask the primary vault's state.
+ *
+ * Set when a transient backend failure hits AFTER a successful commit; cleared
+ * by any push that lands (`writeAndSync`, `saveBinary`, `move`, `sync`). It is
+ * a UI hint, not a queue — the pending commits live in git, which is what
+ * actually makes them safe. Deliberately in-memory: a restart re-derives the
+ * truth from the first successful sync.
+ */
+const unsyncedDirs = new Set<string>();
+
+function markSyncPending(targetDir: string): void {
+  unsyncedDirs.add(targetDir);
+}
+
+function markSynced(targetDir: string): void {
+  unsyncedDirs.delete(targetDir);
+}
+
+/**
+ * True when a commit is waiting for an unreachable remote in `targetDir`
+ * (defaults to the singleton vault). Consumed by the save routes so a pending
+ * push surfaces as HTTP 200 + `synced:false` rather than a 503 "not saved".
+ */
+export function isSyncPending(targetDir?: string): boolean {
+  return unsyncedDirs.has(targetDir ?? config().vaultDir);
+}
 
 /**
  * Coalescing key — vault-scoped (LBMT-1.2) so the same `relPath` in two
@@ -505,18 +566,31 @@ async function tryDeferredPush(branch: string, targetDir?: string): Promise<void
 }
 
 /**
- * Shared pull-failure handler for save/saveBinary/move (Story 10.6 AC#2/#3).
+ * How a post-commit sync failure was absorbed.
+ *
+ * `synced`  — the remote confirmed the write, or the intended content is
+ *   provably upstream already (benign race).
+ * `pending` — the remote was unreachable (transient). The commit is safe
+ *   locally and waits for the next sync; NOT an error.
+ */
+type SyncRecovery = "synced" | "pending";
+
+/**
+ * Shared pull-failure handler for save/saveBinary/move (Story 10.6 AC#2/#3,
+ * extended for offline tolerance).
  *
  * 1. Abort the half-applied rebase to leave a clean tree (unchanged behavior).
  * 2. Idempotency: if the intended content is already persisted, treat as
- *    success — best-effort push, then return (no error).
- * 3. Otherwise classify the git stderr into a typed error and throw it. We
+ *    success — best-effort push, then `"synced"` (no error).
+ * 3. Transient backend failure (Forgejo down, DNS blip, 502/503): the commit
+ *    from step 0 is already safe, so report `"pending"` instead of throwing.
+ *    Availability of the remote must not make a persisted note look lost.
+ * 4. Otherwise classify the git stderr into a typed error and throw it. We
  *    bias an *unclassifiable* failure on the rebase step toward
  *    `MergeConflictError` (that step's most likely real cause), but a clearly
- *    transient/backend stderr still surfaces as `GitBackendError`.
+ *    non-transient backend stderr (misconfigured remote, auth) still surfaces
+ *    as `GitBackendError` — that is a real problem, not a blip.
  *
- * @returns `true` when the write was idempotently recovered (caller returns
- *   success); never returns `false` — it throws instead.
  * @param targetDir working copy to recover; defaults to `config().vaultDir`.
  */
 async function handlePullFailure(
@@ -525,16 +599,19 @@ async function handlePullFailure(
   expected: string | null,
   branch: string,
   targetDir?: string,
-): Promise<true> {
+): Promise<SyncRecovery> {
   const dir = targetDir ?? config().vaultDir;
   await gitIn(dir, ["rebase", "--abort"]).catch(() => {});
 
   if (await isAlreadyPersisted(relPath, expected, branch, dir)) {
     await tryDeferredPush(branch, dir);
-    return true;
+    return "synced";
   }
 
   const classified = classifyGitError(err, relPath);
+  if (classified instanceof GitBackendError && classified.transient) {
+    return "pending";
+  }
   // A bare rebase rejection with no recognizable backend/hook marker is, in
   // this code path, overwhelmingly a real content conflict — surface it as
   // such rather than an opaque backend error.
@@ -544,6 +621,19 @@ async function handlePullFailure(
     classified.stderr.trim() === ""
   ) {
     throw new MergeConflictError({ relPath, stderr: classified.stderr, cause: err });
+  }
+  throw classified;
+}
+
+/**
+ * Push counterpart of `handlePullFailure`: the pull succeeded but the push
+ * itself hit the network. Same rule — the commit is already safe, so a
+ * transient failure is `"pending"`, anything else throws typed.
+ */
+function handlePushFailure(err: unknown, relPath: string | undefined): SyncRecovery {
+  const classified = classifyGitError(err, relPath);
+  if (classified instanceof GitBackendError && classified.transient) {
+    return "pending";
   }
   throw classified;
 }
@@ -629,6 +719,10 @@ export async function sync(): Promise<SyncResult> {
       pushed = true;
     }
 
+    // We got all the way through pull + (any needed) push: nothing is waiting
+    // on the remote any more, so the PWA's "Sync ausstehend" hint can clear.
+    markSynced(c.vaultDir);
+
     return { changed: pulledNew || pushed };
   });
 }
@@ -655,8 +749,23 @@ export interface SaveVaultFileOpts {
  */
 async function writeAndSync(opts: Required<Omit<SaveVaultFileOpts, "branch">> & {
   branch: string;
-}): Promise<string> {
+}): Promise<SaveResult> {
   const { targetDir, relPath, content, message, branch } = opts;
+
+  /** Reads HEAD and stamps the outcome, keeping the pending registry in step. */
+  const settle = async (outcome: SyncRecovery | "no-remote"): Promise<SaveResult> => {
+    const sha = await gitIn(targetDir, ["rev-parse", "HEAD"]);
+    if (outcome === "pending") {
+      markSyncPending(targetDir);
+      return { sha, synced: false, pending: true };
+    }
+    if (outcome === "no-remote") {
+      // Nothing to push to — not synced, but nothing is stuck either.
+      return { sha, synced: false, pending: false };
+    }
+    markSynced(targetDir);
+    return { sha, synced: true, pending: false };
+  };
 
   const abs = join(targetDir, relPath);
   await mkdir(dirname(abs), { recursive: true });
@@ -664,30 +773,40 @@ async function writeAndSync(opts: Required<Omit<SaveVaultFileOpts, "branch">> & 
 
   await gitIn(targetDir, ["add", "--", relPath]);
 
-  // nichts zu committen? (Inhalt identisch) -> still zurueck
+  // nichts zu committen? (Inhalt identisch) -> still zurueck. Nothing was
+  // written, so we report the vault's CURRENT sync state rather than claiming
+  // a push that never happened.
   const status = await gitIn(targetDir, ["status", "--porcelain", "--", relPath]);
   if (status === "") {
-    return gitIn(targetDir, ["rev-parse", "HEAD"]);
+    const sha = await gitIn(targetDir, ["rev-parse", "HEAD"]);
+    const pending = isSyncPending(targetDir);
+    return { sha, synced: !pending, pending };
   }
 
   await gitIn(targetDir, ["commit", "-m", message]);
+  // From here on the user's bytes are SAFE in git. Every failure below is
+  // about reaching Forgejo — it may degrade the result, never lose it.
 
   // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
   if (!(await hasRemote(targetDir))) {
-    return gitIn(targetDir, ["rev-parse", "HEAD"]);
+    return settle("no-remote");
   }
 
   try {
     await gitIn(targetDir, ["pull", "--rebase", "--autostash", "origin", branch]);
   } catch (err) {
     // Pull fehlgeschlagen: erst Idempotenz prüfen (Commit liegt evtl. schon
-    // sauber auf Disk/HEAD -> kein Konflikt), sonst typisierten Fehler werfen.
-    await handlePullFailure(err, relPath, content, branch, targetDir);
-    return gitIn(targetDir, ["rev-parse", "HEAD"]); // idempotent recovered
+    // sauber auf Disk/HEAD -> kein Konflikt), dann auf transienten Backend-
+    // Fehler prüfen (Forgejo down -> pending), sonst typisierten Fehler werfen.
+    return settle(await handlePullFailure(err, relPath, content, branch, targetDir));
   }
 
-  await gitIn(targetDir, ["push", "origin", branch]);
-  return gitIn(targetDir, ["rev-parse", "HEAD"]);
+  try {
+    await gitIn(targetDir, ["push", "origin", branch]);
+  } catch (err) {
+    return settle(handlePushFailure(err, relPath));
+  }
+  return settle("synced");
 }
 
 /**
@@ -714,9 +833,10 @@ async function writeAndSync(opts: Required<Omit<SaveVaultFileOpts, "branch">> & 
  * `GitBackendError` / `PreCommitHookError` via `classifyGitError`, which the
  * route maps to an HTTP status.
  *
- * @returns the resulting commit SHA (unchanged HEAD when nothing was modified).
+ * @returns the resulting commit SHA (unchanged HEAD when nothing was modified)
+ *   plus whether it reached the remote (`synced`/`pending`, see `SaveResult`).
  */
-export async function saveVaultFile(opts: SaveVaultFileOpts): Promise<string> {
+export async function saveVaultFile(opts: SaveVaultFileOpts): Promise<SaveResult> {
   const { targetDir } = opts;
   const branch = opts.branch ?? config().gitBranch;
   return serialize(() => writeAndSync({ ...opts, branch }), targetDir);
@@ -727,7 +847,11 @@ export async function saveVaultFile(opts: SaveVaultFileOpts): Promise<string> {
  * bytes committed — no other path can swap them mid-flight (see `pendingSaves`).
  *   write → add → commit → pull --rebase → push
  */
-function runSave(relPath: string, content: string, message: string): Promise<string> {
+function runSave(
+  relPath: string,
+  content: string,
+  message: string,
+): Promise<SaveResult> {
   return serialize(async () => {
     // Coalescing handoff: this op now owns the latest pending bytes for
     // `relPath`. Read them, then drop the registry entry so any save() arriving
@@ -755,7 +879,9 @@ function runSave(relPath: string, content: string, message: string): Promise<str
  * Schreibt eine Datei und bringt sie nach Forgejo:
  *   write → add → commit → pull --rebase → push
  *
- * `relPath` ist relativ zum Vault-Root. Gibt den neuen Commit-Hash zurück.
+ * `relPath` ist relativ zum Vault-Root. Gibt den neuen Commit-Hash zurück,
+ * zusammen mit `synced`/`pending` (siehe `SaveResult`): ist Forgejo nicht
+ * erreichbar, ist der Commit trotzdem sicher und der Push wird nachgeholt.
  * Wirft bei echten Merge-Konflikten (gleiche Zeilen geändert) — der Caller
  * kann das an die PWA melden.
  *
@@ -770,7 +896,7 @@ export async function save(
   relPath: string,
   content: string,
   message: string,
-): Promise<string> {
+): Promise<SaveResult> {
   // Coalescing is opt-out and applies to text saves only.
   if (config().coalesceSameNoteSaves === false) {
     return runSave(relPath, content, message);
@@ -783,7 +909,7 @@ export async function save(
     // bytes it will commit (last write wins) and ride along on its result.
     existing.content = content;
     existing.message = message;
-    return new Promise<string>((resolve, reject) => {
+    return new Promise<SaveResult>((resolve, reject) => {
       existing.waiters.push({ resolve, reject });
     });
   }
@@ -804,9 +930,9 @@ export async function save(
   // clobber it. The `=== pend` guard makes this cleanup our-entry-only (matters
   // only on the rare path where the op settles without ever having started).
   result.then(
-    (sha) => {
+    (saved) => {
       if (pendingSaves.get(key) === pend) pendingSaves.delete(key);
-      for (const w of pend.waiters) w.resolve(sha);
+      for (const w of pend.waiters) w.resolve(saved);
     },
     (err) => {
       if (pendingSaves.get(key) === pend) pendingSaves.delete(key);
@@ -832,9 +958,26 @@ export async function saveBinary(
   relPath: string,
   content: Uint8Array,
   message: string,
-): Promise<string> {
+): Promise<SaveResult> {
   return serialize(async () => {
     const c = config();
+
+    /** Mirrors `writeAndSync`'s settle — same offline-tolerance contract. */
+    const settle = async (
+      outcome: SyncRecovery | "no-remote",
+    ): Promise<SaveResult> => {
+      const sha = await git(["rev-parse", "HEAD"]);
+      if (outcome === "pending") {
+        markSyncPending(c.vaultDir);
+        return { sha, synced: false, pending: true };
+      }
+      if (outcome === "no-remote") {
+        return { sha, synced: false, pending: false };
+      }
+      markSynced(c.vaultDir);
+      return { sha, synced: true, pending: false };
+    };
+
     const abs = join(c.vaultDir, relPath);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, content);
@@ -843,14 +986,16 @@ export async function saveBinary(
 
     const status = await git(["status", "--porcelain", "--", relPath]);
     if (status === "") {
-      return git(["rev-parse", "HEAD"]);
+      const sha = await git(["rev-parse", "HEAD"]);
+      const pending = isSyncPending(c.vaultDir);
+      return { sha, synced: !pending, pending };
     }
 
     await git(["commit", "-m", message]);
 
     // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
     if (!(await hasRemote())) {
-      return git(["rev-parse", "HEAD"]);
+      return settle("no-remote");
     }
 
     try {
@@ -864,12 +1009,15 @@ export async function saveBinary(
     } catch (err) {
       // Binär: kein Byte-Vergleich (expected=null) — sauberer Working-Tree
       // (HEAD==Disk) ist hier das einzige Idempotenz-Signal.
-      await handlePullFailure(err, relPath, null, c.gitBranch);
-      return git(["rev-parse", "HEAD"]); // idempotent recovered
+      return settle(await handlePullFailure(err, relPath, null, c.gitBranch));
     }
 
-    await git(["push", "origin", c.gitBranch]);
-    return git(["rev-parse", "HEAD"]);
+    try {
+      await git(["push", "origin", c.gitBranch]);
+    } catch (err) {
+      return settle(handlePushFailure(err, relPath));
+    }
+    return settle("synced");
   });
 }
 
@@ -911,10 +1059,19 @@ export async function move(
       // Move: the destination path is the idempotency anchor — if the rename
       // already landed (toRel clean in HEAD), this is a benign race, not a
       // conflict. expected=null (we don't compare bytes for a move).
-      await handlePullFailure(err, toRel, null, c.gitBranch);
-      return; // idempotent recovered
+      // Unreachable remote → the rename is committed locally and waits.
+      if ((await handlePullFailure(err, toRel, null, c.gitBranch)) === "pending") {
+        markSyncPending(c.vaultDir);
+      }
+      return;
     }
-    await git(["push", "origin", c.gitBranch]);
+    try {
+      await git(["push", "origin", c.gitBranch]);
+    } catch (err) {
+      if (handlePushFailure(err, toRel) === "pending") markSyncPending(c.vaultDir);
+      return;
+    }
+    markSynced(c.vaultDir);
   });
 }
 

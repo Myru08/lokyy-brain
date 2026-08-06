@@ -136,9 +136,10 @@ describe("menuConfig.read — System merge ordering", () => {
     await write([a, b]);
 
     const cfg = await read();
+    // Derived from SYSTEM_ITEMS so adding a system item (e.g. a new view type)
+    // doesn't break the ordering contract this test actually guards.
     expect(cfg.items.map((i) => i.kind)).toEqual([
-      "system",
-      "system",
+      ...SYSTEM_ITEMS.map(() => "system"),
       "custom",
       "custom",
     ]);

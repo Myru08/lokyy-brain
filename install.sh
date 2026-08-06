@@ -14,7 +14,8 @@
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
 #   6. Bei einer NEUEN Installation ein eigenes Datenbank-Passwort erzeugen und
-#      in .env hinterlegen (bestehende Installationen bleiben unangetastet)
+#      in .env hinterlegen (bestehende Installationen bleiben unangetastet);
+#      dazu einmalig das Geheimnis für den Ein-Klick-Updater (LOKYY_UPDATER_TOKEN)
 #   7. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
 #      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
 #       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
@@ -610,7 +611,7 @@ fi
 # eine ausgesperrte Datenbank ist ein Datenverlust-Risiko.
 # ─────────────────────────────────────────────────────────────────────────────
 
-step "Schritt 6/10 — Datenbank-Passwort für diese Installation"
+step "Schritt 6/10 — Datenbank-Passwort und Ein-Klick-Updater"
 
 # BEGIN db-password-bootstrap
 ENV_FILE=".env"
@@ -735,6 +736,91 @@ else
   fi
 fi
 # END db-password-bootstrap
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Immer noch Schritt 6 — Geheimnis für den Ein-Klick-Updater
+#
+# Der Brain aktualisiert sich nicht selbst; er reicht "Jetzt aktualisieren" an
+# den Sidecar lokyy-updater weiter. Beide Dienste müssen dasselbe Geheimnis
+# kennen, sonst lehnt der Updater jede Anfrage ab und die Oberfläche zeigt
+# statt des Knopfes einen Hinweis. Compose reicht denselben .env-Wert an beide
+# weiter — eine Zeile genügt also für beide Seiten.
+#
+# Anders als beim Datenbank-Passwort ist ein späteres Nachrüsten hier
+# ungefährlich: das Geheimnis wird nirgends eingebrannt, es wird bei jedem
+# Start neu aus der .env gelesen. Deshalb erzeugen wir es auch für BESTEHENDE
+# Installationen — genau die haben es nach einem Update auf v1.11+ noch nicht.
+# Vorhandene Werte bleiben unangetastet.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# BEGIN updater-token-bootstrap
+
+# Gleiche Bauart wie das Datenbank-Passwort: nur Buchstaben und Ziffern, damit
+# der Wert unverändert durch .env und Compose läuft ("$" wäre dort der Anfang
+# einer Variablen). Der Updater verlangt mindestens 16 Zeichen.
+generate_updater_token() {
+  local token=""
+
+  if command -v openssl >/dev/null 2>&1; then
+    token="$(openssl rand -hex 24 2>/dev/null)"
+  fi
+
+  if [ -z "${token}" ] && [ -r /dev/urandom ]; then
+    token="$(LC_ALL=C tr -dc 'A-Za-z0-9' < /dev/urandom 2>/dev/null | head -c 40)"
+  fi
+
+  if [ "${#token}" -lt 24 ]; then
+    return 1
+  fi
+  printf '%s\n' "${token}"
+}
+
+# Bewusst auf einen NICHT-LEEREN Wert geprüft, nicht bloß auf die Zeile: die
+# mitgelieferte .env.example enthält "LOKYY_UPDATER_TOKEN=" ohne Wert, und wer
+# sie kopiert hat, hätte damit einen Updater, der jedes Update verweigert.
+# Hängen wir in dem Fall unten eine zweite Zeile an, gewinnt sie — Compose
+# liest die .env von oben nach unten und die letzte Zuweisung zählt.
+if [ -f "${ENV_FILE}" ] \
+   && grep -Eq '^[[:space:]]*LOKYY_UPDATER_TOKEN=[[:space:]]*[^[:space:]]' "${ENV_FILE}" 2>/dev/null; then
+  ok "Der Ein-Klick-Updater ist bereits eingerichtet (Wert steht in .env)."
+
+else
+  UPDATER_TOKEN="$(generate_updater_token)"
+
+  if [ -z "${UPDATER_TOKEN}" ]; then
+    warn "Es ließ sich kein Geheimnis für den Updater erzeugen (weder openssl noch /dev/urandom)."
+    say  "    Die Installation läuft normal weiter — nur der Knopf \"Jetzt aktualisieren\""
+    say  "    fehlt dann; aktualisieren geht weiterhin über \"./install.sh\"."
+
+  elif [ -f "${ENV_FILE}" ]; then
+    {
+      printf '\n'
+      printf '# Von install.sh erzeugt — gilt nur für diese Installation.\n'
+      printf '# Gemeinsames Geheimnis von lokyy-brain und lokyy-updater. Änderst du es,\n'
+      printf '# starte beide Dienste neu (./install.sh genügt).\n'
+      printf 'LOKYY_UPDATER_TOKEN=%s\n' "${UPDATER_TOKEN}"
+    } >> "${ENV_FILE}"
+    ok "Ein-Klick-Updater eingerichtet (Geheimnis an .env angehängt)."
+
+  else
+    # Keine .env vorhanden (z. B. weil oben nichts erzeugt wurde). Neu anlegen,
+    # umask in einer Subshell, damit die Datei von Anfang an nur für dich
+    # lesbar ist — nicht erst nach einem nachträglichen chmod.
+    (
+      umask 077
+      {
+        printf '# lokyy-brain — Einstellungen dieser Installation.\n'
+        printf '# Von install.sh angelegt. Gehört NICHT ins Git (steht in .gitignore).\n'
+        printf '#\n'
+        printf '# Gemeinsames Geheimnis von lokyy-brain und lokyy-updater. Änderst du es,\n'
+        printf '# starte beide Dienste neu (./install.sh genügt).\n'
+        printf 'LOKYY_UPDATER_TOKEN=%s\n' "${UPDATER_TOKEN}"
+      } > "${ENV_FILE}"
+    )
+    ok "Ein-Klick-Updater eingerichtet (Geheimnis in .env hinterlegt, Datei bleibt lokal)."
+  fi
+fi
+# END updater-token-bootstrap
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schritt 7 — Den Stack starten

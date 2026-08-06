@@ -92,12 +92,13 @@ keine Vault-Zeile in der Datenbank (Server-Log: `no vault rows in DB`).
 
 ---
 
-## 4. Werkzeuge (29 Tools)
+## 4. Werkzeuge (30 Tools)
 
 ### Lesen & Suchen
 | Tool | Zweck |
 |---|---|
-| `search_vault(query*, limit)` | Volltext (Tier 1) + semantische Embeddings (Tier 2), gemerged. **Zuerst aufrufen** bei „was wissen wir über X". |
+| `get_index(refresh)` | **Stufe 1 der Suchleiter** (§ 4b): liefert `00_meta/INDEX.md` — die deterministisch erzeugte Vault-Karte (jeder Ordner mit Zweck + Notizen). Fehlt sie oder ist sie älter als 24 h, wird sie on-the-fly neu erzeugt (kein LLM) und zurückgeschrieben. `refresh: true` erzwingt einen Neubau. |
+| `search_vault(query*, limit, mode)` | Volltext (Tier 1) + semantische Embeddings (Tier 2), gemerged. **Zuerst aufrufen** bei „was wissen wir über X". `mode: "fast"` (Default) = heutiges Verhalten, kostenlos und sofort; `mode: "deep"` = volle 8-Stufen-Pipeline, **kostet LLM-Aufrufe** (§ 4b). |
 | `read_note(path*)` | Eine Notiz lesen (Body + Frontmatter). `path` = Notiz-ID ohne `.md`. |
 | `resolve_by_id(id*)` | Notiz über ihre stabile 26-stellige ULID auflösen (überlebt Umbenennen/Verschieben). |
 | `list_notes(filter, limit, offset)` | Notizen per Frontmatter-Filter (type/folder/tag/status/updated_after) in EINEM Call. |
@@ -162,6 +163,38 @@ Bewusst **kein** `isError` bei: einem leeren, aber gültigen Suchergebnis
 `{ valid:false, ... }` (das Tool hat korrekt gearbeitet, das Ergebnis der
 Prüfung ist die eigentliche Antwort).
 
+### 4b. Die Suchleiter — Brain First, in dieser Reihenfolge
+
+Jede Stufe kostet mehr Tokens (und Zeit) als die darüber. Ein anbindendes System
+soll **in dieser Reihenfolge** vorgehen und keine Stufe überspringen — auch die
+Server-`instructions` verankern das, damit jede angeschlossene KI dasselbe tut:
+
+| Stufe | Aufruf | Kosten | Wann |
+|---|---|---|---|
+| 1 | `get_index()` | 1 Read, kein LLM | Orientierung: welcher Ordner, welche Notiz überhaupt. Immer, wenn die Zielnotiz nicht schon bekannt ist. |
+| 2 | `search_vault(query)` (Default `mode: "fast"`) | kostenlos, sofort | Der Normalfall. Beantwortet die große Mehrheit der Fragen. |
+| 3 | `search_vault(query, mode: "deep")` | **LLM-Aufrufe + Sekunden Latenz** | Nur wenn Stufe 2 leer oder erkennbar daneben war. |
+| 4 | `read_note(path)` | 1 Datei | Genau **EINE** Notiz — der beste Treffer aus Stufe 2/3. Nicht mehrere „auf Verdacht". |
+
+**`mode: "fast"` ist und bleibt der Default.** Bestehende Clients, die keinen
+`mode` senden, bekommen unverändert dasselbe Ergebnis wie bisher — gleiche
+Antwortform, gleiche Kosten. `deep` ist rein additiv: es leitet die Anfrage in
+die 8-Stufen-Pipeline (Conversational-Rewrite → Intent-Klassifikation →
+Hybrid/RAG-Fusion → Working-Memory-Boost → Graph-Spreading-Activation →
+Encoding-Context-Boost → Re-Ranking) und liefert
+`{ mode:"deep", results:[{noteId,title,score,snippet}], intent, hops, durationMs, degraded }`.
+Ein unbekannter `mode` wird **nicht** still auf `fast` zurückgestuft, sondern mit
+`{ error:"invalid-mode", allowed:["fast","deep"] }` und `isError: true` abgelehnt
+(§ 4a) — sonst sähe ein Client-Bug aus wie „`deep` hat halt nichts gefunden".
+
+**Der Index (`00_meta/INDEX.md`)** ist eine reine Funktion des Vault-Baums: kein
+LLM, keine Zeitstempel im Text. Derselbe Vault erzeugt dieselben Bytes, deshalb
+schreibt eine Regenerierung bei unverändertem Vault **gar nichts** (kein Commit,
+kein `updated`-Bump). `id` und `created` der Notiz überleben jede Regenerierung.
+Ist Forgejo beim Zurückschreiben nicht erreichbar, liefert `get_index` trotzdem
+den frischen Inhalt und meldet das über `persisted: false` + `persist_error` —
+der Aufruf schlägt nicht fehl.
+
 ---
 
 ## 5. Empfohlenes Nutzungsmuster (aus den Server-Instructions)
@@ -169,8 +202,9 @@ Prüfung ist die eigentliche Antwort).
 Der Server liefert beim `initialize` `instructions` — die KI des Fremdsystems
 sollte sie als System-Prompt-Addendum übernehmen. Kernregeln:
 
-1. **Vor** Aussagen über Projekte/Entscheidungen/Historie → `search_vault`, dann
-   mit `noteId` zitieren.
+1. **Vor** Aussagen über Projekte/Entscheidungen/Historie → die Suchleiter aus
+   § 4b abarbeiten (`get_index` → `search_vault` fast → ggf. `deep` → EIN
+   `read_note`), dann mit `noteId` zitieren.
 2. **Nach** substanziellen Gesprächen mit neuen Erkenntnissen → `create_managed_note`.
    Typ bewusst wählen: `note` → `20_notes/`, `capture` → `30_captures/`,
    `decision` → `50_decisions/`, `intervention` → `70_pai/interventions/`.

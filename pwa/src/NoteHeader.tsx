@@ -20,6 +20,10 @@ import { NoteActionsSheet } from "./NoteActionsSheet.js";
  * Save-lifecycle states. Mirrors `App.tsx#SyncState` — kept loosely
  * coupled (the badge is purely presentational; it never decides the next
  * state, only renders the one App.tsx hands it).
+ *
+ * `saved` vs `synced` is the offline-tolerance distinction: `saved` means the
+ * server committed the note but the push to Forgejo is still outstanding
+ * (server answered `synced: false`); `synced` means the commit is upstream.
  */
 export type SaveStatus =
   | "idle"
@@ -972,10 +976,16 @@ function badgeMeta(
         tooltip: "Server-Save läuft",
       };
     case "saved":
+      // The server committed the note but could not reach Forgejo (container
+      // down, network blip) — or the write is queued offline. Deliberately
+      // gold, not red: nothing is lost, the push just hasn't happened yet.
+      // Showing an error here is what made users think their note was gone.
       return {
-        color: C.ok,
-        label: `gespeichert${formatAgo(lastSavedAt)}`,
-        tooltip: "Lokal beim Server gespeichert",
+        color: C.gold,
+        label: `lokal gespeichert – Sync ausstehend${formatAgo(lastSavedAt)}`,
+        tooltip:
+          "Die Notiz ist lokal gespeichert (Commit ist sicher). Forgejo war " +
+          "nicht erreichbar — der nächste Sync holt den Push nach.",
       };
     case "synced":
       return {

@@ -18,6 +18,7 @@ import {
   provisionVaultDir,
   saveVaultFile,
   GitBackendError,
+  HookExecutionError,
   MergeConflictError,
   PreCommitHookError,
   type McpRole,
@@ -427,6 +428,14 @@ tenantRoutes.put("/:vaultId/scope", async (c) => {
     console.error("[tenants] scope update failed", { vaultId, err });
     if (err instanceof MergeConflictError) {
       return c.json({ error: "merge-conflict", message: err.message }, 409);
+    }
+    // Vor PreCommitHookError: ein unausführbarer Hook lehnt nicht den Scope ab,
+    // er blockiert jeden Commit dieses Vaults (Windows-CRLF-Blocker).
+    if (err instanceof HookExecutionError) {
+      return c.json(
+        { error: "vault-hook-broken", message: err.message, detail: err.stderr || undefined },
+        503,
+      );
     }
     if (err instanceof PreCommitHookError) {
       return c.json(

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { DISMISS_KEY, dismiss, isDismissed, type DismissStorage } from "./dismissal.js";
+import {
+  DISMISS_KEY,
+  dismiss,
+  isDismissed,
+  undismiss,
+  type DismissStorage,
+} from "./dismissal.js";
 
 function memoryStorage(seed: Record<string, string> = {}): DismissStorage {
   const data = { ...seed };
@@ -38,6 +44,20 @@ describe("banner dismissal (AC#5)", () => {
     const storage = memoryStorage({ [DISMISS_KEY]: "1.12" });
     expect(isDismissed(null, storage)).toBe(false);
     expect(isDismissed("", storage)).toBe(false);
+  });
+
+  it("undismiss lifts the dismissal for exactly that version", () => {
+    const storage = memoryStorage();
+    dismiss("v1.12", storage);
+    undismiss("1.12", storage);
+    expect(isDismissed("v1.12", storage)).toBe(false);
+  });
+
+  it("undismiss leaves a dismissal for a different version untouched", () => {
+    const storage = memoryStorage();
+    dismiss("v1.12", storage);
+    undismiss("v1.13", storage);
+    expect(isDismissed("v1.12", storage)).toBe(true);
   });
 
   it("survives storage being unavailable", () => {

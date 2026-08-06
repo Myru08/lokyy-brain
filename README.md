@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="License: AGPL-3.0" src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg">
   <img alt="Status" src="https://img.shields.io/badge/status-beta-orange.svg">
-  <img alt="MCP" src="https://img.shields.io/badge/MCP-29%20tools-6f42c1.svg">
+  <img alt="MCP" src="https://img.shields.io/badge/MCP-30%20tools-6f42c1.svg">
   <img alt="Stack" src="https://img.shields.io/badge/stack-Hono%20%C2%B7%20Vite%20%C2%B7%20Postgres%20%C2%B7%20Ollama-333.svg">
 </p>
 
@@ -87,7 +87,7 @@ anbindest, über dieselbe Wahrheit.
 | | Lokyy Brain | Obsidian & Co. | Reiner Vector-Store / "KI-Memory" |
 |---|---|---|---|
 | **Speicherformat** | Klartext-Markdown + Frontmatter, git-versioniert | Klartext-Markdown, kein Server | Proprietäres DB-Format |
-| **KI-Zugriff** | Nativ über MCP, 29 Tools, modell-agnostisch | Nur über Community-Plugins | Meist an einen Anbieter gebunden |
+| **KI-Zugriff** | Nativ über MCP, 30 Tools, modell-agnostisch | Nur über Community-Plugins | Meist an einen Anbieter gebunden |
 | **Wahrheit** | Git (Forgejo lokal oder remote) — volle Historie, Diffs, Rollback | Lokale Datei, kein eingebautes Sync | Kein Diff, keine Historie |
 | **Selbst hostbar** | Ja, komplett — ein `docker compose up` | Teilweise (Sync-Server kostenpflichtig) | Selten |
 | **Multi-Tenant** | Ja — isolierte Kundenvaults, gescopte Tokens | Nein | Variiert |
@@ -99,7 +99,7 @@ anbindest, über dieselbe Wahrheit.
 - **Wissensgraph** aus Wikilinks, automatisch abgeleitet
 - **Zwei-Stufen-Suche**: Volltext (Tier 1) + semantische Embeddings (Tier 2,
   `nomic-embed-text` via Ollama + pgvector), gemerged
-- **MCP-Server** mit 29 Tools — Lesen, Suchen, Schreiben, Skills, Health,
+- **MCP-Server** mit 30 Tools — Lesen, Suchen, Schreiben, Skills, Health,
   Import — für jeden MCP-fähigen Client
 - **Skills-System**: wiederverwendbare Prompt-Workflows als Notizen, über MCP
   auflist- und ausführbar
@@ -137,10 +137,11 @@ System-Neustart nötig ist (Windows/WSL2) oder ein neues Terminal-Fenster
 kein Fehler, einfach einmal neu starten und den Befehl erneut aufrufen.
 Danach warnt der Installer bei Port-Konflikten, legt für eine neue Installation
 ein **eigenes Datenbank-Passwort** an (zufällig erzeugt, landet in `.env` — du
-musst nichts eintippen und dir nichts merken), baut und startet den Stack,
-wartet, bis **Web-UI und API** beide antworten (die Web-UI allein ist schon
-da, während der Server dahinter noch hochfährt — deshalb beides), und öffnet
-dann den Browser:
+musst nichts eintippen und dir nichts merken), richtet den **Ein-Klick-Updater**
+ein (ebenfalls ein zufälliger Wert in `.env`, siehe „Update" weiter unten),
+baut und startet den Stack, wartet, bis **Web-UI und API** beide antworten (die
+Web-UI allein ist schon da, während der Server dahinter noch hochfährt —
+deshalb beides), und öffnet dann den Browser:
 
 ```bash
 # macOS / Linux
@@ -210,6 +211,12 @@ betrifft nur die Anwendung selbst.
 
 ### Der normale Weg: der Knopf in Lokyy
 
+Seit v1.12.1 prüft Lokyy automatisch **dreimal am Tag** auf neue Versionen
+(`LOKYY_UPDATE_CHECK_INTERVAL_HOURS`, abschaltbar via `LOKYY_UPDATE_CHECK=off`),
+und unter *Einstellungen → System* gibt es einen **„Jetzt prüfen"**-Knopf, der
+sofort nachsieht — die Prüfung ist ein unauthentifizierter GET auf die
+öffentliche `CHANGELOG.md` und überträgt keine Nutzerdaten.
+
 Seit v1.11 prüft Lokyy beim Start selbst, ob eine neue Version vorliegt. Wenn
 ja, erscheint oben ein Hinweis mit den wichtigsten Änderungen und einem Knopf
 **„Jetzt aktualisieren"**. Ein Klick holt die neue Version, baut sie und
@@ -232,6 +239,15 @@ aktualisierst du über Coolify) und bei Installationen ohne den
 Updater-Dienst — Lokyy sagt dann, woran es liegt, statt einen toten Knopf zu
 zeigen. Wer vor v1.11 installiert hat, holt sich den Dienst mit dem manuellen
 Update unten einmalig ins Haus.
+
+**Du musst dafür nichts konfigurieren.** Brain und Updater verständigen sich
+über ein gemeinsames Geheimnis (`LOKYY_UPDATER_TOKEN`); das erzeugen
+`install.sh` und `install.ps1` bei jedem Lauf automatisch und legen es in
+`.env` ab — auch nachträglich, wenn deine Installation älter ist als der
+Updater. Ein bereits vorhandener Wert bleibt unverändert. Fehlt der Wert (z. B.
+weil du die `.env` von Hand gebaut hast), verweigert der Updater jedes Update
+und die Oberfläche sagt dir genau das — einmal `./install.sh` bzw.
+`.\install.ps1` laufen lassen genügt.
 
 ### Der manuelle Weg
 
@@ -365,6 +381,8 @@ Fünf Schritte, geführt:
 Danach landest du im Dashboard: Notiz-Baum links, Editor in der Mitte, Graph
 und Suche über die Kommandopalette (`⌘/Ctrl K`).
 
+**Was als Nächstes kommt:** siehe [ROADMAP.md](ROADMAP.md).
+
 ## Architektur
 
 ```
@@ -383,7 +401,7 @@ und Suche über die Kommandopalette (`⌘/Ctrl K`).
                                         │
                                  ┌──────┴───────┐
                                  │  MCP-Server  │  ← Claude Code, Claude Desktop,
-                                 │  (29 Tools)  │    eigene Agenten, jeder MCP-Client
+                                 │  (30 Tools)  │    eigene Agenten, jeder MCP-Client
                                  └──────────────┘
 ```
 
@@ -394,7 +412,10 @@ Vier Bausteine, klare Verantwortung:
 2. **Server (Hono)** — hält die einzige Git-Working-Copy, stellt Notizen,
    Graph und Pipes als JSON-API bereit. Git ist dabei immer ein first-class
    State: mit Remote committet & pusht jeder Save, ohne Remote committet er
-   trotzdem lokal — nie ein Datenverlust-Risiko.
+   trotzdem lokal — nie ein Datenverlust-Risiko. Ist das Remote vorübergehend
+   nicht erreichbar, antwortet der Save mit `synced: false` („lokal
+   gespeichert – Sync ausstehend"); der nächste Save oder Sync holt den Push
+   nach.
 3. **Postgres (ParadeDB) + Ollama** — semantische Suche, lokal, ohne
    Cloud-API-Abhängigkeit.
 4. **MCP-Server** — macht denselben Vault für jeden KI-Agenten verfügbar,
@@ -416,7 +437,7 @@ Drei Stufen hinter einem gemeinsamen Interface:
 
 ## MCP-Integration — KI-Agenten anbinden
 
-Der MCP-Server exponiert **29 Tools** — Lesen, Suchen, Schreiben, Skills,
+Der MCP-Server exponiert **30 Tools** — Lesen, Suchen, Schreiben, Skills,
 Health, Import — für jeden MCP-fähigen Client: Claude Code, Claude Desktop,
 den claude.ai Custom Connector, oder einen eigenen Agenten.
 
@@ -475,7 +496,7 @@ Details: **[→ docs/DEPLOY.md](docs/DEPLOY.md)**
 - Notes-, Graph- und Pipes-Service, voller Datei-Baum mit Struktur-Bearbeitung
 - CM6-Editor mit Live-Preview + Wikilink-Parsing
 - Setup-Wizard inkl. lokalem Vault ohne externe Abhängigkeit
-- MCP-Server mit 29 Tools, Multi-Tenant-Token-Scoping
+- MCP-Server mit 30 Tools, Multi-Tenant-Token-Scoping
 - Semantische Suche (Tier 1 + Tier 2)
 
 Offen: Tier-3-Knowledge-Graph (siehe oben), Graph-Frontend
@@ -530,3 +551,7 @@ Details in [NOTICE](NOTICE), Beiträge in [CONTRIBUTING.md](CONTRIBUTING.md).
 <p align="center">
   <sub>Lokyy Brain — entwickelt von <strong>Oliver Hees · Der Aiianer</strong> · <a href="https://aiianer.de">aiianer.de</a></sub>
 </p>
+
+## Roadmap
+
+Woran als Nächstes gebaut wird, steht in der [ROADMAP.md](ROADMAP.md).

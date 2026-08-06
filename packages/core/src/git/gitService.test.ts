@@ -9,8 +9,11 @@ import { promisify } from "node:util";
 import { initCore } from "../util/coreConfig.js";
 import {
   save,
+  saveBinary,
   pull,
   move,
+  sync,
+  isSyncPending,
   noteHistory,
   noteDiff,
   vaultActivity,
@@ -84,9 +87,14 @@ describe("gitService.save — remote-aware (no-remote vault, Story 9-5 seed loop
 
   it("commits locally and does NOT throw when there is no remote", async () => {
     const rel = "70_pai/skills/x.md";
-    const sha = await save(rel, "first skill body\n", "seed: x");
+    const res = await save(rel, "first skill body\n", "seed: x");
 
-    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    // No remote configured = nothing was pushed, but nothing is STUCK either:
+    // a local-only vault must never raise the "sync ausstehend" hint (AC3).
+    expect(res.synced).toBe(false);
+    expect(res.pending).toBe(false);
+    expect(isSyncPending()).toBe(false);
     expect(await readFile(join(vault.workdir, rel), "utf8")).toBe(
       "first skill body\n",
     );
@@ -94,7 +102,7 @@ describe("gitService.save — remote-aware (no-remote vault, Story 9-5 seed loop
 
   it("a second save directly after also works (the seed loop break)", async () => {
     const rel = "70_pai/skills/y.md";
-    const sha = await save(rel, "second skill body\n", "seed: y");
+    const { sha } = await save(rel, "second skill body\n", "seed: y");
 
     expect(sha).toMatch(/^[0-9a-f]{40}$/);
     expect(await readFile(join(vault.workdir, rel), "utf8")).toBe(
@@ -173,9 +181,13 @@ describe("gitService.save — idempotency + classification on pull failure (Stor
     await g(v.other, ["commit", "-m", "remote: agreed line"]);
     await g(v.other, ["push", "origin", "main"]);
 
-    const sha = await save(rel, wanted, "local: agreed line");
+    const res = await save(rel, wanted, "local: agreed line");
 
-    expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    // Idempotent recovery: the bytes ARE upstream, so this is a real sync —
+    // not the offline "pending" path.
+    expect(res.synced).toBe(true);
+    expect(res.pending).toBe(false);
     expect(await readFile(join(v.workdir, rel), "utf8")).toBe(wanted);
   });
 
@@ -195,12 +207,14 @@ describe("gitService.save — idempotency + classification on pull failure (Stor
     ).rejects.toBeInstanceOf(MergeConflictError);
   });
 
-  it("classifies an unreachable remote as a (transient) GitBackendError, not a conflict", async () => {
+  it("classifies a NON-transient backend failure as GitBackendError, not a conflict", async () => {
     const rel = "20_notes/x.md";
 
-    // Point origin at a path that does not exist → fetch/pull fails with a
-    // backend error. We still have a local commit; the idempotency probe can't
-    // find origin/main, so it falls through to classification.
+    // Point origin at a path that does not exist → fetch/pull fails with
+    // "does not appear to be a git repository" / "Could not read from remote".
+    // That is a MISCONFIGURED remote, not a blip: it is not retryable, so the
+    // offline-tolerant path deliberately does NOT swallow it (see the
+    // unreachable-Forgejo suite below for the transient counterpart).
     await g(v.workdir, [
       "remote",
       "set-url",
@@ -211,6 +225,150 @@ describe("gitService.save — idempotency + classification on pull failure (Stor
     await expect(
       save(rel, "offline edit\n", "local: offline"),
     ).rejects.toBeInstanceOf(GitBackendError);
+  });
+});
+
+// ─── Offline-tolerant save (Forgejo unreachable) ───────────────────────────
+//
+// Community report: with the Forgejo container down, autosave surfaced a hard
+// error even though `writeAndSync` had ALREADY committed locally. The commit
+// was safe; only the pull/push leg failed (transient GitBackendError → 503).
+// The user read that as "my note is gone" and had to click Sync to "repair" it.
+//
+// New contract: a transient backend failure AFTER a successful commit resolves
+// with `{ sha, synced: false, pending: true }` instead of throwing. Forgejo is
+// still the truth — the commit simply waits for the next sync().
+
+/** An origin URL nothing listens on → git fails with "Failed to connect". */
+const DEAD_REMOTE = "http://127.0.0.1:1/dead.git";
+
+describe("gitService — offline-tolerant save (Forgejo unreachable)", () => {
+  let v: Awaited<ReturnType<typeof setupVaultWithRemote>>;
+
+  beforeEach(async () => {
+    v = await setupVaultWithRemote();
+    useVault(v.workdir, v.remote);
+  });
+  afterEach(async () => {
+    if (v) await v.cleanup();
+  });
+
+  /** Cut the working copy off from its remote without removing `origin`. */
+  async function goOffline(): Promise<void> {
+    await g(v.workdir, ["remote", "set-url", "origin", DEAD_REMOTE]);
+  }
+
+  /** Reconnect the working copy to the real bare remote. */
+  async function goOnline(): Promise<void> {
+    await g(v.workdir, ["remote", "set-url", "origin", v.remote]);
+  }
+
+  it("resolves with { sha, synced: false } instead of throwing (AC1/AC2)", async () => {
+    const rel = "20_notes/offline.md";
+    await goOffline();
+
+    const res = await save(rel, "written while offline\n", "local: offline save");
+
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.synced).toBe(false);
+    expect(res.pending).toBe(true);
+
+    // The commit really is safe: on disk AND in the local history.
+    expect(await readFile(join(v.workdir, rel), "utf8")).toBe(
+      "written while offline\n",
+    );
+    expect(await g(v.workdir, ["log", "-1", "--pretty=%s"])).toBe(
+      "local: offline save",
+    );
+    expect(await g(v.workdir, ["rev-parse", "HEAD"])).toBe(res.sha);
+    expect(isSyncPending()).toBe(true);
+  });
+
+  it("leaves a clean working tree — the next save still works (AC2)", async () => {
+    await goOffline();
+
+    await save("20_notes/offline-a.md", "a\n", "local: a");
+    const second = await save("20_notes/offline-b.md", "b\n", "local: b");
+
+    expect(second.pending).toBe(true);
+    // No half-applied rebase, no staged leftovers.
+    expect(await g(v.workdir, ["status", "--porcelain"])).toBe("");
+    expect(await countCommits(v.workdir, "local: ")).toBe(2);
+  });
+
+  it("saveBinary is offline-tolerant the same way (AC2)", async () => {
+    await goOffline();
+
+    const res = await saveBinary(
+      "90_assets/blob.bin",
+      new Uint8Array([1, 2, 3, 4]),
+      "asset: blob",
+    );
+
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.synced).toBe(false);
+    expect(res.pending).toBe(true);
+    expect(await g(v.workdir, ["log", "-1", "--pretty=%s"])).toBe("asset: blob");
+  });
+
+  it("move is offline-tolerant the same way (AC2)", async () => {
+    await goOffline();
+
+    await expect(
+      move("20_notes/x.md", "20_notes/x-renamed.md", "move: x"),
+    ).resolves.toBeUndefined();
+
+    expect(existsSync(join(v.workdir, "20_notes/x-renamed.md"))).toBe(true);
+    expect(isSyncPending()).toBe(true);
+  });
+
+  it("a REAL merge conflict still throws while offline-tolerance is active (AC2)", async () => {
+    const rel = "20_notes/x.md";
+
+    // Remote diverges on the same line — the remote is REACHABLE here, so the
+    // failure is a genuine conflict and must keep surfacing as one.
+    await writeFile(join(v.other, "20_notes/x.md"), "remote divergent\n", "utf8");
+    await g(v.other, ["add", "--", rel]);
+    await g(v.other, ["commit", "-m", "remote: divergent"]);
+    await g(v.other, ["push", "origin", "main"]);
+
+    await expect(
+      save(rel, "local divergent\n", "local: divergent"),
+    ).rejects.toBeInstanceOf(MergeConflictError);
+  });
+
+  it("sync() pushes the pending commit once Forgejo is reachable again (AC6)", async () => {
+    const rel = "20_notes/deferred.md";
+    await goOffline();
+
+    const pendingSave = await save(rel, "deferred body\n", "local: deferred");
+    expect(pendingSave.pending).toBe(true);
+    expect(isSyncPending()).toBe(true);
+    // Nothing reached the bare remote yet.
+    await expect(g(v.remote, ["show", `main:${rel}`])).rejects.toBeTruthy();
+
+    await goOnline();
+    const result = await sync();
+
+    expect(result.changed).toBe(true);
+    expect(await g(v.remote, ["show", `main:${rel}`])).toBe("deferred body");
+    // The hint clears itself — nothing is waiting any more.
+    expect(isSyncPending()).toBe(false);
+  });
+
+  it("a successful save after reconnect clears the pending flag (AC5)", async () => {
+    await goOffline();
+    await save("20_notes/pending.md", "pending\n", "local: pending");
+    expect(isSyncPending()).toBe(true);
+
+    await goOnline();
+    const res = await save("20_notes/online.md", "online\n", "local: online");
+
+    expect(res.synced).toBe(true);
+    expect(res.pending).toBe(false);
+    expect(isSyncPending()).toBe(false);
+    // The push carried BOTH commits upstream.
+    expect(await g(v.remote, ["show", "main:20_notes/pending.md"])).toBe("pending");
   });
 });
 
@@ -266,7 +424,7 @@ describe("gitService — FIFO serialization (Story 10.12 AC#1)", () => {
     const ops = Array.from({ length: n }, (_, i) =>
       save(`${dir}/n${i}.md`, `body ${i}\n`, `serial-${i}`),
     );
-    const shas = await Promise.all(ops);
+    const shas = (await Promise.all(ops)).map((r) => r.sha);
 
     // All resolved to a real commit hash, all distinct (each its own commit).
     expect(new Set(shas).size).toBe(n);
@@ -316,7 +474,7 @@ describe("gitService — FIFO serialization (Story 10.12 AC#1)", () => {
     const good = save("20_notes/after-fail.md", "ok\n", "after-fail");
 
     await expect(bad).rejects.toBeTruthy();
-    await expect(good).resolves.toMatch(/^[0-9a-f]{40}$/);
+    expect((await good).sha).toMatch(/^[0-9a-f]{40}$/);
     expect(
       await readFile(join(vault.workdir, "20_notes/after-fail.md"), "utf8"),
     ).toBe("ok\n");
@@ -343,11 +501,11 @@ describe("gitService — same-note coalescing (Story 10.12 AC#2/#3)", () => {
     const ops = Array.from({ length: n }, (_, i) =>
       save(rel, `keystroke ${i}\n`, `type-${i}`),
     );
-    const shas = await Promise.all(ops);
+    const results = await Promise.all(ops);
 
     // AC#3: every caller resolved (no dropped promise) to a valid commit hash.
-    expect(shas).toHaveLength(n);
-    for (const sha of shas) expect(sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(results).toHaveLength(n);
+    for (const r of results) expect(r.sha).toMatch(/^[0-9a-f]{40}$/);
 
     // AC#2: the LAST issued content is what is persisted on disk + upstream.
     expect(await readFile(join(v.workdir, rel), "utf8")).toBe(
@@ -408,11 +566,11 @@ describe("gitService — same-note coalescing (Story 10.12 AC#2/#3)", () => {
     const rel = "20_notes/sequenced.md";
 
     const first = await save(rel, "first\n", "seq-first"); // fully awaited
-    expect(first).toMatch(/^[0-9a-f]{40}$/);
+    expect(first.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(await readFile(join(v.workdir, rel), "utf8")).toBe("first\n");
 
     const second = await save(rel, "second\n", "seq-second");
-    expect(second).toMatch(/^[0-9a-f]{40}$/);
+    expect(second.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(await readFile(join(v.workdir, rel), "utf8")).toBe("second\n");
 
     // Two separate windows → two commits.
@@ -798,7 +956,7 @@ describe("gitService.saveVaultFile — arbitrary target directory (Story 1.14)",
   }
 
   it("writes + commits into a LOCAL-ONLY target dir that is NOT config().vaultDir", async () => {
-    const sha = await saveVaultFile({
+    const { sha } = await saveVaultFile({
       targetDir: f.localOnly,
       relPath: "00_meta/mcp-scopes.yaml",
       content: "scopes: {}\n",
@@ -846,7 +1004,7 @@ describe("gitService.saveVaultFile — arbitrary target directory (Story 1.14)",
       message: "chore: update tenant scope",
     });
 
-    expect(again).toBe(first);
+    expect(again.sha).toBe(first.sha);
     // Exactly one scope commit — the second call committed nothing.
     const log = await g(f.tenant, ["log", "--pretty=%s"]);
     expect(log.split("\n").filter((l) => l === "chore: update tenant scope")).toHaveLength(1);

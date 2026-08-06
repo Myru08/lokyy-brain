@@ -22,7 +22,7 @@ import { lazy, type ComponentType } from "react";
  */
 
 /** Geschlossene Liste der View-Typen v1 (Spiegel von core `ViewType`). */
-export type ViewType = "tree" | "skills" | "dashboard";
+export type ViewType = "tree" | "skills" | "dashboard" | "sleepProtocol";
 
 /**
  * Menüpunkt — PWA-Inline-Spiegel von core `MenuItem`. Strukturell
@@ -105,6 +105,17 @@ const SkillsView = lazy(() =>
 const DashboardView = lazy(() =>
   import("./DashboardView.js").then((m) => ({ default: m.DashboardView })),
 );
+/**
+ * Echter Renderer (Story C1) — Nacht-Protokoll des Sleep-Agents. Lazy geladen
+ * wie die übrigen Views. Liegt eine Ebene höher (`pwa/src/`), weil die
+ * Komponente vor der Registrierung als eigenständige Ansicht entstanden ist;
+ * sie erfüllt `ViewProps` (nutzt nur `onOpenNote`, ignoriert `item`).
+ */
+const SleepAgentProtocolView = lazy(() =>
+  import("../../SleepAgentProtocol.js").then((m) => ({
+    default: m.SleepAgentProtocol,
+  })),
+);
 
 /**
  * Statischer Record `viewType → Renderer`. Geschlossen über `ViewType`, sodass
@@ -117,6 +128,7 @@ export const VIEW_REGISTRY: Record<ViewType, ViewRenderer> = {
   tree: TreeView,
   skills: SkillsView, // Platzhalter (11.5)
   dashboard: DashboardView, // Platzhalter (11.11)
+  sleepProtocol: SleepAgentProtocolView, // Nacht-Protokoll (Story C1)
 };
 
 /**

@@ -296,6 +296,18 @@ hooks only from `core.hooksPath` (or `.git/hooks`), so a repo you brought
 yourself needs that config set once by hand; copy the hook from
 `packages/core/src/vault/hooks/pre-commit` if it is missing.
 
+**`fatal: cannot exec '.githooks/pre-commit': No such file or directory`** —
+JEDER Commit scheitert, jeder Save wirkt kaputt. Der Hook ist ein endungsloses
+POSIX-Skript; wurde das Image aus einem Windows-Checkout gebaut
+(`core.autocrlf=true`), trägt er CRLF, und der Linux-Kernel sucht dann den
+Interpreter `/bin/sh\r`. **Lokyy repariert das seit v1.9.x beim Start selbst:**
+der Hook wird auf LF normalisiert, ausführbar gemacht und — wenn er im
+Vault-Repo versioniert ist — als `chore: pre-commit-Hook repariert
+(Zeilenenden)` committet. Ein Neustart des Brain-Containers genügt also. Von
+Hand geht es auch: `sed -i 's/\r$//' <vault>/.githooks/pre-commit && chmod +x
+<vault>/.githooks/pre-commit`. Vorbeugend sorgt die `.gitattributes` des Repos
+(`eol=lf`) dafür, dass die CRLF-Fassung gar nicht erst entsteht.
+
 **Wizard says "Postgres connection failed"** — `DATABASE_URL` resolved to a
 host outside the compose network. Inside Coolify the host must be `postgres`,
 not `localhost`.

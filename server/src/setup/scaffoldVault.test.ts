@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  healVaultHook,
   initCore,
   provisionVaultDir,
   scaffoldFolders,
@@ -335,5 +336,96 @@ describe("scaffoldVault — retrofit onto an existing vault (Story 1.20)", () =>
     const result = await scaffoldVault({ vaultDir });
     expect(result.hookActivated).toBe(true);
     expect(await g(vaultDir, ["config", "core.hooksPath"])).toBe(VAULT_HOOKS_DIR);
+  }, 30_000);
+});
+
+/**
+ * Windows-CRLF-Blocker — der Weg durch den ECHTEN Installationspfad.
+ *
+ * `packages/core/src/vault/hookHealth.test.ts` prüft Normalisierung und
+ * Self-Heal isoliert. Hier geht es um die Verdrahtung: dass `scaffoldVault`
+ * (der Installer) den Hook wirklich LF + ausführbar ablegt, und dass der
+ * Startup-Aufruf `healVaultHook()` OHNE Argumente — genau so, wie
+ * `server/src/index.ts` ihn macht — den konfigurierten Vault findet und
+ * repariert.
+ */
+describe("Pre-Commit-Hook: CRLF-Normalisierung + Self-Heal", () => {
+  async function commit(message: string, args: string[] = []): Promise<void> {
+    await exec("git", ["-C", vaultDir, "commit", ...args, "-m", message], {
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "w",
+        GIT_AUTHOR_EMAIL: "w@localhost",
+        GIT_COMMITTER_NAME: "w",
+        GIT_COMMITTER_EMAIL: "w@localhost",
+        LC_ALL: "C",
+      },
+    });
+  }
+
+  /** Eine SPEC-valide Notiz committen; `false` = der Hook hat abgebrochen. */
+  async function commitNote(relPath: string): Promise<boolean> {
+    const fm = {
+      id: "01HPXY9Z0000000000000000AB",
+      type: "note" as const,
+      title: "Eine Notiz",
+      created: "2026-01-01T00:00:00.000Z",
+      updated: "2026-01-01T00:00:00.000Z",
+    };
+    await writeFile(join(vaultDir, relPath), serializeFrontmatter(fm, "Body.\n"), "utf8");
+    await exec("git", ["-C", vaultDir, "add", "--", relPath]);
+    try {
+      await commit(`test: ${relPath}`);
+      return true;
+    } catch {
+      await exec("git", ["-C", vaultDir, "reset", "--", relPath]).catch(() => {});
+      return false;
+    }
+  }
+
+  it("AC2 — der installierte Hook trägt kein einziges CR und ist ausführbar", async () => {
+    await scaffoldVault({ vaultDir });
+
+    const raw = await readFile(join(vaultDir, VAULT_HOOK_PATH), "utf8");
+    expect(raw).not.toContain("\r");
+    expect((await stat(join(vaultDir, VAULT_HOOK_PATH))).mode & 0o111).toBe(0o111);
+    expect(await commitNote("20_notes/frisch.md")).toBe(true);
+  }, 30_000);
+
+  it("AC3 — ein versionierter CRLF-Hook blockiert alles und wird beim Start geheilt", async () => {
+    await scaffoldVault({ vaultDir });
+
+    // Zustand aus dem Feld nachstellen: Image aus einem Windows-Checkout.
+    // `--no-verify`, weil mit scharfem CRLF-Hook auch dieser Commit stürbe.
+    const hookAbs = join(vaultDir, VAULT_HOOK_PATH);
+    await writeFile(hookAbs, (await readFile(hookAbs, "utf8")).replace(/\n/g, "\r\n"), "utf8");
+    await exec("git", ["-C", vaultDir, "add", "--", VAULT_HOOK_PATH]);
+    await commit("chore: hook aus Windows-Checkout", ["--no-verify"]);
+
+    expect(await commitNote("20_notes/blockiert.md")).toBe(false);
+
+    // Exakt der Aufruf aus `server/src/index.ts`: ohne Argumente, also über
+    // `coreConfig().vaultDir`.
+    const heal = await healVaultHook();
+
+    expect(heal.status).toBe("healed");
+    expect(heal.lineEndingsFixed).toBe(true);
+    expect(heal.committed).toBe(true);
+    expect(heal.error).toBeNull();
+    expect(await readFile(hookAbs, "utf8")).not.toContain("\r");
+    expect(await g(vaultDir, ["show", `HEAD:${VAULT_HOOK_PATH}`])).not.toContain("\r");
+    expect(await commitNote("20_notes/wieder-frei.md")).toBe(true);
+  }, 30_000);
+
+  it("AC3 — ein gesunder Vault übersteht den Start-Heal ohne jede Änderung", async () => {
+    await scaffoldVault({ vaultDir });
+    const head = await g(vaultDir, ["rev-parse", "HEAD"]);
+
+    const heal = await healVaultHook();
+
+    expect(heal.status).toBe("ok");
+    expect(heal.committed).toBe(false);
+    expect(await g(vaultDir, ["rev-parse", "HEAD"])).toBe(head);
+    expect(await g(vaultDir, ["status", "--porcelain"])).toBe("");
   }, 30_000);
 });

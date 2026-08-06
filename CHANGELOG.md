@@ -5,17 +5,78 @@ aktuelle Version steht immer ganz oben.
 
 ## Roadmap — woran gerade gearbeitet wird
 
-- **Update-Knopf direkt in Lokyy.** Beim Start wird geprüft, ob eine neue
-  Version da ist; ein Banner weist dich darauf hin, und ein Klick spielt sie
-  ein. Damit entfällt der Weg übers Terminal.
-- **Eigenes Datenbank-Passwort je Installation** statt des mitgelieferten
-  Standardwerts — bestehende Installationen laufen unverändert weiter.
-- **Import-Pipes** (YouTube-Transkripte, Webseiten, PDFs, Sprachnotizen
-  direkt in den Vault).
+- **Der Beweis:** ein Messlauf, der zeigt, was die tiefe Suche bringt —
+  Kosten, Zeit, Treffer, mit und ohne.
+- **Nachtlauf pflegt den Vault-Überblick:** das neue Inhaltsverzeichnis
+  (`INDEX.md`) wird künftig automatisch nachts aktualisiert.
+- **Import-Pipes ausbauen** (PDFs und Sprachnotizen direkt in den Vault).
 - **Graph-Ansicht ausbauen** und die "ähnliche Notizen"-Vorschläge in der
   Seitenleiste.
-- **Weitere Rückmeldungen aus der Community** — meldet gerne, was euch
-  auffällt.
+- Die vollständige Liste steht in der [ROADMAP.md](ROADMAP.md).
+
+---
+
+## v1.12.6 — 2026-08-06
+
+### Behoben
+- **Der Update-Fortschritt bewegt sich jetzt wirklich.** Die Anzeige blieb beim ersten Schritt („Prüfen") stehen, während das Update im Hintergrund komplett durchlief. Ursache war ausgerechnet die Laufzeit-Uhr aus v1.12.4: Sie ließ das Fenster jede Sekunde neu zeichnen und setzte dabei die Statusabfrage zurück, bevor diese je stattfinden konnte. Behoben — die Abfrage läuft jetzt unabhängig davon weiter, und die Schritte wandern wieder mit.
+
+---
+
+## v1.12.5 — 2026-08-06
+
+### Behoben
+- **Speichern unter Windows funktioniert wieder.** Bei Windows-Installationen konnte die interne Prüfdatei des Vaults (`.githooks/pre-commit`) durch die anderen Zeilenende-Zeichen unausführbar werden — jedes Speichern brach dann mit „cannot run .githooks/pre-commit" ab. Lokyy repariert diese Datei jetzt automatisch beim Start; zusätzlich kann sie gar nicht mehr falsch ausgecheckt werden. **Notizen waren nie in Gefahr** — sie lagen die ganze Zeit auf der Festplatte, nur die Versionierung scheiterte.
+- **Der Update-Vorgang bleibt nicht mehr scheinbar hängen.** Blieb der Fortschritt in einem Schritt stehen, obwohl das Update längst lief, sah es aus wie ein Absturz. Jetzt weist Lokyy auf ungewöhnlich lange Schritte hin, erkennt selbstständig an der laufenden Version, dass das Update fertig ist, und endet notfalls mit einer klaren Ansage statt endlosem Drehen.
+
+---
+
+## v1.12.4 — 2026-08-06
+
+### Neu
+- **Update-Punkt direkt in der Kopfleiste.** Ein Klick prüft sofort auf neue Versionen („Alles aktuell" mit Zeitpunkt) — und gibt es eine, wird das Symbol orange, zeigt die neue Version an und startet das Update direkt. Kein Weg mehr über die Einstellungen nötig.
+
+### Behoben
+- **Der Update-Dialog wirkt beim Bauen nicht mehr eingefroren:** Der aktive Schritt pulsiert sichtbar, beim längsten Schritt („Bauen") steht ehrlich dabei, dass er je nach Rechner mehrere Minuten dauert, und eine mitlaufende Zeitanzeige zeigt, dass gearbeitet wird.
+
+---
+
+## v1.12.3 — 2026-08-06
+
+### Behoben
+- **Der Aktualisieren-Knopf steht jetzt direkt in den Einstellungen.** Bisher zeigte die Versions-Karte nur einen Hinweis auf den Banner „oben in der App" — jetzt startest du das Update genau dort, wo du es entdeckst. Und der Banner erscheint nach einer manuellen Prüfung sofort, ohne die Seite neu laden zu müssen.
+- **Der Installer richtet den Ein-Klick-Updater automatisch ein.** Bei vielen Installationen fehlte das dafür nötige Geheimnis in der `.env` — der Update-Knopf konnte deshalb nichts ausführen und verwies auf den manuellen Weg. `./install.sh` bzw. `.\install.ps1` erzeugen es ab sofort selbst; einmal ausführen genügt, bestehende Werte werden nie überschrieben.
+
+---
+
+## v1.12.2 — 2026-08-06
+
+### Behoben
+- **Nacht-Protokoll repariert:** Die Einträge wurden zusammengequetscht dargestellt und zeigten aufgeklappt kaum Inhalt. Jetzt: nach Tagen gruppiert, volle Karten, und aufgeklappt eine verständliche Liste der Arbeitsschritte — inklusive ehrlicher Fehleranzeige, wenn ein Schritt nicht geklappt hat.
+- **Ein interner Fehler im nächtlichen Aufräum-Schritt** (Datum statt Text übergeben) ließ diesen Schritt bei jedem Lauf scheitern — behoben; ab jetzt liefert der Nachtlauf wieder vollständige Ergebnisse.
+
+---
+
+## v1.12.1 — 2026-08-06
+
+### Neu
+- **Lokyy sucht jetzt selbst nach Updates:** automatisch dreimal am Tag, plus ein „Jetzt prüfen"-Knopf unter Einstellungen → System, der sofort nachsieht.
+
+### Behoben
+- **Neue Versionen wurden bis zu sechs Stunden lang nicht angezeigt**, weil nur beim Start geprüft wurde — genau deshalb hättest du dieses Update sonst erst heute Nachmittag gesehen.
+
+---
+
+## v1.12 — 2026-08-06
+
+### Behoben
+- **Speichern meldet keinen Fehler mehr, wenn Forgejo gerade nicht erreichbar ist.** Die Notiz war in diesem Fall schon immer lokal sicher gespeichert — jetzt sagt Lokyy das auch: ein goldener Hinweis „Lokal gespeichert – Sync ausstehend" statt einer roten Fehlermeldung. Der nächste Save oder Sync gleicht automatisch ab.
+
+### Neu
+- **Widersprüche stehen jetzt in der Notiz.** Findet Lokyy widersprüchliche Aussagen, erscheint ein farbiger Warnkasten direkt in der betroffenen Notiz — mit beiden Aussagen und beiden Quellen. Du entscheidest, was gilt, und löst den Fund per Klick auf. Dazu eine Liste aller offenen Funde im Kopfbereich.
+- **Deine KI sucht klüger und günstiger.** Feste Suchreihenfolge für angebundene KIs (erst Vault-Überblick, dann Suche, dann genau eine Notiz), ein automatisch gepflegtes Inhaltsverzeichnis (`get_index`) — und die tiefe 8-Stufen-Suche ist jetzt zuschaltbar, die normale Suche bleibt sofort und kostenlos.
+- **Nacht-Protokoll:** Die neue Ansicht zeigt, wann der nächtliche Pflege-Lauf lief, was er getan hat und welche Notizen er berührt hat.
+- **Öffentliche Roadmap:** In der neuen [ROADMAP.md](ROADMAP.md) steht, woran als Nächstes gebaut wird.
 
 ---
 

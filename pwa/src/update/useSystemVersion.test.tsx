@@ -1,8 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, type SystemVersion } from "../api.js";
+import { api, type SystemVersion, type SystemVersionCheck } from "../api.js";
 import { RELOAD_GUARD_KEY } from "./cacheRenewal.js";
-import { bundleVersion, useSystemVersion } from "./useSystemVersion.js";
+import {
+  bundleVersion,
+  refreshSystemVersion,
+  resetSystemVersionStoreForTests,
+  useSystemVersion,
+} from "./useSystemVersion.js";
 
 /**
  * The hook is thin, but it is the production wiring for AC#7 path (a) — and
@@ -14,7 +19,14 @@ import { bundleVersion, useSystemVersion } from "./useSystemVersion.js";
 
 function Probe() {
   const { version } = useSystemVersion();
-  return <div data-testid="running">{version?.running ?? "…"}</div>;
+  return (
+    <div>
+      <div data-testid="running">{version?.running ?? "…"}</div>
+      <div data-testid="latest">
+        {version?.updateAvailable ? `neu: ${version.latest}` : "kein Update"}
+      </div>
+    </div>
+  );
 }
 
 const PAYLOAD: SystemVersion = {
@@ -28,6 +40,10 @@ const PAYLOAD: SystemVersion = {
 };
 
 afterEach(() => {
+  // The payload lives in a module-level store shared by the banner and the
+  // settings tab (AC#5 of the manual-check story), so it outlives a render —
+  // including into the next test. Drop it explicitly.
+  resetSystemVersionStoreForTests();
   vi.restoreAllMocks();
   sessionStorage.clear();
 });
@@ -60,5 +76,62 @@ describe("useSystemVersion", () => {
     await waitFor(() => expect(screen.getByTestId("running")).toHaveTextContent("9.9.9"));
     expect(reload).not.toHaveBeenCalled();
     expect(sessionStorage.getItem(RELOAD_GUARD_KEY)).toBeNull();
+  });
+});
+
+/**
+ * Issue #28 — „der Banner erschien erst nach einem Hard-Reload".
+ *
+ * Two ways the store can be stale without one, both fixed here: a slow initial
+ * GET that lands after a manual check and overwrites it, and a tab that has
+ * been open since before the release existed.
+ */
+describe("useSystemVersion — freshness without a reload", () => {
+  const FRESH: SystemVersionCheck = {
+    ...PAYLOAD,
+    latest: "v1.12",
+    updateAvailable: true,
+    checkedAt: "2026-08-03T12:00:00.000Z",
+    throttled: false,
+    retryAfterSeconds: 0,
+  };
+
+  it("a slow initial GET never overwrites a newer manual check", async () => {
+    // The GET was computed BEFORE the user pressed „Jetzt prüfen" and lands
+    // after it. Publishing it would make the update vanish again until reload.
+    let landInitialGet: ((v: SystemVersion) => void) | null = null;
+    vi.spyOn(api, "getSystemVersion").mockReturnValue(
+      new Promise<SystemVersion>((resolve) => {
+        landInitialGet = resolve;
+      }),
+    );
+    vi.spyOn(api, "checkSystemVersionNow").mockResolvedValue(FRESH);
+
+    render(<Probe />);
+    await act(async () => {
+      await refreshSystemVersion();
+    });
+    expect(screen.getByTestId("latest")).toHaveTextContent("neu: v1.12");
+
+    await act(async () => {
+      landInitialGet?.(PAYLOAD); // checkedAt 10:00 — older than the check
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId("latest")).toHaveTextContent("neu: v1.12");
+  });
+
+  it("catches up when the tab comes back into view — no reload needed", async () => {
+    const get = vi.spyOn(api, "getSystemVersion").mockResolvedValue(PAYLOAD);
+    render(<Probe />);
+    await waitFor(() => expect(screen.getByTestId("latest")).toHaveTextContent("kein Update"));
+
+    // Meanwhile a release happened; the server now answers differently.
+    get.mockResolvedValue({ ...PAYLOAD, ...FRESH });
+    fireEvent(document, new Event("visibilitychange"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("latest")).toHaveTextContent("neu: v1.12"),
+    );
   });
 });

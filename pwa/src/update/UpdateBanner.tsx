@@ -1,16 +1,11 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useState } from "react";
 import { SessionUserContext } from "../AuthGate.js";
-import {
-  UpdateApiError,
-  api,
-  type SystemVersion,
-  type UpdateCapability,
-  type UpdateJob,
-} from "../api.js";
+import { type SystemVersion } from "../api.js";
 import { C, FONT } from "../theme.js";
 import { Highlights } from "./Highlights.js";
 import { dismiss, isDismissed } from "./dismissal.js";
 import { UpdateProgress } from "./UpdateProgress.js";
+import { useUpdateFlow } from "./useUpdateFlow.js";
 
 /**
  * Story 7.12 Task 5 — the update notice in the app shell (AC#2, #5, #10, #11).
@@ -31,75 +26,23 @@ export function UpdateBanner({ version }: { version: SystemVersion | null }) {
   const shouldShow = !!version?.updateAvailable && !!latest && isAdmin;
 
   const [closed, setClosed] = useState(false);
-  const [capability, setCapability] = useState<UpdateCapability | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [starting, setStarting] = useState(false);
-  const [startError, setStartError] = useState<string | null>(null);
-  /** The job we are following: an id, plus the `POST` snapshot when we have it. */
-  const [job, setJob] = useState<{ id: string; snapshot: UpdateJob | null } | null>(null);
 
-  // Ask whether this installation can update ITSELF only when the notice is
-  // actually going up — the probe reaches through to the updater sidecar and
-  // has no business running on every page load for every user.
-  useEffect(() => {
-    if (!shouldShow) return;
-    let cancelled = false;
-    void api.getUpdateCapability().then((c) => {
-      if (cancelled) return;
-      setCapability(c);
-      // A job is already running — the tab was reloaded mid-update, or the
-      // brain restarted under us. Rejoin it instead of offering to start a
-      // second one.
-      if (c.currentJobId) setJob({ id: c.currentJobId, snapshot: null });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [shouldShow]);
+  // The probe, the POST and the job we follow all live in `useUpdateFlow` —
+  // shared with the version card in Einstellungen → System, which offers the
+  // same action from a different place. `shouldShow` gates the probe: it only
+  // runs when the notice is actually going up.
+  const { capability, canUpdate, cannotUpdate, blockers, job, starting, startError, start, closeJob } =
+    useUpdateFlow(shouldShow);
 
   if (job) {
-    return (
-      <UpdateProgress
-        jobId={job.id}
-        initialJob={job.snapshot}
-        onClose={() => setJob(null)}
-      />
-    );
+    return <UpdateProgress jobId={job.id} initialJob={job.snapshot} onClose={closeJob} />;
   }
 
   if (!shouldShow || closed || isDismissed(latest)) return null;
 
-  const canUpdate = capability?.canUpdate === true;
-  // Only once we actually KNOW. While the answer is in flight there is neither
-  // a button nor a claim about how this installation updates — asserting
-  // either before we know would be a guess with a short half-life.
-  const cannotUpdate = capability !== null && !canUpdate;
-  const blockers = capability?.blockers ?? [];
   const highlights = version?.highlights ?? [];
   const shown = expanded ? highlights : highlights.slice(0, MAX_HIGHLIGHTS_COLLAPSED);
-
-  async function start(): Promise<void> {
-    setStarting(true);
-    setStartError(null);
-    try {
-      const started = await api.startUpdate();
-      setJob({ id: started.id, snapshot: started });
-    } catch (err) {
-      // A 409 means exactly one thing — a job is already running — because the
-      // server split "blocked" out into a 503. So: attach, never report.
-      if (err instanceof UpdateApiError && err.currentJobId) {
-        setJob({ id: err.currentJobId, snapshot: null });
-        return;
-      }
-      setStartError(
-        err instanceof Error && err.message
-          ? err.message
-          : "Das Update konnte nicht gestartet werden.",
-      );
-    } finally {
-      setStarting(false);
-    }
-  }
 
   return (
     <div

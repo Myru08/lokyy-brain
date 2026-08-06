@@ -9,6 +9,20 @@ import type {
   TreeNode,
 } from "@lokyy/shared";
 
+/**
+ * A note as it comes back from a save, plus the sync verdict.
+ *
+ * `synced: false` does NOT mean "not saved" — the server has committed the
+ * note to git; only the push to Forgejo is outstanding (Forgejo unreachable,
+ * or the write is sitting in the offline queue). The next successful save or
+ * a manual sync carries it upstream, so the UI shows a quiet hint instead of
+ * an error. `undefined` = an older server that doesn't report the field; treat
+ * it as synced.
+ */
+export interface SavedNote extends Note {
+  synced?: boolean;
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
  * LLM provider / routing types — sync with packages/core/src/llm/types.ts.
  * Inlined here because @lokyy/core has node-only deps and is forbidden
@@ -659,6 +673,19 @@ export interface SystemVersion {
   status: "ok" | "disabled" | "unknown";
 }
 
+/**
+ * `POST /api/system/version/check` — the same payload plus why it is that.
+ *
+ * `throttled: true` means the server served its cached answer instead of
+ * re-checking (at most one real check per 30 s). Not an error: the numbers are
+ * still true, just up to half a minute old.
+ */
+export interface SystemVersionCheck extends SystemVersion {
+  throttled: boolean;
+  /** Seconds until another check is accepted. `0` when it really checked. */
+  retryAfterSeconds: number;
+}
+
 /** Why an installation cannot update itself. Shared by capability and 503s. */
 export type UpdateBlockedReason = "managed" | "off" | "blocked" | "unreachable";
 
@@ -800,6 +827,27 @@ export const api = {
   },
 
   /**
+   * „Jetzt prüfen" — force a check now, ignoring the server's 6 h cache.
+   *
+   * `null` means the check could not run at all (offline, server down, 5xx).
+   * The caller shows a quiet note for that; it must never be dressed up as a
+   * failure of the installation. A throttled answer is NOT null — it comes
+   * back as a normal payload with `throttled: true`.
+   */
+  checkSystemVersionNow: async (): Promise<SystemVersionCheck | null> => {
+    try {
+      const res = await fetch(`${BASE}/system/version/check`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!res.ok) return null;
+      return (await res.json()) as SystemVersionCheck;
+    } catch {
+      return null;
+    }
+  },
+
+  /**
    * Story 7.12 — can this installation update itself? Admin-only server-side,
    * and always a 200 when it answers at all.
    *
@@ -868,7 +916,7 @@ export const api = {
   /** Speichern -> Server committet & pusht nach Forgejo.
    *  Bei Offline / Netzwerkfehler -> Eintrag in die Offline-Queue,
    *  Auto-Replay sobald wieder online (Story 4.2 + 4.3). */
-  putNote: async (id: string, body: string): Promise<Note> => {
+  putNote: async (id: string, body: string): Promise<SavedNote> => {
     const endpoint = `${BASE}/notes/${id}`;
     try {
       const res = await fetch(endpoint, {
@@ -878,12 +926,14 @@ export const api = {
         credentials: "include",
       });
       if (!res.ok) throw new ApiError(res.status, await res.text());
-      return (await res.json()) as Note;
+      return (await res.json()) as SavedNote;
     } catch (err) {
       if (!navigator.onLine || err instanceof TypeError) {
         const { enqueueWrite } = await import("./offline/queue.js");
         await enqueueWrite({ endpoint, method: "PUT", body: { body } });
         // Optimistic stub — caller treats this as "saved locally".
+        // `synced: false` is literally true here: the write sits in the
+        // offline queue and reaches Forgejo on replay.
         return {
           id,
           path: id + ".md",
@@ -893,6 +943,7 @@ export const api = {
           links: [],
           aliases: [],
           updatedAt: new Date().toISOString(),
+          synced: false,
         };
       }
       throw err;

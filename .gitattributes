@@ -1,0 +1,26 @@
+# Zeilenenden — gezielt, nicht global.
+#
+# Warum kein `* text=auto`: das würde beim nächsten Checkout den halben Baum
+# renormalisieren (riesiger Diff, false-positive Merge-Konflikte). Hier stehen
+# nur die Dateien, bei denen CRLF ein echter Laufzeit-Blocker ist.
+#
+# Der Fall, der diese Datei erzwungen hat: Git for Windows checkt mit
+# `core.autocrlf=true` aus, das endungslose POSIX-Skript
+# `packages/core/src/vault/hooks/pre-commit` bekommt dabei CRLF, wandert per
+# Docker-Build ins Image und vom Scaffold in den Vault. Im Linux-Container
+# sucht der Kernel dann den Interpreter `/bin/sh\r` und JEDER Commit stirbt mit
+#   fatal: cannot exec '.githooks/pre-commit': No such file or directory
+# — der Vault ist damit komplett schreibunfähig.
+
+# Der Hook im Quellbaum (endungslos, deshalb explizit per Pfad).
+packages/core/src/vault/hooks/* text eol=lf
+
+# Jedes Shell-Skript im Repo (Interpreter-Zeile aus demselben Grund).
+*.sh text eol=lf
+
+# Der installierte Hook, falls ein Vault-Repo dieselben Attribute erbt.
+.githooks/* text eol=lf
+
+# Live-Repo-Dateien: im Dev-Repo inert, wirksam nach dem Port ins Live-Repo.
+install.sh text eol=lf
+lokyy.sh text eol=lf

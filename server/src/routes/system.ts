@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import {
   TimezoneValidationError,
+  forceUpdateCheck,
   getTimezone,
   getUpdateStatus,
   setTimezone,
@@ -41,6 +42,34 @@ export const systemRoutes = new Hono();
  * endpoints (AC#10), not on reading a version number.
  */
 systemRoutes.get("/version", (c) => c.json(getUpdateStatus()));
+
+/**
+ * „Jetzt prüfen" — force a check right now, ignoring the 6 h cache, and answer
+ * with the fresh `UpdateCheckResult`. The result is written back into the
+ * shared cache, so the banner picks it up from the very next `GET /version`.
+ *
+ * Unlike `GET /version` this one DOES wait on the network — that is the whole
+ * point of a button — but `forceUpdateCheck` keeps the hard budget (5 s
+ * timeout, at most one retry), so the worst case is bounded.
+ *
+ * Rate limit (AC#2): at most one real fetch per 30 s. Deliberately **200 with
+ * the cached result** plus `throttled: true` and a `Retry-After` header, NOT a
+ * 429. Rationale: clicking twice is not a client error, and a red error state
+ * for a version check contradicts the module's rule that a check which cannot
+ * run is a non-event. The payload stays truthful — a cached result at most
+ * 30 s old — and `throttled` lets a caller say "gerade eben geprüft" instead
+ * of inventing a failure.
+ *
+ * Not admin-gated, exactly like `GET /version`: it reads a public changelog
+ * and returns no secrets. Update EXECUTION stays behind `requireAdmin`.
+ */
+systemRoutes.post("/version/check", async (c) => {
+  const { result, throttled, retryAfterSeconds } = await forceUpdateCheck();
+  if (throttled) {
+    c.header("Retry-After", String(retryAfterSeconds));
+  }
+  return c.json({ ...result, throttled, retryAfterSeconds });
+});
 
 /**
  * Story 7.12 Task 4 — update EXECUTION, admin-only (AC#10):

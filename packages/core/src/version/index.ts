@@ -54,6 +54,21 @@ const MAX_RETRIES = 1;
 const RETRY_DELAY_MS = 500;
 /** Server-side cache lifetime of a check result. */
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+/** Default distance between two periodic re-checks — 3×/day. */
+export const DEFAULT_UPDATE_CHECK_INTERVAL_HOURS = 8;
+/**
+ * Floor for the periodic interval. A typo in `…_INTERVAL_HOURS` must not turn
+ * every installation into a polling client of raw.githubusercontent.com.
+ */
+const MIN_INTERVAL_HOURS = 0.25;
+/** Ceiling — beyond a month the check is effectively "off", which has a flag. */
+const MAX_INTERVAL_HOURS = 24 * 30;
+/**
+ * Smallest distance between two MANUAL force checks (AC#2). The button is a
+ * user action, so the guard is short: it exists to absorb double-clicks and an
+ * open tab per device, not to ration checks.
+ */
+const FORCE_CHECK_MIN_INTERVAL_MS = 30_000;
 /** Upper bound on the changelog body we are willing to parse. */
 const MAX_BODY_CHARS = 200_000;
 /** Upper bound on highlight lines handed to the UI. */
@@ -315,6 +330,36 @@ export function updateCheckConfig(
   };
 }
 
+/**
+ * Distance between two periodic re-checks, in milliseconds — `null` when the
+ * check is switched off entirely (`LOKYY_UPDATE_CHECK=off`).
+ *
+ * `LOKYY_UPDATE_CHECK_INTERVAL_HOURS` accepts fractions (`0.5`). Anything
+ * unusable — a word, a negative number, zero — falls back to the default
+ * rather than disabling the check or looping tightly: there is exactly one
+ * documented off switch, and this isn't it.
+ */
+export function updateCheckIntervalMs(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  if (!updateCheckConfig(env).enabled) return null;
+
+  const raw = (env.LOKYY_UPDATE_CHECK_INTERVAL_HOURS ?? "").trim();
+  let hours = DEFAULT_UPDATE_CHECK_INTERVAL_HOURS;
+  if (raw !== "") {
+    const parsed = Number.parseFloat(raw);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      hours = Math.min(Math.max(parsed, MIN_INTERVAL_HOURS), MAX_INTERVAL_HOURS);
+    } else {
+      console.info(
+        `${LOG_PREFIX}: unusable LOKYY_UPDATE_CHECK_INTERVAL_HOURS="${raw}" — ` +
+          `using ${DEFAULT_UPDATE_CHECK_INTERVAL_HOURS}h`,
+      );
+    }
+  }
+  return Math.round(hours * 60 * 60 * 1000);
+}
+
 // ─── The check itself (AC#2, AC#3) ──────────────────────────────────────
 
 /** What `GET /api/system/version` serves. */
@@ -555,9 +600,134 @@ export async function warmUpdateCheck(): Promise<void> {
   }
 }
 
+// ─── Manual force check (AC#1, AC#2) ────────────────────────────────────
+
+/** When the last accepted force check ran. `0` = none since process start. */
+let lastForceAtMs = 0;
+
+/** What {@link forceUpdateCheck} answers — the result plus WHY it is that. */
+export interface ForceUpdateCheckResult {
+  /** The freshly fetched result, or the cached one when `throttled`. */
+  result: UpdateCheckResult;
+  /** `true` when the 30 s guard swallowed this call. */
+  throttled: boolean;
+  /** Seconds until the next force check is accepted. `0` when not throttled. */
+  retryAfterSeconds: number;
+}
+
+/** Options for {@link forceUpdateCheck}. */
+export interface ForceUpdateCheckOptions extends CheckForUpdateOptions {
+  /** Overrides the 30 s guard (tests). */
+  minIntervalMs?: number;
+}
+
+/**
+ * Check NOW, ignoring the 6 h cache — what the „Jetzt prüfen" button calls.
+ *
+ * Unlike {@link getUpdateStatus} this really goes to the network, and it
+ * writes the result back into the shared cache, so the banner and the settings
+ * tab see the same answer immediately afterwards.
+ *
+ * Guarded to at most one real fetch per 30 s. Being throttled is NOT an error:
+ * the caller gets the cached result — at most 30 s old — plus `throttled: true`
+ * so it can say so if it wants to. Same hard rules as everywhere in this
+ * module: never throws, `checkedAt` moves on every completed check (including
+ * "no update"), a failure degrades to `status: "unknown"`.
+ */
+export async function forceUpdateCheck(
+  opts: ForceUpdateCheckOptions = {},
+): Promise<ForceUpdateCheckResult> {
+  const { minIntervalMs = FORCE_CHECK_MIN_INTERVAL_MS, ...checkOpts } = opts;
+  const env = checkOpts.env ?? process.env;
+
+  if (!updateCheckConfig(env).enabled) {
+    // Off means off — answer honestly, do not open a socket, do not throttle.
+    const result = await checkForUpdate(checkOpts);
+    cached = result;
+    cachedAtMs = Date.now();
+    return { result, throttled: false, retryAfterSeconds: 0 };
+  }
+
+  const sinceMs = Date.now() - lastForceAtMs;
+  if (lastForceAtMs !== 0 && sinceMs < minIntervalMs) {
+    return {
+      result: cached ?? emptyResult(),
+      throttled: true,
+      retryAfterSeconds: Math.max(1, Math.ceil((minIntervalMs - sinceMs) / 1000)),
+    };
+  }
+
+  lastForceAtMs = Date.now();
+  const result = await refreshUpdateCheck(checkOpts);
+  return { result, throttled: false, retryAfterSeconds: 0 };
+}
+
+// ─── Periodic re-check (AC#3) ───────────────────────────────────────────
+
+/** Handle for the periodic re-check timer. */
+export interface UpdateCheckTimerHandle {
+  /** Interval in ms, or `null` when nothing was armed (check disabled). */
+  intervalMs: number | null;
+  /** Idempotent — safe to call on a disabled handle and twice in a row. */
+  stop(): void;
+}
+
+/** Options for {@link startUpdateCheckTimer}. */
+export interface UpdateCheckTimerOptions extends CheckForUpdateOptions {
+  /** Overrides `LOKYY_UPDATE_CHECK_INTERVAL_HOURS` (tests). */
+  intervalMs?: number;
+}
+
+/**
+ * Arm the periodic re-check — default every 8 h, i.e. 3×/day (AC#3).
+ *
+ * Deliberately does NOT fire immediately: the startup `warmUpdateCheck()` is
+ * the first check, this one takes over afterwards. The timer is `unref`'d, so
+ * it neither keeps the process alive nor delays a shutdown, and every failure
+ * is swallowed exactly like the warm-up swallows it — a user who is offline
+ * still never sees a scary line.
+ */
+export function startUpdateCheckTimer(
+  opts: UpdateCheckTimerOptions = {},
+): UpdateCheckTimerHandle {
+  const { intervalMs: override, ...checkOpts } = opts;
+  const env = checkOpts.env ?? process.env;
+  const intervalMs = override ?? updateCheckIntervalMs(env);
+
+  if (intervalMs === null) {
+    console.info(`${LOG_PREFIX}: periodic re-check not armed — check is disabled`);
+    return { intervalMs: null, stop: () => {} };
+  }
+
+  const timer = setInterval(() => {
+    void refreshUpdateCheck(checkOpts)
+      .then((result) => {
+        console.info(
+          `${LOG_PREFIX}: periodic re-check — latest=${result.latest ?? "unknown"} ` +
+            `updateAvailable=${result.updateAvailable} status=${result.status}`,
+        );
+      })
+      .catch(() => {
+        // `refreshUpdateCheck` already swallows; this keeps a future change
+        // from turning a background tick into an unhandled rejection.
+      });
+  }, intervalMs);
+
+  // A background nicety must never be the reason a process refuses to exit.
+  if (typeof (timer as { unref?: () => void }).unref === "function") {
+    (timer as unknown as { unref: () => void }).unref();
+  }
+
+  console.info(
+    `${LOG_PREFIX}: periodic re-check armed — every ${(intervalMs / 3_600_000).toFixed(2)}h`,
+  );
+  return { intervalMs, stop: () => clearInterval(timer) };
+}
+
 /** Test-only: drop the cached result so each test starts from a clean slate. */
 export function resetUpdateCheckCacheForTests(): void {
   cached = null;
   cachedAtMs = 0;
   inFlight = null;
+  lastForceAtMs = 0;
 }

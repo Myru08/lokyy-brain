@@ -13,7 +13,8 @@
 #   4. Prüfen, ob "docker compose" (Version 2) verfügbar ist
 #   5. Prüfen, ob die Ports frei sind, die Lokyy Brain braucht (nur Warnung)
 #   6. Bei einer NEUEN Installation ein eigenes Datenbank-Passwort erzeugen und
-#      in .env hinterlegen (bestehende Installationen bleiben unangetastet)
+#      in .env hinterlegen (bestehende Installationen bleiben unangetastet);
+#      dazu einmalig das Geheimnis für den Ein-Klick-Updater (LOKYY_UPDATER_TOKEN)
 #   7. Den Stack starten: docker compose -f docker-compose.local.yml up -d --build
 #      (hängt noch ein Port-Rest aus einem früheren Lauf, wird EINMAL automatisch
 #       aufgeräumt und neu gestartet; sonst folgt eine Diagnose, wer den Port hält)
@@ -476,7 +477,7 @@ if ($portsBusy -gt 0) {
 # install.sh — ändert sich eine Seite, muss die andere nachgezogen werden.
 # ─────────────────────────────────────────────────────────────────────────────
 
-Write-Step 'Schritt 6/10 — Datenbank-Passwort für diese Installation'
+Write-Step 'Schritt 6/10 — Datenbank-Passwort und Ein-Klick-Updater'
 
 # BEGIN db-password-bootstrap
 $EnvFile = '.env'
@@ -596,6 +597,83 @@ if ($envHasPassword) {
     }
 }
 # END db-password-bootstrap
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Immer noch Schritt 6 — Geheimnis für den Ein-Klick-Updater
+#
+# Der Brain aktualisiert sich nicht selbst; er reicht "Jetzt aktualisieren" an
+# den Sidecar lokyy-updater weiter. Beide Dienste müssen dasselbe Geheimnis
+# kennen, sonst lehnt der Updater jede Anfrage ab und die Oberfläche zeigt
+# statt des Knopfes einen Hinweis. Compose reicht denselben .env-Wert an beide
+# weiter — eine Zeile genügt also für beide Seiten.
+#
+# Anders als beim Datenbank-Passwort ist ein späteres Nachrüsten hier
+# ungefährlich: das Geheimnis wird nirgends eingebrannt, es wird bei jedem
+# Start neu aus der .env gelesen. Deshalb erzeugen wir es auch für BESTEHENDE
+# Installationen — genau die haben es nach einem Update auf v1.11+ noch nicht.
+# Vorhandene Werte bleiben unangetastet.
+#
+# Diese Logik ist die Schwester des Blocks "updater-token-bootstrap" in
+# install.sh — ändert sich eine Seite, muss die andere nachgezogen werden.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# BEGIN updater-token-bootstrap
+
+# Gleiche Bauart wie das Datenbank-Passwort: nur Buchstaben und Ziffern, damit
+# der Wert unverändert durch .env und Compose läuft ("$" wäre dort der Anfang
+# einer Variablen). Der Updater verlangt mindestens 16 Zeichen.
+function New-UpdaterToken {
+    $bytes = New-Object byte[] 24
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $rng.GetBytes($bytes)
+    } finally {
+        $rng.Dispose()
+    }
+    return (($bytes | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# Bewusst auf einen NICHT-LEEREN Wert geprüft, nicht bloß auf die Zeile: die
+# mitgelieferte .env.example enthält "LOKYY_UPDATER_TOKEN=" ohne Wert, und wer
+# sie kopiert hat, hätte damit einen Updater, der jedes Update verweigert.
+# Hängen wir in dem Fall unten eine zweite Zeile an, gewinnt sie — Compose
+# liest die .env von oben nach unten und die letzte Zuweisung zählt.
+$envHasUpdaterToken = $false
+if (Test-Path $EnvFile) {
+    $envHasUpdaterToken = @(Get-Content $EnvFile -ErrorAction SilentlyContinue |
+                            Where-Object { $_ -match '^\s*LOKYY_UPDATER_TOKEN=\s*\S' }).Count -gt 0
+}
+
+if ($envHasUpdaterToken) {
+    Write-Ok 'Der Ein-Klick-Updater ist bereits eingerichtet (Wert steht in .env).'
+} else {
+    $updaterToken = New-UpdaterToken
+
+    if ([string]::IsNullOrWhiteSpace($updaterToken) -or $updaterToken.Length -lt 24) {
+        Write-Warn 'Es ließ sich kein Geheimnis für den Updater erzeugen.'
+        Write-Line '    Die Installation läuft normal weiter — nur der Knopf "Jetzt aktualisieren"'
+        Write-Line '    fehlt dann; aktualisieren geht weiterhin über ".\install.ps1".'
+    } elseif (Test-Path $EnvFile) {
+        $block = "`r`n" +
+                 "# Von install.ps1 erzeugt — gilt nur für diese Installation.`r`n" +
+                 "# Gemeinsames Geheimnis von lokyy-brain und lokyy-updater. Änderst du es,`r`n" +
+                 "# starte beide Dienste neu (.\install.ps1 genügt).`r`n" +
+                 "LOKYY_UPDATER_TOKEN=$updaterToken`r`n"
+        Write-EnvText -Path $EnvFile -Text $block -Append $true
+        Write-Ok 'Ein-Klick-Updater eingerichtet (Geheimnis an .env angehängt).'
+    } else {
+        # Keine .env vorhanden (z. B. weil oben nichts erzeugt wurde). Neu anlegen.
+        $block = "# lokyy-brain — Einstellungen dieser Installation.`r`n" +
+                 "# Von install.ps1 angelegt. Gehört NICHT ins Git (steht in .gitignore).`r`n" +
+                 "#`r`n" +
+                 "# Gemeinsames Geheimnis von lokyy-brain und lokyy-updater. Änderst du es,`r`n" +
+                 "# starte beide Dienste neu (.\install.ps1 genügt).`r`n" +
+                 "LOKYY_UPDATER_TOKEN=$updaterToken`r`n"
+        Write-EnvText -Path $EnvFile -Text $block -Append $false
+        Write-Ok 'Ein-Klick-Updater eingerichtet (Geheimnis in .env hinterlegt, Datei bleibt lokal).'
+    }
+}
+# END updater-token-bootstrap
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Schritt 7 — Den Stack starten

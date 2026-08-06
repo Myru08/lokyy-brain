@@ -12,6 +12,7 @@ import { config } from "./config.js";
 import {
   ensureRepo,
   getLlmProviders,
+  healVaultHook,
   initCore,
   initDb,
   initLlmFromConfig,
@@ -20,6 +21,7 @@ import {
   runMigrations,
   setLlmProviders,
   sleepAgent,
+  startUpdateCheckTimer,
   warmUpdateCheck,
 } from "@lokyy/core";
 import { notesRoutes } from "./routes/notes.js";
@@ -441,6 +443,32 @@ async function main() {
     }
   }
 
+  // ── Pre-Commit-Hook heilen (Windows-CRLF-Blocker) ──────────────────────
+  // Ein mit CRLF ausgecheckter Hook macht den Vault KOMPLETT schreibunfähig:
+  // der Kernel sucht den Interpreter `/bin/sh\r` und jeder Commit stirbt mit
+  // `fatal: cannot exec '.githooks/pre-commit'`. Deshalb direkt nach dem
+  // Klon/Pull und VOR dem ersten möglichen Write. Idempotent (ein gesunder
+  // Hook kostet einen stat), wirft per Vertrag nie, und schreibt nur, wenn
+  // sich wirklich etwas ändert.
+  try {
+    const heal = await healVaultHook();
+    if (heal.status === "healed") {
+      console.log(
+        `[lokyy-brain] Pre-Commit-Hook repariert (Zeilenenden: ${heal.lineEndingsFixed}, ` +
+          `Rechte: ${heal.modeFixed}, committet: ${heal.committed})`,
+      );
+    }
+    if (heal.error) console.warn(`[lokyy-brain] Hook-Reparatur unvollständig — ${heal.error}`);
+  } catch (err) {
+    // healVaultHook wirft per Vertrag nicht; dieser catch schützt nur gegen
+    // künftige Änderungen an diesem Vertrag — der Start darf hier nie sterben.
+    console.warn(
+      `[lokyy-brain] Hook-Selbstheilung übersprungen — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   // ── LLM registry init (Phase-0 Wave C-Backend) ─────────────────────────
   // Read persisted provider configs and instantiate the runtime registry.
   // Failures here MUST NOT abort startup — a missing/broken provider is
@@ -528,6 +556,21 @@ async function main() {
   // triggering a network request. `warmUpdateCheck` swallows every failure;
   // the extra .catch() only guards against future changes to that contract.
   void warmUpdateCheck().catch(() => {});
+
+  // ── …und danach periodisch nachprüfen (Default alle 8 h, 3×/Tag) ──────
+  // Ohne das sieht ein laufender Server ein frisches Release erst beim
+  // nächsten Neustart. Der Timer ist `unref`'d und schluckt jeden Fehler:
+  // weder Start noch Shutdown hängen daran. `LOKYY_UPDATE_CHECK=off` armiert
+  // gar nichts, `LOKYY_UPDATE_CHECK_INTERVAL_HOURS` verschiebt den Takt.
+  try {
+    startUpdateCheckTimer();
+  } catch (err) {
+    console.warn(
+      `[lokyy-brain] periodischer Update-Check nicht armiert — ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
 }
 
 main().catch((err) => {
