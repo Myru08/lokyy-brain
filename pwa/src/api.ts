@@ -1468,7 +1468,7 @@ export const api = {
    */
   acceptTopicNote: async (noteId: string): Promise<void> => {
     const res = await fetch(
-      `${BASE}/agent-review/topic-note/${noteId}/accept`,
+      `${BASE}/agent-review/topic-note/${encodeURIComponent(noteId)}/accept`,
       { method: "POST", credentials: "include" },
     );
     if (!res.ok) {
@@ -1480,7 +1480,7 @@ export const api = {
   /** Delete an auto-generated topic note. */
   rejectTopicNote: async (noteId: string): Promise<void> => {
     const res = await fetch(
-      `${BASE}/agent-review/topic-note/${noteId}/reject`,
+      `${BASE}/agent-review/topic-note/${encodeURIComponent(noteId)}/reject`,
       { method: "POST", credentials: "include" },
     );
     if (!res.ok) {
