@@ -41,6 +41,7 @@ Given these N related notes, write a concise (200-400 word) Markdown summary tha
 2. Identifies the central concepts shared across the notes
 3. Highlights any contradictions or open questions
 4. Lists each source note with a Wikilink-reference: [[noteId]]
+5. Is written in the SAME LANGUAGE as the source notes (German notes produce a German summary). Never translate.
 
 DO NOT invent facts. DO NOT add speculation. Stay grounded in the provided notes.`;
 
