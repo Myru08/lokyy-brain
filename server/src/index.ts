@@ -528,7 +528,9 @@ async function main() {
   // /api/sleep-agent/trigger still work even if the scheduler didn't arm.
   try {
     sleepAgent().startScheduler();
-    console.log("[lokyy-brain] sleep-agent scheduler armed (idle=30min, nightly=03:00)");
+    console.log(
+      "[lokyy-brain] sleep-agent scheduler armed (idle=nrem/30min, nightly=rem/03:00)",
+    );
   } catch (err) {
     console.warn(
       `[lokyy-brain] sleep-agent scheduler skipped — ${err instanceof Error ? err.message : String(err)}`,

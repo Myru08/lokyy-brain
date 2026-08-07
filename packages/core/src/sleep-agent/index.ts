@@ -33,9 +33,10 @@ import type {
  *      stats, never lets one pass's failure abort the next.
  *   2. Idempotency / mutual exclusion: only one run at a time per
  *      process, scheduler timers no-op while a run is active.
- *   3. Schedule those runs (`startScheduler`) on a 30-min idle interval
- *      plus a daily 03:00 nightly run. The scheduler is best-effort and
- *      MUST NOT block server startup if the DB is temporarily unavailable.
+ *   3. Schedule those runs (`startScheduler`) on a 30-min idle NREM
+ *      interval plus a daily 03:00 nightly REM run. The scheduler is
+ *      best-effort and MUST NOT block server startup if the DB is
+ *      temporarily unavailable.
  *
  * Later stories append passes to `ALL_PASSES` without changing this
  * orchestrator.
@@ -249,6 +250,15 @@ export class SleepAgent {
    * always recomputes "tomorrow at hour" from a fresh `new Date()` — this
    * is why DST transitions don't drift the schedule: we never accumulate
    * an offset, we always re-anchor to wall-clock time.
+   *
+   * The nightly slot runs REM, not NREM. The idle timer already fires NREM
+   * every 30 min, so a nightly NREM would repeat work that just ran — while
+   * REM would never fire at all without a manual trigger. REM carries the
+   * passes that actually build connections (entity-extraction,
+   * topic-synthesis, mem0-classifier, peer-profile-update), and
+   * `mem0Classifier` only considers notes touched within the last 24 h
+   * (`RECENT_WINDOW_MS`). Anything less than a daily cadence therefore drops
+   * notes silently and permanently — they never become candidates again.
    */
   private scheduleNightly(hour: number): void {
     const now = new Date();
@@ -258,7 +268,7 @@ export class SleepAgent {
     const ms = Math.max(0, next.getTime() - now.getTime());
     this.nightlyTimer = setTimeout(() => {
       if (!this.running) {
-        void this.runPhase("nrem", "nightly").catch((err) => {
+        void this.runPhase("rem", "nightly").catch((err) => {
           console.warn(
             `[sleep-agent] nightly run failed: ${
               err instanceof Error ? err.message : String(err)
