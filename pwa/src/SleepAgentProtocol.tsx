@@ -4,7 +4,10 @@ import { AlertTriangle, Moon, RefreshCw } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import { Spinner } from "./Spinner.js";
 import { fetchSleepAgentRuns, type SleepRunDto } from "./api.sleepAgent.js";
-import { groupEntriesByDay, toProtocolEntries } from "./sleepAgentProtocol.js";
+import {
+  groupEntriesByDay,
+  toProtocolEntries,
+} from "./sleepAgentProtocolViewModel.js";
 import { SleepAgentRunCard } from "./SleepAgentRunCard.js";
 import type { ViewProps } from "./sidebar/views/registry.js";
 
@@ -18,8 +21,8 @@ import type { ViewProps } from "./sidebar/views/registry.js";
  *
  * Sprache: durchgehend Deutsch und ohne Fachbegriffe. Die Zielgruppe hat
  * keinen Programmierhintergrund; jede technische Bezeichnung (Pass-Namen,
- * Phasen, Status) wird in `sleepAgentProtocol.ts` übersetzt, bevor sie hier
- * ankommt.
+ * Phasen, Status) wird in `sleepAgentProtocolViewModel.ts` übersetzt, bevor
+ * sie hier ankommt.
  *
  * Registry-kompatibel: die Komponente erfüllt `ViewProps` aus
  * `sidebar/views/registry.ts` (`item` + `onOpenNote`) und kann darum ohne

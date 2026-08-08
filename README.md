@@ -460,6 +460,31 @@ widerrufen oder neu erzeugen.
 > funktioniert weiterhin, damit nichts abreißt; die Einstellungen weisen darauf
 > hin, solange er in Gebrauch ist.
 
+## Zugriffsschutz
+
+**Die API verlangt für alle Daten-Routen eine gültige Login-Session.** Notizen,
+Vault-Baum, Graph, Suche, Import, Dashboard, Einstellungen — ohne Cookie
+`lokyy_session` antwortet der Server mit `401`, und zwar bevor er einen
+Request-Body überhaupt liest. Offen bleiben nur `/health` (Liveness, der
+Updater-Sidecar pollt sie), `/api/setup/*` und `/api/auth/*` (sonst käme man nie
+zu einer Session), die Forgejo-OAuth-Routen des Wizards sowie `/mcp` — der
+authentifiziert per Bearer-Token statt per Cookie und ist davon unberührt.
+
+Läuft deine Session ab, springt die Oberfläche von selbst zurück auf den
+Login-Screen statt Fehlermeldungen zu zeigen.
+
+Die PWA im Dev-Modus spricht die API über den Vite-Proxy an (`/api` →
+`localhost:8787`), läuft also unter derselben Origin — CORS musst du dafür nicht
+konfigurieren. Nur wenn ein Frontend unter einer *anderen* Domain direkt auf die
+API zeigt, trägst du diese Origin in `LOKYY_CORS_ORIGINS` ein (Komma-Liste). Ein
+Wildcard gibt es bewusst nicht: die API authentifiziert per Session-Cookie.
+
+**Für Beta-Tester mit lokalem Docker:** `docker-compose.local.yml` bindet alle
+Host-Ports an `127.0.0.1`. Der Stack ist damit nur vom eigenen Rechner
+erreichbar, nicht mehr aus dem WLAN. Wer bewusst vom Handy oder einem zweiten
+Gerät im selben Netz zugreifen will, entfernt in dieser Datei das Präfix
+`127.0.0.1:` an genau der Portzeile, die er braucht (PWA: `8095`, API: `8787`).
+
 Claude Code oder jeder andere MCP-Client verbindet sich mit genau diesen zwei
 Angaben; Tools werden automatisch entdeckt.
 

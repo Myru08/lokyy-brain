@@ -7,7 +7,7 @@ import {
   FileText,
 } from "lucide-react";
 import { C, FONT } from "./theme.js";
-import type { ProtocolEntry, StatusTone } from "./sleepAgentProtocol.js";
+import type { ProtocolEntry, StatusTone } from "./sleepAgentProtocolViewModel.js";
 
 /**
  * Eine Karte je Nachtlauf — Unterkomponente von `SleepAgentProtocol.tsx`
@@ -18,7 +18,8 @@ import type { ProtocolEntry, StatusTone } from "./sleepAgentProtocol.js";
  * Klick klappt die einzelnen Arbeitsschritte und die berührten Notizen aus —
  * so bleibt die Liste auch nach hundert Läufen überschaubar.
  *
- * Die Karte rechnet NICHT: alle Texte kommen fertig aus `sleepAgentProtocol.ts`.
+ * Die Karte rechnet NICHT: alle Texte kommen fertig aus
+ * `sleepAgentProtocolViewModel.ts`.
  */
 
 /** Theme-Farbe je Status-Ton. */

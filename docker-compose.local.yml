@@ -30,13 +30,21 @@
 # diesem Repo existiert. Alles andere gehört abgeglichen — sie sind schon
 # einmal auseinandergelaufen (Forgejo-Ports, siehe Issue #18).
 #
-# Host-Ports (nur diese sind von außen erreichbar):
+# Host-Ports — ALLE an 127.0.0.1 gebunden, also nur vom eigenen Rechner
+# erreichbar, nicht aus dem WLAN/LAN:
 #   • PWA        → http://localhost:8095
 #   • Server-API → http://localhost:8787
 #   • MCP        → http://localhost:8788/mcp   (Bearer = LOKYY_MCP_TOKEN)
 #   • Forgejo-UI → http://localhost:8790       (kein SSH-Port veröffentlicht —
 #     der Wizard spricht Forgejo nur per HTTP an, s.u.)
 #   • postgres / ollama bleiben intern (kein `ports:`) — wie in der Coolify-Datei.
+#
+# Das `127.0.0.1:`-Präfix ist Absicht (Security-Sweep, Issue #37): ohne es hört
+# Docker auf ALLEN Interfaces und der Stack hängt im Heim- oder Firmennetz. Wer
+# bewusst vom Handy/Tablet im selben WLAN zugreifen will, entfernt das Präfix an
+# genau der einen Zeile, die er braucht — und macht sich klar, dass dann jeder im
+# Netz die Login-Seite sieht. Die API selbst verlangt seit demselben Sweep eine
+# gültige Session, der Port ist also nicht mehr die einzige Schutzschicht.
 #
 # Start:
 #   docker compose -f docker-compose.local.yml up -d
@@ -106,7 +114,7 @@ services:
     image: codeberg.org/forgejo/forgejo:9
     restart: unless-stopped
     ports:
-      - "8790:3000"   # Web-UI  → http://localhost:8790 (3000/3001 sind auf vielen
+      - "127.0.0.1:8790:3000"   # Web-UI  → http://localhost:8790 (3000/3001 sind auf vielen
       # Dev-Rechnern von anderen Tools belegt — Next.js, Grafana & Co. — daher
       # bewusst ein unüblicherer Port hier.
     # Kein Host-SSH-Port: der Wizard/GIT_REMOTE sprechen Forgejo intern per
@@ -137,7 +145,7 @@ services:
       target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
     depends_on:
       postgres:
         condition: service_healthy
@@ -191,7 +199,7 @@ services:
       dockerfile: pwa/Dockerfile
     restart: unless-stopped
     ports:
-      - "8095:80"
+      - "127.0.0.1:8095:80"
     depends_on:
       lokyy-brain:
         condition: service_started
@@ -210,7 +218,7 @@ services:
       target: mcp             # WICHTIG: explizit mcp-Stage.
     restart: unless-stopped
     ports:
-      - "8788:8788"
+      - "127.0.0.1:8788:8788"
     depends_on:
       postgres:
         condition: service_healthy

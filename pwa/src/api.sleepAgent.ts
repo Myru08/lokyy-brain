@@ -13,8 +13,8 @@
  * darf nie im Browser-Bundle landen, die Typen werden daher gespiegelt.
  *
  * Alle Felder außer `id` sind optional getypt: die Ansicht darf an einer
- * älteren/neueren Server-Version nicht zerbrechen (siehe `sleepAgentProtocol.ts`,
- * das jedes Feld defensiv liest).
+ * älteren/neueren Server-Version nicht zerbrechen (siehe
+ * `sleepAgentProtocolViewModel.ts`, das jedes Feld defensiv liest).
  */
 
 const BASE = "/api";
@@ -39,7 +39,7 @@ export type SleepStatus =
  * `passStats` ist absichtlich `Record<string, unknown>`: jeder Arbeitsschritt
  * legt dort seine eigene Ergebnisform ab (`{ processed, errors, notes? }` bzw.
  * `{ error }` bei einem geworfenen Schritt). Die Interpretation passiert
- * ausschließlich in `sleepAgentProtocol.ts`.
+ * ausschließlich in `sleepAgentProtocolViewModel.ts`.
  */
 export interface SleepRunDto {
   id: string;

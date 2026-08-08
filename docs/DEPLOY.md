@@ -130,6 +130,12 @@ Optional:
   gilt sofort und ohne Neustart. Die Variable bleibt nur als Fallback für
   bestehende Installationen gültig. Lässt du sie leer, akzeptiert `/mcp`
   ausschließlich die in der Oberfläche erzeugten Token — der empfohlene Zustand.
+- `LOKYY_CORS_ORIGINS` — nur nötig, wenn die PWA unter einer ANDEREN Domain
+  liegt als die API und direkt auf sie zeigt. Beim All-in-one-Pattern teilen
+  sich beide die FQDN → leer lassen. Komma-Liste vollständiger Origins
+  (`https://ui.lokyy.example.tld`). Ein Wildcard ist nicht vorgesehen: die API
+  authentifiziert per Session-Cookie, und `*` würde jede fremde Seite mitlesen
+  lassen.
 - `LOKYY_OAUTH_PASSWORD` / `LOKYY_OAUTH_SIGNING_SECRET` — für den OAuth-2.1-Flow
   des claude.ai-Connectors. Ohne Wert fallen beide auf `LOKYY_MCP_TOKEN` zurück;
   ist auch diese Variable leer, ist der OAuth-Flow **deaktiviert** (`/mcp`
@@ -213,6 +219,41 @@ curl https://lokyy.example.tld/mcp/health
 1. In the PWA → New Note → "Hello from Coolify" → save.
 2. Inside Forgejo → `lokyy-vault` repo → latest commit should be your save.
 3. Wikilinks / graph view should populate within a few seconds (Tier 1 index).
+
+---
+
+## 8b. Access control — what is reachable without a login
+
+Since the session sweep (issue #37) **every data route requires a valid
+`lokyy_session` cookie**: notes, vault tree, graph, search, pipes, dashboard,
+settings, diagnostics and logs all answer `401` to an anonymous caller, and they
+do so before reading a request body. This is the server's own guarantee — it
+does not depend on a reverse proxy or on the port being firewalled.
+
+Deliberately reachable without a session:
+
+| Endpoint | Why |
+|----------|-----|
+| `/health` | Liveness. The `lokyy-updater` sidecar polls it while services restart. |
+| `/api/setup/*` | Runs before the first user exists; closes itself once setup completes. |
+| `/api/auth/*` | Login/register/logout. Requiring a session to get one is a deadlock. |
+| `/api/auth/forgejo/*`, `/api/forgejo/*` | The OAuth wizard — usable pre-setup; every handler checks the session itself. |
+| `/mcp` | Bearer token per request (DB-managed tokens or `LOKYY_MCP_TOKEN`). Cookie auth does not apply. |
+
+`/api/admin/*`, `/api/tenants/*` and `/api/system/update/*` go one step further
+and require `role=admin`.
+
+Smoke test after a deploy — the first must be `401`, the second `200`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://lokyy.example.tld/api/notes
+curl -s -o /dev/null -w '%{http_code}\n' https://lokyy.example.tld/health
+```
+
+**Local docker (`docker-compose.local.yml`)**: all host ports are published on
+`127.0.0.1` only, so the stack is not exposed to the LAN. To reach it from
+another device on purpose, drop the `127.0.0.1:` prefix from the specific port
+line — and know that everyone on that network then sees the login page.
 
 ---
 

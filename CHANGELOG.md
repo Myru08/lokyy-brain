@@ -16,6 +16,20 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.13.0 — 2026-08-08
+
+### Sicherheit
+- **Die API verlangt jetzt für alle Daten-Routen eine Anmeldung.** Notizen, Vault, Graph, Suche, Import, Dashboard und Einstellungen antworten ohne gültige Session mit 401 — bisher waren sie nach dem Setup ohne Login erreichbar. Deine Notizen waren nie verändert; es ging allein darum, wer sie lesen darf.
+- **Die lokale Installation hört jetzt nur noch auf 127.0.0.1** statt offen im Netzwerk; CORS ist auf eine konfigurierbare Origin-Liste beschränkt statt Wildcard.
+
+### Behoben
+- **Aufbau und Update auf dem Mac funktionieren wieder.** Zwei nur in der Groß-/Kleinschreibung verschiedene Dateien ließen den Build auf macOS abbrechen — behoben, plus ein Wächter gegen diese Fehlerklasse.
+
+### Hinweis
+- Bei abgelaufener Session führt die Oberfläche jetzt zum Login zurück; das Teilen von Inhalten verlangt eine aktive Anmeldung.
+
+---
+
 ## v1.12.6 — 2026-08-06
 
 ### Behoben
