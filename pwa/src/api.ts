@@ -606,9 +606,33 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+/**
+ * Fired once per 401 from the API. `AuthGate` listens for it and drops back to
+ * the login screen (Story „Session-Auth-Sweep", issue #37).
+ *
+ * Every data route demands a session now, so an expired or revoked cookie no
+ * longer shows up as one broken panel — it shows up as every request failing at
+ * once. Without this the user would sit in front of an app-shaped error message
+ * with no way to notice that the fix is simply logging in again.
+ */
+export const UNAUTHENTICATED_EVENT = "lokyy:unauthenticated";
+
+function announceUnauthenticated(): void {
+  // Guarded for the non-DOM contexts the module is imported from (vitest node
+  // environment, and anything server-rendered later).
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
+    // Every API failure in this module funnels through an ApiError, so this is
+    // the one place that sees all of them — including the raw-`fetch` call
+    // sites that never touch the `json()` helper. `/api/auth/*` deliberately
+    // does not: Login and AuthGate use bare `fetch`, so a wrong password stays
+    // a form error instead of bouncing the session state.
+    if (status === 401) announceUnauthenticated();
   }
   /** true bei Merge-Konflikt — die UI kann dann gezielt darauf reagieren. */
   get isConflict() {

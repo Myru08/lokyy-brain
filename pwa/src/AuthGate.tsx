@@ -1,5 +1,6 @@
 import { createContext, useEffect, useState } from "react";
 import { Login } from "./Login.js";
+import { UNAUTHENTICATED_EVENT } from "./api.js";
 import { C, FONT } from "./theme.js";
 
 interface SessionUser {
@@ -36,6 +37,22 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     void check();
+  }, []);
+
+  /**
+   * A 401 from any API call means this session is gone — expired, revoked, or
+   * the server was reinstalled. Since the auth sweep (issue #37) that applies to
+   * every data route, so the honest response is to show the login screen again
+   * rather than let the shell render on top of an API that answers nothing.
+   *
+   * Re-checking instead of trusting the event keeps one stray 401 from throwing
+   * out a session that is actually fine (a route the user has no rights for,
+   * say): `/api/auth/me` is the authority, this is only the trigger.
+   */
+  useEffect(() => {
+    const onUnauthenticated = () => void check();
+    window.addEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
+    return () => window.removeEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
   }, []);
 
   if (state === "loading") {

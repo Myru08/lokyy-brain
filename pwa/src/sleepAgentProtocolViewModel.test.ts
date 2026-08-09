@@ -5,7 +5,7 @@ import {
   groupEntriesByDay,
   toProtocolEntries,
   type SleepRunDto,
-} from "./sleepAgentProtocol.js";
+} from "./sleepAgentProtocolViewModel.js";
 
 /**
  * Datenaufbereitung der Nacht-Protokoll-Ansicht (Story C1).
