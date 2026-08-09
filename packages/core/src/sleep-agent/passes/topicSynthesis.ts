@@ -24,7 +24,8 @@
  */
 import { buildGraph } from "../../graph/graphService.js";
 import { detectCommunities } from "../../graph/community.js";
-import { getNote, createNote } from "../../notes/notesService.js";
+import { getNote, createNote, listNotes } from "../../notes/notesService.js";
+import { parseFrontmatter } from "../../frontmatter/index.js";
 import { isHandsOffZone } from "../rawGuard.js";
 import { LlmRouter } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
@@ -34,6 +35,77 @@ const MIN_CLUSTER_SIZE = 3;
 const MAX_CLUSTERS_PER_RUN = 10;
 const MAX_MEMBERS_PER_PROMPT = 15;
 const MAX_BODY_CHARS = 500;
+
+/**
+ * Where `/api/agent-review/topic-note/:id/accept` files an accepted summary
+ * (mirrors `TOPIC_ACCEPT_TARGET_DIR` in `server/src/routes/agent-review.ts`).
+ *
+ * The pass has to know this folder for two reasons, both discovered in
+ * production on a vault that had run the pass for two nights in a row:
+ *
+ *   1. **Re-generation.** A cluster does not stop being a cluster because the
+ *      user accepted its summary — the next run wrote `auto-{slug}.md` again,
+ *      and accepting THAT collided with the already-accepted file (`git mv`
+ *      refuses to overwrite), stranding the note in a state neither accept nor
+ *      reject would touch.
+ *   2. **Self-echo.** The accepted note carries wikilinks to every source, so
+ *      it joins the very community it summarizes. The following run fed the
+ *      summary back into the prompt and summarized the summary — each night a
+ *      little further from the notes it is supposed to describe, and the
+ *      output even wikilinked itself.
+ *
+ * Both are fixed by knowing which topics have already been curated.
+ */
+const ACCEPTED_TOPIC_DIR = "20_notes/topics";
+
+/** Frontmatter marker every note this pass writes carries. */
+const TOPIC_NOTE_KIND = "topic_note";
+
+interface AcceptedTopicIndex {
+  /** `community_id` values that already produced a curated topic note. */
+  communityIds: Set<string>;
+  /** Slugs (filename stems) present in {@link ACCEPTED_TOPIC_DIR}. */
+  slugs: Set<string>;
+}
+
+/**
+ * Index the already-accepted topic notes. Cheap: the folder holds one note per
+ * curated topic, and only those get their body read.
+ *
+ * A read failure degrades to an empty index rather than aborting the pass —
+ * losing the skip means a redundant summary, losing the pass means no
+ * summaries at all.
+ */
+async function loadAcceptedTopicIndex(): Promise<AcceptedTopicIndex> {
+  const communityIds = new Set<string>();
+  const slugs = new Set<string>();
+  try {
+    const all = await listNotes();
+    const accepted = all.filter((n) => n.id.startsWith(`${ACCEPTED_TOPIC_DIR}/`));
+    for (const summary of accepted) {
+      slugs.add(summary.id.slice(ACCEPTED_TOPIC_DIR.length + 1));
+      const note = await getNote(summary.id).catch(() => null);
+      if (!note) continue;
+      const communityId = parseFrontmatter(note.body).data.community_id;
+      if (typeof communityId === "string" && communityId.length > 0) {
+        communityIds.add(communityId);
+      }
+    }
+  } catch {
+    // fall through with whatever was collected
+  }
+  return { communityIds, slugs };
+}
+
+/**
+ * True for notes this pass produced — the pending `auto-*` ones and the
+ * accepted copies alike. They are excluded from synthesis input so a summary
+ * never becomes the source of the next summary.
+ */
+function isOwnTopicNote(body: string): boolean {
+  const { data } = parseFrontmatter(body);
+  return data.intervention_kind === TOPIC_NOTE_KIND;
+}
 
 const SYNTH_PROMPT = `You are creating a topic-summary note for a personal knowledge vault.
 Given these N related notes, write a concise (200-400 word) Markdown summary that:
@@ -52,6 +124,7 @@ export const topicSynthesisPass: SleepPass = {
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
     let errors = 0;
+    let skipped = 0;
 
     try {
       // 1. Build the wikilink graph + detect communities.
@@ -63,16 +136,28 @@ export const topicSynthesisPass: SleepPass = {
 
       // 2. Filter to communities of at least MIN_CLUSTER_SIZE, then take the
       //    top MAX_CLUSTERS_PER_RUN by size. Largest first = highest signal.
-      const eligibleCommunities = [...result.communities.entries()]
+      //    Communities the user already curated drop out BEFORE the slice, so
+      //    they don't push fresh clusters out of the per-run budget, and
+      //    before the LLM call, so a skip costs nothing.
+      const acceptedTopics = await loadAcceptedTopicIndex();
+      const allEligible = [...result.communities.entries()]
         .filter(([, members]) => members.length >= MIN_CLUSTER_SIZE)
-        .sort((a, b) => b[1].length - a[1].length)
+        .sort((a, b) => b[1].length - a[1].length);
+      const eligibleCommunities = allEligible
+        .filter(([communityId]) => {
+          if (!acceptedTopics.communityIds.has(communityId)) return true;
+          skipped++;
+          return false;
+        })
         .slice(0, MAX_CLUSTERS_PER_RUN);
 
       if (eligibleCommunities.length === 0) {
         return {
           processed: 0,
           errors: 0,
-          notes: `no eligible clusters (modularity=${result.modularity.toFixed(3)})`,
+          notes: skipped > 0
+            ? `no new clusters — ${skipped} already curated (modularity=${result.modularity.toFixed(3)})`
+            : `no eligible clusters (modularity=${result.modularity.toFixed(3)})`,
         };
       }
 
@@ -104,11 +189,20 @@ export const topicSynthesisPass: SleepPass = {
               if (isHandsOffZone(nid)) return null;
               const n = await getNote(nid).catch(() => null);
               if (!n) return null;
-              return `[${nid}] ${n.title}\n${(n.body ?? "").slice(0, MAX_BODY_CHARS)}`;
+              // A previous run's own output is not evidence about the topic —
+              // it IS the topic's summary. Feeding it back produces a summary
+              // of a summary (and a note that wikilinks itself).
+              if (isOwnTopicNote(n.body ?? "")) return null;
+              return {
+                id: nid,
+                block: `[${nid}] ${n.title}\n${(n.body ?? "").slice(0, MAX_BODY_CHARS)}`,
+              };
             }),
           );
-          const contentBlock = memberContent.filter((s): s is string => Boolean(s))
-            .join("\n\n---\n\n");
+          const usableMembers = memberContent.filter(
+            (m): m is { id: string; block: string } => Boolean(m),
+          );
+          const contentBlock = usableMembers.map((m) => m.block).join("\n\n---\n\n");
 
           if (!contentBlock) {
             errors++;
@@ -119,7 +213,7 @@ export const topicSynthesisPass: SleepPass = {
             { role: "system" as const, content: SYNTH_PROMPT },
             {
               role: "user" as const,
-              content: `Notes (cluster of ${members.length}):\n\n${contentBlock}\n\nWrite the topic-summary now.`,
+              content: `Notes (cluster of ${usableMembers.length}):\n\n${contentBlock}\n\nWrite the topic-summary now.`,
             },
           ];
 
@@ -136,15 +230,24 @@ export const topicSynthesisPass: SleepPass = {
           const slug = slugify(title);
           const path = `70_pai/topics/auto-${slug}`;
 
+          // Second guard, by filename. The community-id check above misses the
+          // case where a cluster drifted (new id) but the LLM landed on the
+          // same title — and that title is exactly what accept would `git mv`
+          // onto the existing file.
+          if (acceptedTopics.slugs.has(slug)) {
+            skipped++;
+            continue;
+          }
+
           await createNote(path, synth.text, {
             type: "intervention",
             title,
             extra: {
-              intervention_kind: "topic_note",
+              intervention_kind: TOPIC_NOTE_KIND,
               status: "pending",
               origin: "agent",
               confidence: 0.6,
-              source_notes: members,
+              source_notes: usableMembers.map((m) => m.id),
               community_id: communityId,
               generated_at: generatedAt,
             },
@@ -164,7 +267,9 @@ export const topicSynthesisPass: SleepPass = {
       return {
         processed,
         errors,
-        notes: `synthesized ${processed} topic notes from ${eligibleCommunities.length} clusters (modularity=${result.modularity.toFixed(3)})`,
+        notes: `synthesized ${processed} topic notes from ${eligibleCommunities.length} clusters${
+          skipped > 0 ? `, skipped ${skipped} already curated` : ""
+        } (modularity=${result.modularity.toFixed(3)})`,
       };
     } catch (err) {
       return {
