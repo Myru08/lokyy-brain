@@ -265,10 +265,19 @@ agentReviewRoutes.get("/queue", async (c) => {
 /*  Notes:                                                                   */
 /*   - `saveNote` runs schema validation; intervention with origin=curated   */
 /*     is allowed by the schema (extra keys pass through).                   */
-/*   - If `moveEntry` fails, the frontmatter is already updated but the      */
-/*     note stays in the auto folder. The next accept attempt will see       */
-/*     origin=curated and 422 — surface the move error to the user so they  */
-/*     can retry once the underlying git issue is fixed.                     */
+/*   - Steps 3-5 must be all-or-nothing. They were not: a `git mv` onto an   */
+/*     EXISTING target aborts, and the frontmatter rewrite from step 4 was   */
+/*     already committed — the note then sat in the auto folder with         */
+/*     origin=curated, which accept AND reject both refuse (422 "not in      */
+/*     agent state"), and the queue no longer lists it. Unreviewable, and    */
+/*     invisible. Two guards below close that: a pre-flight collision check  */
+/*     (409 before anything is written) and a rollback of the frontmatter if */
+/*     the move still fails for an unforeseen reason.                        */
+/*   - The collision is not hypothetical: topic-synthesis re-generates a     */
+/*     cluster whose accepted twin already lives in the target folder, so    */
+/*     the second accept of the same topic hits an existing file. The pass   */
+/*     itself skips those clusters now (`topicSynthesis.ts`) — this guard    */
+/*     covers the notes generated before that fix and hand-filed targets.    */
 /* ──────────────────────────────────────────────────────────────────────── */
 
 agentReviewRoutes.post("/topic-note/:id{.+}/accept", async (c) => {
@@ -288,6 +297,25 @@ agentReviewRoutes.post("/topic-note/:id{.+}/accept", async (c) => {
     return c.json(
       { error: `topic note ${id} is not in agent state (origin=${String(fm.origin)})` },
       422,
+    );
+  }
+
+  const slug = id.slice(TOPIC_PREFIX.length);
+  const targetId = `${TOPIC_ACCEPT_TARGET_DIR}/${slug}`;
+
+  // Collision pre-flight. `moveEntry` ends in `git mv`, which refuses to
+  // overwrite; asking BEFORE the frontmatter rewrite keeps the note in a
+  // state the user can still act on (accept after cleaning up, or reject).
+  const existing = await getNote(targetId);
+  if (existing) {
+    return c.json(
+      {
+        error: `target already exists: ${targetId}`,
+        target: targetId,
+        hint:
+          "Diese Topic-Note wurde schon einmal akzeptiert. Vergleiche die neue Fassung mit der vorhandenen und verwirf sie, oder benenne die vorhandene um.",
+      },
+      409,
     );
   }
 
@@ -314,9 +342,26 @@ agentReviewRoutes.post("/topic-note/:id{.+}/accept", async (c) => {
 
   // 2. Move into the user folder. `moveEntry` uses gitService, which
   // serializes against the saveNote above via the shared promise-lock.
-  const slug = id.slice(TOPIC_PREFIX.length);
-  const targetId = `${TOPIC_ACCEPT_TARGET_DIR}/${slug}`;
-  await moveEntry(id, targetId, "note");
+  // A failure here would otherwise strand the note between the two states,
+  // so put the original body back before reporting the error.
+  try {
+    await moveEntry(id, targetId, "note");
+  } catch (err) {
+    try {
+      await saveNote(id, note.body);
+    } catch (rollbackErr) {
+      // Rollback failed too — say so explicitly instead of letting the
+      // half-applied note look like a plain move failure.
+      return c.json(
+        {
+          error: `move failed and rollback failed: ${String(err)} / ${String(rollbackErr)}`,
+          needsManualFix: true,
+        },
+        500,
+      );
+    }
+    return c.json({ error: `move failed: ${String(err)}` }, 500);
+  }
 
   return c.json({
     ok: true,
