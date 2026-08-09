@@ -147,7 +147,18 @@ export function AgentReviewPanel({
         await fn();
         await refresh();
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Aktion fehlgeschlagen");
+        // Refresh on failure too. A rejected action still tells us the list is
+        // stale — a topic note that 422s as "not in agent state" is precisely
+        // one the queue no longer contains, and leaving the stale card on
+        // screen invites the same doomed click again.
+        //
+        // Order matters: `refresh` opens with `setError(null)` and may set an
+        // error of its own, so the action's message goes in AFTER it. That is
+        // also why its failure is swallowed — the action error is the one the
+        // user needs to read.
+        const message = err instanceof Error ? err.message : "Aktion fehlgeschlagen";
+        await refresh().catch(() => {});
+        setError(message);
       } finally {
         setBusyIds((prev) => {
           const next = new Set(prev);
