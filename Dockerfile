@@ -30,6 +30,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # ─── Build ──────────────────────────────────────────────────────────────
 FROM base AS build
+# Toolchain für native Node-Module (`bcrypt`). `bcrypt` lädt beim Install ein
+# vorkompiliertes Binary von GitHub-Releases und fällt, wenn dieser Download
+# scheitert, auf Selbstkompilieren per node-gyp zurück. Ohne Python/Compiler
+# bricht dieser Fallback ab und reisst `pnpm install` mit — der Build hing also
+# an der Erreichbarkeit von GitHub-Releases aus dem Build-Container heraus
+# (Ausfall am 2026-08-12). Bewusst NUR in dieser Stage: `base` wird auch von
+# runtime/server/mcp geerbt, dort hätte die Toolchain nichts zu suchen. Die
+# Build-Stage wird im Multi-Stage-Build ohnehin verworfen.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 COPY packages/shared/package.json packages/shared/
