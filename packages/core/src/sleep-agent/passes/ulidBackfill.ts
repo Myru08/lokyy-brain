@@ -78,6 +78,10 @@ function inferTypeFromPath(noteId: string): DocType {
   if (noteId.startsWith("40_customers/")) return "customer";
   if (noteId.startsWith("50_decisions/")) return "decision";
   if (noteId.startsWith("10_projects/")) return "project";
+  // Modul 15_lerngebiete (ADR-015) — gleiche Prefix-Regel wie `10_projects`:
+  // eine von Hand abgelegte, typlose Datei unter `15_lerngebiete/` ist ein
+  // Lerngebiet und darf nicht auf `note` zurückfallen.
+  if (noteId.startsWith("15_lerngebiete/")) return "learning-area";
   if (noteId.startsWith("40_tasks/")) return "task";
   if (noteId.startsWith("70_pai/")) return "note";
   if (noteId.startsWith("peers/")) return "peer";

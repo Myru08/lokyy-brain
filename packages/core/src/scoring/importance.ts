@@ -66,6 +66,10 @@ export const ORIGIN_SCORES: Record<DocType, number> = {
   tool: 0.6,
   resource: 0.5,
   reference: 0.6,
+  // Modul 15_lerngebiete (ADR-015). Ein Lerngebiet verankert den Vault wie ein
+  // Projekt: es ist die Hub-Notiz, an der Lektionen, Nachweise und Referenzen
+  // hängen. Deshalb derselbe Origin-Score wie `project`.
+  "learning-area": 1.0,
   capture: 0.3,
 };
 
@@ -99,6 +103,11 @@ export const HALF_LIFE_DAYS: Record<DocType, number> = {
   tool: 365,
   resource: 180,
   reference: 365,
+  // Modul 15_lerngebiete (ADR-015). Ein Lerngebiet ist ein langlebiges
+  // Vorhaben ohne festen Endtermin — es altert langsamer als ein Projekt
+  // (540) und liegt näher an einer Decision. Ein pausiertes Lerngebiet soll
+  // nach Monaten noch auffindbar sein.
+  "learning-area": 720,
 };
 
 /** Power-law decay exponent (Anderson & Schooler). */

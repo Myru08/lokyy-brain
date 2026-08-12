@@ -39,6 +39,16 @@ export const DOC_TYPES = [
   "tool",
   "resource",
   "reference",
+  // Modul 15_lerngebiete (ADR-015) — ein Lerngebiet ist ein eigenständiges,
+  // langlebiges Lernvorhaben (persönlich oder beruflich) mit eigenem
+  // Lernstand, eigenen Lektionen und Lernnachweisen. Bewusst KEIN `project`:
+  // ein Projekt zielt auf ein Lieferergebnis mit Abschluss, ein Lerngebiet auf
+  // fortlaufenden Kompetenzaufbau ohne festen Endtermin — und es trägt einen
+  // eigenen Status-Satz (draft|active|paused|completed|archived).
+  // Heimat: `15_lerngebiete` (siehe notes/folderMap.ts). Wie die 10.15-Typen
+  // propagiert der Typ über DOC_TYPES automatisch in Conventions, Folder-Map,
+  // Scaffold und MCP-Oberfläche.
+  "learning-area",
 ] as const;
 
 /**

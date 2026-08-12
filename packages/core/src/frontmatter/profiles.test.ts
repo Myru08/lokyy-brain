@@ -28,10 +28,11 @@ describe("vault SPEC profiles (Story S2 / B1)", () => {
     expect(DEFAULT_VAULT_PROFILE).toBe("para");
   });
 
-  it("para profile carries the unchanged 15 PARA doc types", () => {
+  it("para profile carries the 16 PARA doc types", () => {
     const spec = getProfileSpec("para");
     expect([...spec.docTypes]).toEqual([...DOC_TYPES]);
-    expect(spec.docTypes).toHaveLength(15);
+    // 15 + learning-area (Modul 15_lerngebiete, ADR-015).
+    expect(spec.docTypes).toHaveLength(16);
   });
 
   it("karpathy profile carries only the three RAW/Wiki/Outputs types", () => {

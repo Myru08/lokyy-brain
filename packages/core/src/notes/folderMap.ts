@@ -80,6 +80,15 @@ export const TYPE_FOLDER: Readonly<Record<DocType, string>> = {
   tool: "35_tools",
   resource: "30_captures",
   reference: "20_notes",
+  // Modul 15_lerngebiete (ADR-015). Statische (nicht-datierte) Platzierung:
+  // die Hub-Notiz eines Lerngebiets ist `15_lerngebiete/{slug}` — exakt das
+  // gleiche Muster wie `project → 10_projects`. Die Unterstruktur eines
+  // Lerngebiets (`lektionen/`, `referenzen/`, `lernnachweise/`, `dateien/`)
+  // lebt unter `15_lerngebiete/{slug}/` und wird — wie bei Projekten — aus
+  // gewöhnlichen Notizen bzw. `create_folder` gebildet; sie braucht KEINE
+  // eigene Pfadregel, weil `checkPathMatchesType` Unterordner unterhalb des
+  // kanonischen Ordners ohnehin zulässt.
+  "learning-area": "15_lerngebiete",
 } as const;
 
 /**

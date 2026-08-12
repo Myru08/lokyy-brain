@@ -41,6 +41,7 @@ import skillSchema from "./schemas/skill.json" with { type: "json" };
 import toolSchema from "./schemas/tool.json" with { type: "json" };
 import resourceSchema from "./schemas/resource.json" with { type: "json" };
 import referenceSchema from "./schemas/reference.json" with { type: "json" };
+import learningAreaSchema from "./schemas/learning-area.json" with { type: "json" };
 
 // Karpathy per-type schema objects (Story S2, the three new ones).
 import rawSourceSchema from "./schemas/raw-source.json" with { type: "json" };
@@ -89,6 +90,7 @@ const PARA_TYPE_FOLDER: Readonly<Record<string, string>> = {
   tool: "35_tools",
   resource: "30_captures",
   reference: "20_notes",
+  "learning-area": "15_lerngebiete",
 } as const;
 
 const PARA_SCHEMAS: Readonly<Record<string, object>> = {
@@ -107,6 +109,7 @@ const PARA_SCHEMAS: Readonly<Record<string, object>> = {
   tool: toolSchema as object,
   resource: resourceSchema as object,
   reference: referenceSchema as object,
+  "learning-area": learningAreaSchema as object,
 };
 
 /**

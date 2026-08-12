@@ -116,6 +116,11 @@ export interface VaultConventions {
 const FOLDER_PURPOSE: Record<string, string> = {
   "00_meta": "Vault metadata: JSON schemas, mcp-scopes.yaml, templates.",
   "10_projects": "Project notes (type: project) — ongoing initiatives.",
+  "15_lerngebiete":
+    "Lerngebiete (type: learning-area) — langlebige Lernvorhaben mit eigenem " +
+    "Lernstand. Die Hub-Notiz ist `15_lerngebiete/{slug}`; ihre Unterstruktur " +
+    "(`lektionen/`, `referenzen/`, `lernnachweise/`, `dateien/`) liegt unter " +
+    "`15_lerngebiete/{slug}/`.",
   "20_notes": "General notes & insights (type: note) — the default home.",
   "30_captures":
     "Captured external sources (type: capture) from pipes: urls, youtube, voice, pdfs sub-folders.",
@@ -210,6 +215,11 @@ const TYPE_MEANING: Record<AnyDocType, string> = {
   tool: "A software tool / utility record (lives in 35_tools).",
   resource: "An external resource captured for later reference (lives in 30_captures).",
   reference: "Durable reference / lookup material (lives in 20_notes).",
+  // Modul 15_lerngebiete (ADR-015).
+  "learning-area":
+    "Ein Lerngebiet: langlebiges Lernvorhaben mit Mission, Erfolgskriterien, " +
+    "Lernstand, Lektionen und Lernnachweisen (lives in 15_lerngebiete). " +
+    "Status: draft | active | paused | completed | archived.",
   // Story S2 — Karpathy profile (RAW / Wiki / Outputs).
   "raw-source": "Verbatim captured source, never rewritten (lives in RAW).",
   "wiki-article":

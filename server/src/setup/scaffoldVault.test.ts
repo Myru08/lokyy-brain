@@ -97,7 +97,8 @@ describe("scaffoldVault — fresh install (Story 1.19)", () => {
     const expected = (await readdir(SCHEMA_SRC_DIR)).filter((f) => f.endsWith(".json"));
     const shipped = await readdir(join(vaultDir, "00_meta/schemas"));
     expect(shipped.sort()).toEqual(expected.sort());
-    expect(shipped).toHaveLength(19);
+    // 19 + learning-area.json (Modul 15_lerngebiete, ADR-015).
+    expect(shipped).toHaveLength(20);
 
     // Not the reference vault's stale subset / naming.
     expect(shipped).toContain("customer.json");
@@ -128,6 +129,8 @@ describe("scaffoldVault — fresh install (Story 1.19)", () => {
     expect(templates.sort()).toEqual([
       "capture.md",
       "decision.md",
+      // Modul 15_lerngebiete (ADR-015) — die Vorlage für ein Lerngebiet.
+      "learning-area.md",
       "note.md",
       "project.md",
       "task.md",

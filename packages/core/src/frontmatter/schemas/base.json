@@ -27,7 +27,8 @@
         "skill",
         "tool",
         "resource",
-        "reference"
+        "reference",
+        "learning-area"
       ]
     },
     "title": { "type": "string", "minLength": 1 },

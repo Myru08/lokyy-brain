@@ -78,7 +78,8 @@ describe("buildVaultScaffold — schemas (AC#3)", () => {
     // The count is asserted explicitly: the story exists because a stale
     // 7-schema set was the trap. If a schema is added, this number moves WITH
     // the directory — but the equality below is the real guard.
-    expect(onDisk.length).toBe(19);
+    // 19 + learning-area.json (Modul 15_lerngebiete, ADR-015) = 20.
+    expect(onDisk.length).toBe(20);
 
     for (const name of onDisk) {
       const scaffolded = files.get(`00_meta/schemas/${name}`);
