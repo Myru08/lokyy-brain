@@ -1,6 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { Hono } from "hono";
 
@@ -238,32 +235,57 @@ describe("CORS on /api", () => {
 });
 
 /**
- * Drift guard. The behavioural cases above only cover the prefixes someone
- * remembered to list; this one reads `app.ts` and fails when a NEW `/api` mount
- * appears that is neither guarded nor on the documented open list. Same idea as
- * the schema drift-guard in `packages/core/src/frontmatter/frontmatter.test.ts`.
+ * Drift guard, default-deny. The behavioural cases above only cover the
+ * prefixes someone remembered to list; this one asks the LIVE router what it
+ * actually serves and fails when ANY `/api` path is neither guarded nor on the
+ * documented open list. Same idea as the schema drift-guard in
+ * `packages/core/src/frontmatter/frontmatter.test.ts`.
+ *
+ * It reads `createApp().routes` — Hono's runtime registry of every registered
+ * route and middleware, each entry a `{ method, path }` with the mount prefix
+ * already prepended (`app.route("/api/notes", …)` → `/api/notes`,
+ * `/api/notes/:id{.+}`, …). This is strictly stronger than the old test, which
+ * grepped `app.route("…")` string literals out of `app.ts`: a mount added in a
+ * DIFFERENT file, or via `app.use`/`app.get` rather than `app.route`, was
+ * invisible to the text scan but shows up here the moment it is registered.
+ *
+ * Coverage is decided by {@link unclassifiedApiPaths} using segment-prefix
+ * matching (a path is covered when it equals a table prefix or begins with
+ * `${prefix}/`); the only paths exempt by construction are the full-surface
+ * wildcards in {@link API_SURFACE_WILDCARDS} (the CORS + vault-switcher
+ * `/api/*` middleware), documented there.
  */
-describe("guard table covers every mounted /api prefix", () => {
-  it("has no unclassified mount in app.ts", async () => {
-    const here = dirname(fileURLToPath(import.meta.url));
-    const source = await readFile(join(here, "..", "app.ts"), "utf8");
-    const { GUARDED_API_PREFIXES, OPEN_API_PREFIXES } = await import("./apiGuards.js");
+describe("guard table covers every registered /api path (default-deny)", () => {
+  it("has no unclassified path in the live router registry", async () => {
+    const { unclassifiedApiPaths } = await import("./apiGuards.js");
 
-    const mounted = [...source.matchAll(/app\.route\(\s*"([^"]+)"/g)].map((m) => m[1]!);
-    expect(mounted.length).toBeGreaterThan(20);
+    const registered = app.routes.map((route) => route.path);
+    // Sanity: the registry is populated (guards against a silently empty app
+    // that would make the assertion below pass vacuously).
+    expect(registered.filter((path) => path.startsWith("/api")).length).toBeGreaterThan(20);
 
-    const classified = (path: string): boolean => {
-      // `app.route("/api", …)` mounts handlers whose real paths live one level
-      // down (forgetRoutes → /api/notes/:id/forget, searchRoutes → /api/search
-      // and /api/notes/:id/related). Both of those subtrees ARE in the guarded
-      // table and are exercised behaviourally above, so the bare mount is
-      // accounted for rather than waved through.
-      if (path === "/api") return true;
-      return [...GUARDED_API_PREFIXES, ...OPEN_API_PREFIXES].some(
-        (prefix) => path === prefix || path.startsWith(`${prefix}/`),
-      );
-    };
+    // The message names the offending path(s) so a forgotten entry reads as
+    // "classify /api/newthing", not an opaque array-mismatch.
+    expect(unclassifiedApiPaths(registered)).toEqual([]);
+  });
 
-    expect(mounted.filter((path) => !classified(path))).toEqual([]);
+  /**
+   * Calibration in the opposite direction: prove the guard actually goes red.
+   * Feeding the pure classifier a synthetic registry that includes an
+   * unguarded mount must surface exactly that path — a green-only test would
+   * pass even if the matching rule were `() => true`. Isolated (no app
+   * mutation) so it can never leave the real router in a rogue state.
+   */
+  it("flags an unguarded mount that is on neither list", async () => {
+    const { unclassifiedApiPaths } = await import("./apiGuards.js");
+
+    const synthetic = [
+      "/api/notes", // guarded — must NOT be flagged
+      "/api/auth/me", // open — must NOT be flagged
+      "/api/rogue", // unguarded bare mount
+      "/api/rogue/:id{.+}", // …and its subtree
+    ];
+
+    expect(unclassifiedApiPaths(synthetic)).toEqual(["/api/rogue", "/api/rogue/:id{.+}"]);
   });
 });

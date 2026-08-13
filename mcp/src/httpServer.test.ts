@@ -15,6 +15,16 @@ describe("isLegacyBearer", () => {
     expect(isLegacyBearer("s3cret", "other")).toBe(false);
   });
 
+  it("authorizes the correct legacy token (positive path — not always-false)", () => {
+    // Guards the constant-time rewrite: digest-then-timingSafeEqual must still
+    // return true for a genuine match, and stay length-independent (mismatched
+    // lengths return false instead of throwing on the timingSafeEqual call).
+    const token = "R7f0-Xy_legacy-token-value";
+    expect(isLegacyBearer(token, token)).toBe(true);
+    expect(isLegacyBearer("short", token)).toBe(false);
+    expect(isLegacyBearer(token, "short")).toBe(false);
+  });
+
   it("never matches when the env token is unset (DB-token-only install)", () => {
     expect(isLegacyBearer("", "")).toBe(false);
     expect(isLegacyBearer(undefined, "")).toBe(false);

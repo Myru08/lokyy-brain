@@ -83,12 +83,30 @@ authRoutes.get("/me", async (c) => {
   });
 });
 
+/**
+ * Resolve the `secure` flag for the session cookie.
+ *
+ * `LOKYY_COOKIE_SECURE=true|false` is an explicit override and always wins.
+ * Otherwise we default to secure in production (`NODE_ENV === "production"`)
+ * and insecure in dev — a `secure` cookie is dropped by the browser over
+ * plain HTTP, which would lock out the local HTTP login, so dev must stay
+ * `false` while a prod deployment behind an HTTPS reverse proxy gets `true`.
+ */
+export function resolveCookieSecure(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicit = env.LOKYY_COOKIE_SECURE?.trim().toLowerCase();
+  if (explicit === "true") return true;
+  if (explicit === "false") return false;
+  return env.NODE_ENV === "production";
+}
+
 function sessionCookieOpts(expires: Date) {
   return {
     path: "/",
     httpOnly: true,
     sameSite: "Lax" as const,
-    secure: false, // Dev: HTTP. Set true behind HTTPS reverse proxy in prod.
+    // Env-driven: secure behind HTTPS/reverse-proxy in prod, off for local
+    // HTTP dev. See resolveCookieSecure() for the derivation.
+    secure: resolveCookieSecure(),
     expires,
   };
 }
