@@ -195,6 +195,37 @@ function stderrOnly(res: RunResult, count = 25): string {
   return tail(res.stderr, count) || "(docker printed no error text)";
 }
 
+/**
+ * Is a dirty working copy dirty *only* because of line endings?
+ *
+ * `git status --porcelain` flags a CRLF-vs-LF file exactly like a real edit, so
+ * the porcelain text alone cannot tell them apart. `git diff --ignore-space-at-eol`
+ * can: it treats the trailing CR as whitespace, so a clean (`--quiet` → exit 0)
+ * result there means every tracked modification is line-ending-only. Both the
+ * working tree and the index are checked, because either can carry the noise.
+ *
+ * Untracked files (`??`) are never line-ending noise — they are content the user
+ * added and `git diff` cannot see them — so their presence forces the abort path.
+ * Anything but a clean exit 0 from either diff (a real change, or a diff that
+ * errored) is likewise treated as unsafe, so genuine edits are never discarded.
+ */
+export async function isEolOnlyDirtiness(
+  porcelain: string,
+  deps: UpdateDeps,
+  config: UpdaterConfig,
+): Promise<boolean> {
+  const hasUntracked = porcelain.split("\n").some((line) => line.startsWith("??"));
+  if (hasUntracked) return false;
+
+  const worktree = await deps.git(["diff", "--ignore-space-at-eol", "--quiet"], {
+    timeoutMs: config.stepTimeoutMs,
+  });
+  const staged = await deps.git(["diff", "--cached", "--ignore-space-at-eol", "--quiet"], {
+    timeoutMs: config.stepTimeoutMs,
+  });
+  return worktree.code === 0 && staged.code === 0;
+}
+
 export async function runUpdate(
   job: UpdateJob,
   identity: SelfIdentity,
@@ -217,14 +248,36 @@ export async function runUpdate(
     return fail(job, "aborted", `git status failed in ${config.repoDir}: ${lastLines(status, 5)}`, deps.now());
   }
   if (status.stdout.trim()) {
-    return fail(
-      job,
-      "aborted",
-      "the repository has local changes. Nothing was touched. Commit or discard them first — " +
-        "updating over your own edits could silently throw them away.\n" +
-        status.stdout.trim().split("\n").slice(0, 20).join("\n"),
-      deps.now(),
-    );
+    // Windows installs cloned with core.autocrlf=true carry a CRLF working copy.
+    // Mounted into this Linux container — where git compares those CRLF files
+    // against the LF blobs — every tracked file reads as "modified" from its
+    // line endings alone, with no real edit behind it, and the update aborts
+    // forever. Discard that noise; keep aborting on anything with actual content.
+    if (await isEolOnlyDirtiness(status.stdout, deps, config)) {
+      job.note(
+        "working copy differs from the repository in line endings only (CRLF vs LF, typical of a " +
+          "Windows checkout mounted into a Linux container) — discarding those harmless differences so " +
+          "the update can fast-forward. No real edits were present.",
+      );
+      const discard = await deps.git(["checkout", "--", "."], { timeoutMs: config.stepTimeoutMs });
+      if (discard.code !== 0) {
+        return fail(
+          job,
+          "aborted",
+          `could not normalize the line-ending-only differences in ${config.repoDir}. Nothing was touched.\n${lastLines(discard, 5)}`,
+          deps.now(),
+        );
+      }
+    } else {
+      return fail(
+        job,
+        "aborted",
+        "the repository has local changes. Nothing was touched. Commit or discard them first — " +
+          "updating over your own edits could silently throw them away.\n" +
+          status.stdout.trim().split("\n").slice(0, 20).join("\n"),
+        deps.now(),
+      );
+    }
   }
 
   const headRes = await deps.git(["rev-parse", "HEAD"], { timeoutMs: config.stepTimeoutMs });
