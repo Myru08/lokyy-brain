@@ -116,6 +116,35 @@ export interface LlmConfigResponse {
 }
 
 /**
+ * Ollama local-model presence report. Sync with
+ * `packages/core/src/llm/ollamaModels.ts → OllamaModelStatus`.
+ */
+export interface OllamaModelStatusEntry {
+  model: string;
+  roles: LlmRole[];
+  kind: "chat" | "embedding";
+  installed: boolean;
+  sizeHint?: string;
+}
+
+export interface OllamaModelStatus {
+  ollamaReachable: boolean;
+  host: string;
+  installed: string[];
+  models: OllamaModelStatusEntry[];
+  error?: string;
+}
+
+/** One progress record from an Ollama pull stream (`/api/llm/models/pull`). */
+export interface OllamaPullProgress {
+  status?: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+  error?: string;
+}
+
+/**
  * Embedding-migration progress shape. Sync with
  * `packages/core/src/llm/embeddingsMigration.ts → MigrationProgress`.
  */
@@ -1379,6 +1408,61 @@ export const api = {
     fetch(`${BASE}/llm/presets/openai-compat`, {
       credentials: "include",
     }).then(json<OpenAICompatPreset[]>),
+
+  /* ──── Ollama local-model presence + pull (issue #46) ──── */
+
+  /** Which configured Ollama models (chat + embedding) are installed. */
+  getOllamaModelStatus: (): Promise<OllamaModelStatus> =>
+    fetch(`${BASE}/llm/models/status`, { credentials: "include" }).then(
+      json<OllamaModelStatus>,
+    ),
+
+  /**
+   * Pull a model into Ollama, streaming progress via SSE. Returns an abort
+   * function that closes the stream (and, server-side, aborts the pull).
+   * Mirrors `streamMigration`'s EventSource contract.
+   */
+  streamOllamaPull: (
+    model: string,
+    onProgress: (p: OllamaPullProgress) => void,
+    onClose: (result: { ok: boolean; error?: string }) => void,
+  ): (() => void) => {
+    const url = `${BASE}/llm/models/pull?model=${encodeURIComponent(model)}`;
+    const es = new EventSource(url, { withCredentials: true });
+    let closed = false;
+    let result: { ok: boolean; error?: string } = { ok: false, error: "stream closed early" };
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      es.close();
+      onClose(result);
+    };
+    es.addEventListener("progress", (ev) => {
+      try {
+        onProgress(JSON.parse((ev as MessageEvent).data) as OllamaPullProgress);
+      } catch {
+        // ignore malformed event
+      }
+    });
+    es.addEventListener("done", () => {
+      result = { ok: true };
+      close();
+    });
+    es.addEventListener("error", (ev) => {
+      // A server-sent `error` event carries a payload; a transport error does not.
+      try {
+        const data = (ev as MessageEvent).data;
+        if (typeof data === "string" && data.length > 0) {
+          const parsed = JSON.parse(data) as { error?: string };
+          result = { ok: false, error: parsed.error ?? "pull failed" };
+        }
+      } catch {
+        // transport-level error — keep the default failure result
+      }
+      close();
+    });
+    return close;
+  },
 
   /* ──── Embedding-Migration (Phase-0 Wave D / Agent 1) ──── */
 

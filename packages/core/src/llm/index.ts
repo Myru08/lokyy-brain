@@ -11,6 +11,7 @@ export * from "./providers/cohere.js";
 export * from "./providers/localReranker.js";
 export * from "./init.js";
 export * from "./configStore.js";
+export * from "./ollamaModels.js";
 export * from "./embeddingsMigration.js";
 export * from "./intent.js";
 export * from "./hyde.js";

@@ -10,6 +10,7 @@ import {
   getLlmProviders,
   getLlmRouting,
   getMemoryProvider,
+  getOllamaModelStatus,
   listNotes,
   maskApiKey,
   sleepAgent,
@@ -202,6 +203,71 @@ async function checkOllama(): Promise<DiagnosticCheck[]> {
     };
   });
   return [result];
+}
+
+// ── Ollama: CONFIGURED models present ────────────────────────────────────────
+// The old checkOllama above only ever looked for nomic-embed-text. Privacy-Max
+// (and any local routing) also relies on a CHAT model — llama3.1:8b by default
+// — which is not auto-pulled and whose absence made local LLM tasks silently
+// no-op (issue #46). This group asks: is every model the routing config points
+// at Ollama for actually installed? Missing chat/embedding model → error with an
+// actionable install hint; the Settings → AI-Provider panel offers a 1-click pull.
+async function checkOllamaModels(): Promise<DiagnosticCheck[]> {
+  const started = Date.now();
+  let status: Awaited<ReturnType<typeof getOllamaModelStatus>>;
+  try {
+    status = await getOllamaModelStatus({ envHost: process.env.OLLAMA_HOST });
+  } catch (err) {
+    return [
+      {
+        service: "ollama",
+        name: "Konfigurierte Modelle vorhanden",
+        ok: false,
+        severity: "error",
+        latencyMs: Date.now() - started,
+        detail: brief(`Modell-Status nicht lesbar (${errMsg(err)}).`),
+      },
+    ];
+  }
+
+  if (!status.ollamaReachable) {
+    return [
+      {
+        service: "ollama",
+        name: "Konfigurierte Modelle vorhanden",
+        ok: false,
+        severity: "warn",
+        latencyMs: Date.now() - started,
+        detail: `Ollama @ ${status.host} nicht erreichbar — konfigurierte Modelle nicht prüfbar.`,
+      },
+    ];
+  }
+
+  if (status.models.length === 0) {
+    return [
+      {
+        service: "ollama",
+        name: "Konfigurierte Modelle vorhanden",
+        ok: true,
+        severity: "info",
+        latencyMs: Date.now() - started,
+        detail: "Keine Rolle auf Ollama geroutet — nichts lokal zu installieren.",
+      },
+    ];
+  }
+
+  return status.models.map((m, idx) => ({
+    service: "ollama",
+    name: `Modell: ${m.model}`,
+    ok: m.installed,
+    severity: m.installed ? "info" : ("error" as Severity),
+    latencyMs: idx === 0 ? Date.now() - started : undefined,
+    detail: m.installed
+      ? `installiert (${m.kind}, Rollen: ${m.roles.join(", ")})`
+      : `NICHT installiert${m.sizeHint ? ` (${m.sizeHint})` : ""} — von den Rollen ${m.roles.join(
+          ", ",
+        )} genutzt. In den Einstellungen → AI-Provider „Modell installieren" drücken oder 'ollama pull ${m.model}'.`,
+  }));
 }
 
 // ── Embeddings round-trip ────────────────────────────────────────────────────
@@ -636,6 +702,7 @@ diagnosticsRoutes.get("/", async (c) => {
       checkForgejo().then((x) => [x]),
       checkPostgres(),
       checkOllama(),
+      checkOllamaModels(),
       checkEmbeddingRoundtrip().then((x) => [x]),
       checkSearchTier1().then((x) => [x]),
       checkSearchTier2().then((x) => [x]),

@@ -142,7 +142,14 @@ Optional:
   funktioniert weiterhin per Bearer-Token). Willst du den claude.ai-Connector
   nutzen, setze beide — für das Signing-Secret ein eigenes `openssl rand -hex 32`.
 - `OLLAMA_PULL_CHAT=true` to pre-pull `llama3.1:8b` (~5 GB; only if you want
-  fully local LLM and have the RAM).
+  fully local LLM and have the RAM). This is the model the **Privacy-Max**
+  profile (all 10 roles local, zero cloud) routes every chat/classify/rewrite
+  role at. If you leave `OLLAMA_PULL_CHAT=false`, the chat model is NOT pulled
+  and Privacy-Max would silently no-op — but you don't have to redeploy: the
+  **Einstellungen → AI-Provider → Lokale Modelle (Ollama)** panel shows any
+  configured-but-missing model and installs it with one click (progress bar
+  included). `GET /api/diagnostics` reports the same gap as an actionable
+  finding. Plan for ~5 GB disk + ~8 GB RAM for `llama3.1:8b`.
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `COHERE_API_KEY` — can also be added
   later via the Settings UI; the DB row wins over the env var.
 

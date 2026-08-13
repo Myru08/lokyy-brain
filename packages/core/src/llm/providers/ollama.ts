@@ -51,6 +51,24 @@ interface OllamaTagsResponse {
   models?: Array<{ name?: string }>;
 }
 
+/**
+ * A single progress record streamed by Ollama's `POST /api/pull` (NDJSON).
+ *
+ * Ollama emits a sequence like:
+ *   { status: "pulling manifest" }
+ *   { status: "pulling <digest>", digest, total, completed }   ← many, growing `completed`
+ *   { status: "verifying sha256 digest" }
+ *   { status: "success" }
+ * On failure a single `{ error: "<message>" }` record is emitted instead.
+ */
+export interface OllamaPullProgress {
+  status?: string;
+  digest?: string;
+  total?: number;
+  completed?: number;
+  error?: string;
+}
+
 interface OllamaEmbedBatchResponse {
   embeddings?: number[][];
 }
@@ -59,9 +77,13 @@ interface OllamaEmbedSingleResponse {
   embedding?: number[];
 }
 
-const DEFAULT_BASE_URL = "http://localhost:11434";
-const DEFAULT_CHAT_MODEL = "llama3.1:8b";
-const DEFAULT_EMBED_MODEL = "nomic-embed-text";
+export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434";
+export const OLLAMA_DEFAULT_CHAT_MODEL = "llama3.1:8b";
+export const OLLAMA_DEFAULT_EMBED_MODEL = "nomic-embed-text";
+
+const DEFAULT_BASE_URL = OLLAMA_DEFAULT_BASE_URL;
+const DEFAULT_CHAT_MODEL = OLLAMA_DEFAULT_CHAT_MODEL;
+const DEFAULT_EMBED_MODEL = OLLAMA_DEFAULT_EMBED_MODEL;
 const DEFAULT_TIMEOUT_MS = 60_000;
 
 export class OllamaProvider implements LlmProvider {
@@ -304,5 +326,96 @@ export class OllamaProvider implements LlmProvider {
       const msg = err instanceof Error ? err.message : String(err);
       return { ok: false, error: msg };
     }
+  }
+
+  /**
+   * List the model names currently installed in this Ollama server (via
+   * `/api/tags`). Names carry their tag, e.g. `llama3.1:8b`,
+   * `nomic-embed-text:latest`. Network/HTTP failures surface as
+   * `LlmUnavailable` / `LlmError` (same envelope as every other call).
+   */
+  async listModelNames(): Promise<string[]> {
+    const data = await this.request<OllamaTagsResponse>("/api/tags", { method: "GET" });
+    return Array.isArray(data.models)
+      ? data.models.map((m) => m.name).filter((n): n is string => typeof n === "string")
+      : [];
+  }
+
+  /**
+   * Pull a model into this Ollama server, streaming progress.
+   *
+   * Wraps `POST /api/pull` (NDJSON stream). `onProgress` fires for every
+   * record Ollama emits — the caller decides how to surface it (SSE, log, …).
+   * Resolves once the stream ends cleanly; rejects with `LlmError` if Ollama
+   * reports an `error` record or a non-2xx status, and with `LlmUnavailable`
+   * if the server can't be reached.
+   *
+   * Deliberately NOT bounded by `timeoutMs`: a multi-GB pull legitimately runs
+   * for minutes. Pass a `signal` to abort (e.g. client disconnect).
+   */
+  async pullModel(
+    model: string,
+    onProgress: (p: OllamaPullProgress) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/api/pull`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, stream: true }),
+        signal,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new LlmUnavailable("ollama", msg);
+    }
+
+    if (!res.ok || !res.body) {
+      let detail = "";
+      try {
+        detail = await res.text();
+      } catch {
+        // status alone is enough
+      }
+      throw new LlmError(
+        "PROVIDER_ERROR",
+        `Ollama pull HTTP ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`,
+        "ollama",
+      );
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const handleLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      let record: OllamaPullProgress;
+      try {
+        record = JSON.parse(trimmed) as OllamaPullProgress;
+      } catch {
+        return; // ignore a malformed partial line
+      }
+      if (record.error) {
+        throw new LlmError("PROVIDER_ERROR", record.error, "ollama");
+      }
+      onProgress(record);
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, nl);
+        buffer = buffer.slice(nl + 1);
+        handleLine(line);
+      }
+    }
+    // Flush any trailing record without a newline terminator.
+    handleLine(buffer);
   }
 }
