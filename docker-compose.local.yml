@@ -237,6 +237,11 @@ services:
       - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN:-local_dev_token_change_me_32_chars_min}
       - LOKYY_MCP_HTTP_PORT=8788
       - LOKYY_BRAIN_URL=http://lokyy-brain:8787
+      # Tier2 embeddings: the MCP write path builds Tier2Provider without an
+      # explicit host, so it reads OLLAMA_HOST (else falls back to localhost,
+      # which is not Ollama inside this container → ECONNREFUSED). Mirror the
+      # lokyy-brain service value.
+      - OLLAMA_HOST=http://ollama:11434
       - NODE_ENV=production
     volumes:
       - vault-data:/var/lokyy/vault
