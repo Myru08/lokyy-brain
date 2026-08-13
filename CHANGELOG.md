@@ -16,6 +16,20 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.14.0 — 2026-08-13
+
+### Behoben
+- **Die intelligente (semantische) Suche funktioniert wieder, wenn deine KI den Vault über MCP befüllt.** Dem lokalen MCP-Container fehlte eine Einstellung — dadurch wurden im Hintergrund keine Embeddings erzeugt und die Suche fiel still auf reinen Volltext zurück, obwohl alles gesund aussah. Behoben, mit Wächter gegen Rückfall. Neue Notizen werden wieder korrekt semantisch indexiert; ältere zieht der Nachtlauf nach.
+- **Löschen funktioniert jetzt auch offline.** War Forgejo nicht erreichbar, brach Löschen mit einer technischen Meldung ab (als letzter nicht-offline-toleranter Vorgang). Jetzt wird lokal gespeichert und später synchronisiert — wie beim Speichern.
+
+### Sicherheit
+- Aufbauend auf dem Login-Schutz aus v1.13: Browser-Cache wird bei Abmeldung geleert, Sitzungs-Cookie hinter HTTPS abgesichert (`LOKYY_COOKIE_SECURE`), interne Token-Vergleiche gehärtet.
+
+### Hinweis
+- Die lokale Installation ist standardmäßig nur vom eigenen Rechner erreichbar. Für Netzwerk-/Fernzugriff genügt jetzt **eine** Einstellung: `LOKYY_BIND_ADDR=0.0.0.0` (für echten Fernzugriff zusätzlich Reverse-Proxy + HTTPS, siehe docs/DEPLOY.md).
+
+---
+
 ## v1.13.0 — 2026-08-08
 
 ### Sicherheit
