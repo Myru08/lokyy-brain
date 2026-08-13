@@ -16,6 +16,15 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.15.0 — 2026-08-13
+
+### Behoben
+- **Sehr lange Dokumente landen jetzt vollständig in der intelligenten Suche.** Große Notizen waren zu groß fürs Suchmodell und wurden dabei komplett übersprungen — Ursache war eine zu optimistische Größen-Schätzung (deutsche/technische Texte zählen anders als englische Prosa). Lokyy rechnet jetzt konservativ und zerlegt lange Notizen sauber; nichts fällt mehr raus.
+- **Bei mehr als einem Vault war unklar, welcher gesucht wurde.** Eine Zweitregistrierung konnte still einen zweiten Datenspeicher anlegen, danach zeigten Suche und Ablage evtl. auf verschiedene. Jetzt wählt Lokyy immer eindeutig denselben Vault für beides; bei mehreren weist die Oberfläche darauf hin.
+- **Über die App-/Weboberfläche wurden bisher gar keine semantischen Einträge gespeichert** (ein interner Verknüpfungsfehler mit dem gewählten Vault) — mitbehoben. Die semantische Suche funktioniert damit auf allen Wegen, nicht nur über die KI. Ältere betroffene Notizen zieht der Nachtlauf nach.
+
+---
+
 ## v1.14.0 — 2026-08-13
 
 ### Behoben
