@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterAll } from "vitest";
 
 import {
   validateGitBranch,
@@ -9,6 +9,10 @@ import {
   vaultConfigFor,
   vaultWorkingCopyPath,
   vaultsRoot,
+  indexVaultId,
+  invalidateActiveVaultId,
+  setCachedActiveVaultId,
+  getCachedActiveVaultId,
 } from "./coreConfig.js";
 
 describe("validateGitBranch (Story 10.6 AC#1)", () => {
@@ -160,6 +164,19 @@ describe("multi-tenant config context (LBMT-1.2)", () => {
     expect(cfg.gitBranch).toBe("trunk");
   });
 
+  it("vaultConfigFor carries the vault's OWN id (issue #43 — index follows the switch)", () => {
+    // Regression: the rebind used to leave vaultId as the singleton's, so a
+    // switched request wrote the git working copy to vault A but indexed under
+    // the singleton — search and index split across vaults.
+    const cfg = vaultConfigFor({ vaultId: "cust-a", gitRemote: "https://forgejo/owner/a.git" });
+    expect(cfg.vaultId).toBe("cust-a");
+    const insideId = withCoreConfig(
+      vaultConfigFor({ vaultId: "cust-b", gitRemote: "https://forgejo/owner/b.git" }),
+      () => indexVaultId(),
+    );
+    expect(insideId).toBe("cust-b");
+  });
+
   it("vaultsRoot defaults to a 'vaults' sibling of the singleton vaultDir", () => {
     expect(vaultsRoot()).toBe("/var/lokyy/vaults");
     expect(vaultWorkingCopyPath("xyz")).toBe("/var/lokyy/vaults/xyz");
@@ -176,5 +193,63 @@ describe("multi-tenant config context (LBMT-1.2)", () => {
     });
     expect(vaultsRoot()).toBe("/data/customer-vaults");
     expect(vaultWorkingCopyPath("v1")).toBe("/data/customer-vaults/v1");
+  });
+});
+
+describe("indexVaultId resolution order (issue #43)", () => {
+  const prevPin = process.env.LOKYY_VAULT_ID;
+  const prevDefault = process.env.LOKYY_DEFAULT_VAULT;
+
+  beforeEach(() => {
+    // No env pin — force the injected/cache/placeholder ladder.
+    delete process.env.LOKYY_VAULT_ID;
+    delete process.env.LOKYY_DEFAULT_VAULT;
+    invalidateActiveVaultId();
+  });
+
+  afterAll(() => {
+    if (prevPin === undefined) delete process.env.LOKYY_VAULT_ID;
+    else process.env.LOKYY_VAULT_ID = prevPin;
+    if (prevDefault === undefined) delete process.env.LOKYY_DEFAULT_VAULT;
+    else process.env.LOKYY_DEFAULT_VAULT = prevDefault;
+    invalidateActiveVaultId();
+  });
+
+  const baseInit = (vaultId?: string) =>
+    initCore({
+      vaultDir: "/var/lokyy/vault",
+      gitRemote: "",
+      gitBranch: "main",
+      gitAuthorName: "lokyy",
+      gitAuthorEmail: "lokyy@localhost",
+      ...(vaultId ? { vaultId } : {}),
+    });
+
+  it("an injected vault id always wins", () => {
+    baseInit("01REAL_INJECTED_VAULT_ID00");
+    expect(indexVaultId()).toBe("01REAL_INJECTED_VAULT_ID00");
+  });
+
+  it("falls back to the cached deterministic id when nothing is injected", () => {
+    baseInit(); // vaultId empty → initCore invalidates the cache
+    setCachedActiveVaultId("01CACHED_REAL_VAULT_ID0000");
+    expect(getCachedActiveVaultId()).toBe("01CACHED_REAL_VAULT_ID0000");
+    expect(indexVaultId()).toBe("01CACHED_REAL_VAULT_ID0000");
+  });
+
+  it("falls back to the 'default' placeholder only when nothing is injected AND nothing is cached", () => {
+    baseInit();
+    invalidateActiveVaultId(); // ensure the cache is empty
+    // No DB is initialized here, so the background primer kicked off inside
+    // indexVaultId() resolves to nothing (swallowed) — the sync return is the
+    // placeholder.
+    expect(indexVaultId()).toBe("default");
+  });
+
+  it("honors LOKYY_DEFAULT_VAULT as the placeholder override", () => {
+    process.env.LOKYY_DEFAULT_VAULT = "legacy-placeholder";
+    baseInit();
+    invalidateActiveVaultId();
+    expect(indexVaultId()).toBe("legacy-placeholder");
   });
 });

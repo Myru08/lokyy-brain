@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { database, vaults } from "@lokyy/core";
+import { database, vaults, selectActiveVault } from "@lokyy/core";
 import { config } from "../config.js";
 import { requireAuth } from "../middleware/auth.js";
 
@@ -16,8 +16,15 @@ vaultsRoutes.use("*", requireAuth);
 
 vaultsRoutes.get("/", async (c) => {
   const rows = await database().select().from(vaults);
+  // issue #43: expose the deterministically-resolved active vault (the one
+  // search + indexing actually use) plus whether the choice is ambiguous
+  // (>1 vault and no LOKYY_VAULT_ID pin) so the UI can warn the operator.
+  const active = await selectActiveVault();
   return c.json({
     defaultVaultId: config.lokyyVaultId,
+    activeVaultId: active.vaultId,
+    ambiguous: active.ambiguous,
+    vaultCount: active.count,
     vaults: rows.map((v) => ({
       id: v.id,
       name: v.name,

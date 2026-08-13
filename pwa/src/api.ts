@@ -1731,9 +1731,23 @@ export const api = {
   /* ──── Owner vault-switcher (LBMT-C) ──── */
 
   /** All vaults the owner can open, with kind + which is the default singleton. */
-  getVaults: (): Promise<{ defaultVaultId: string; vaults: VaultListItem[] }> =>
+  getVaults: (): Promise<{
+    defaultVaultId: string;
+    /** issue #43: the vault search + indexing deterministically use (or null pre-setup). */
+    activeVaultId: string | null;
+    /** issue #43: >1 vault and no LOKYY_VAULT_ID pin — the active choice is a guess. */
+    ambiguous: boolean;
+    vaultCount: number;
+    vaults: VaultListItem[];
+  }> =>
     fetch(`${BASE}/vaults`, { credentials: "include" }).then(
-      json<{ defaultVaultId: string; vaults: VaultListItem[] }>,
+      json<{
+        defaultVaultId: string;
+        activeVaultId: string | null;
+        ambiguous: boolean;
+        vaultCount: number;
+        vaults: VaultListItem[];
+      }>,
     ),
 
   /* ──── Multi-tenant — customer/shared vaults (LBMT-1.5) ──── */

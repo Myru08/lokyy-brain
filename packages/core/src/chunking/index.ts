@@ -68,6 +68,31 @@ export interface ChunkOptions {
 const APPROX_CHARS_PER_TOKEN = 4;
 
 /**
+ * Conservative chars-per-token used for EVERY size gate below (#42).
+ *
+ * Root cause of #42: all budgeting divided character length by 4, a ratio
+ * calibrated for English prose. But the model that actually receives these
+ * chunks — `nomic-embed-text`, a BERT-WordPiece tokenizer with an
+ * English-centric vocab — fragments German + technical markdown far more
+ * aggressively. The vault's own `packages/core/src/vault/SPEC.md` is 4325
+ * chars of German prose with YAML/ULID snippets; it tokenizes to ~2546 real
+ * tokens = **1.70 chars/token**, not the 4 the heuristic assumed. So a
+ * body the old `body_full` gate estimated at ~1081 tokens was really ~2546,
+ * overran the 2048-token window, and Ollama answered HTTP 500. Tier2Provider
+ * caught it cleanly (no crash) but the note got NO embedding and silently
+ * vanished from semantic search.
+ *
+ * We budget at 1.5 chars/token — below the observed worst case of 1.70, so a
+ * chunk sized exactly at its budget still lands under the window even at that
+ * density, with headroom for slightly denser content. The cost is that some
+ * medium notes now split into one extra chunk instead of a single `body_full`
+ * embedding; that is the right trade. A note split one chunk finer is a
+ * non-event; a note that disappears from the index is the bug we are fixing.
+ * Robustness over precision.
+ */
+const SAFE_CHARS_PER_TOKEN = 1.5;
+
+/**
  * Real context window of the configured embedding model (Story 5.8 AC#3).
  *
  * Verified against the deployed model, not assumed:
@@ -92,17 +117,45 @@ const DEFAULT_MAX_BODY_FULL_TOKENS =
   EMBED_MODEL_CONTEXT_TOKENS - ANCHOR_HEADROOM_TOKENS;
 export { DEFAULT_MAX_BODY_FULL_TOKENS };
 
+/**
+ * Hard character ceiling for the anchor prefix (title + heading breadcrumb).
+ * `buildAnchor` truncates the prefix to this length so a pathological note —
+ * e.g. a 10 000-char title from a malformed frontmatter — can never push a
+ * chunk over the window on its own, and so `textBudgetChars` always leaves a
+ * usable body budget behind. 128 tokens * 1.5 chars = 192 chars. Real titles
+ * (a frontmatter `title:` line) are far shorter, so this is a no-op for every
+ * normal note and changes no existing chunk hash.
+ */
+const MAX_ANCHOR_CHARS = Math.floor(
+  ANCHOR_HEADROOM_TOKENS * SAFE_CHARS_PER_TOKEN,
+);
+
+/** Truncate to at most `max` characters (no-op when already within bound). */
+function clampChars(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max);
+}
+
 const SLIDING_PARAGRAPH_WINDOW = 3;
 const SLIDING_MIN_PARAGRAPHS = 5;
 
 /**
- * Cheap upper-bound estimate. Real BPE tokenizers vary by 20-30%, so we
- * default to ~4 chars/token which is conservative for English+German
- * mixed content. The body_full gate only needs to reject obviously-too-
- * large notes, not be perfectly accurate.
+ * Neutral rough estimate (~4 chars/token). Kept for human-facing logging and
+ * back-compat. NOT safe for size gating on its own — see #42: dense German /
+ * technical markdown runs ~1.7 chars/token, so this UNDER-counts by >2x on
+ * exactly the content that overruns the window. Gate on {@link maxTokensUpperBound}.
  */
 export function approximateTokens(s: string): number {
   return Math.ceil(s.length / APPROX_CHARS_PER_TOKEN);
+}
+
+/**
+ * Conservative UPPER BOUND on the real BPE token count (#42). Divides by the
+ * worst-case {@link SAFE_CHARS_PER_TOKEN}, so it never under-counts even the
+ * densest multilingual/technical markdown observed. This is the estimate every
+ * size gate uses: if this says a chunk fits, Ollama accepts it.
+ */
+export function maxTokensUpperBound(s: string): number {
+  return Math.ceil(s.length / SAFE_CHARS_PER_TOKEN);
 }
 
 /** SHA-256 hex hash, truncated to 32 chars (128 bits — collision-safe). */
@@ -179,7 +232,12 @@ function parseSections(body: string): Section[] {
   return sections;
 }
 
-/** Build the anchor-prefixed text that actually gets embedded. */
+/**
+ * Build the anchor-prefixed text that actually gets embedded. The prefix
+ * (title + breadcrumb) is clamped to {@link MAX_ANCHOR_CHARS} so it can never
+ * on its own eat the whole window (#42 hardening — a malformed giant title
+ * would otherwise leave zero room for the body and still overrun).
+ */
 function buildAnchor(
   title: string,
   breadcrumb: string[],
@@ -187,13 +245,16 @@ function buildAnchor(
 ): string {
   const bcParts = breadcrumb.filter((b) => b.length > 0);
   const bc = bcParts.length > 0 ? bcParts.join(" > ") : "";
-  return `${title}${bc ? "\n" + bc : ""}\n\n${text}`;
+  const prefix = clampChars(`${title}${bc ? "\n" + bc : ""}`, MAX_ANCHOR_CHARS);
+  return `${prefix}\n\n${text}`;
 }
 
 /**
  * Character budget left for a chunk's raw text once its anchor prefix is
- * accounted for. `approximateTokens` is `ceil(len / 4)`, so bounding the
- * anchored string's LENGTH bounds its token estimate exactly.
+ * accounted for. Uses the conservative {@link SAFE_CHARS_PER_TOKEN} (#42), so
+ * the ANCHORED string's length — prefix + text — is bounded by
+ * `maxChunkTokens * SAFE_CHARS_PER_TOKEN`, which means `maxTokensUpperBound`
+ * of that string is <= `maxChunkTokens` by construction.
  */
 function textBudgetChars(
   title: string,
@@ -201,7 +262,8 @@ function textBudgetChars(
   maxChunkTokens: number,
 ): number {
   const prefixLen = buildAnchor(title, breadcrumb, "").length;
-  return Math.max(1, maxChunkTokens * APPROX_CHARS_PER_TOKEN - prefixLen);
+  const totalCharBudget = Math.floor(maxChunkTokens * SAFE_CHARS_PER_TOKEN);
+  return Math.max(1, totalCharBudget - prefixLen);
 }
 
 /**
@@ -265,8 +327,12 @@ export function chunkNote(opts: ChunkOptions): Chunk[] {
   const maxChunkTokens = opts.maxChunkTokens ?? EMBED_MODEL_CONTEXT_TOKENS;
   const chunks: Chunk[] = [];
 
-  // 1. Title chunk — always emitted, even for empty bodies.
-  const titleAnchored = buildAnchor(title, [], title);
+  // 1. Title chunk — always emitted, even for empty bodies. The embedded
+  //    text is the title anchored by itself; clamp the body copy to the same
+  //    per-chunk budget so a pathological giant title can't overrun (#42).
+  //    Short (normal) titles are untouched, so the hash is unchanged.
+  const titleBudget = textBudgetChars(title, [], maxChunkTokens);
+  const titleAnchored = buildAnchor(title, [], clampChars(title, titleBudget));
   chunks.push({
     chunkType: "title",
     chunkIdx: 0,
@@ -282,7 +348,7 @@ export function chunkNote(opts: ChunkOptions): Chunk[] {
   // 2. body_full chunk — only when the body fits BOTH the long-context budget
   //    and the hard per-chunk cap once anchored (Story 5.8 AC#3).
   const bodyFullBudget = Math.min(
-    maxBodyFull * APPROX_CHARS_PER_TOKEN,
+    Math.floor(maxBodyFull * SAFE_CHARS_PER_TOKEN),
     textBudgetChars(title, [], maxChunkTokens),
   );
   if (body.length <= bodyFullBudget) {
