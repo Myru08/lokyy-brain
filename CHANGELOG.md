@@ -16,6 +16,14 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.16.0 — 2026-08-13
+
+### Behoben
+- **Das Update direkt in Lokyy funktioniert wieder — besonders unter Windows.** Der In-App-Update brach mit „lokale Änderungen" ab, obwohl man nichts geändert hatte (Windows speichert Zeilenende-Zeichen anders als der Linux-Container → jede Datei sah „verändert" aus). Lokyy erkennt diese harmlosen Unterschiede jetzt und aktualisiert normal; echte eigene Änderungen stoppen das Update weiterhin.
+- **„Privacy Max": das lokale KI-Modell installiert sich jetzt sauber.** Das Modell (`llama3.1`) war zwar konfiguriert, aber nicht heruntergeladen — und das wurde nicht angezeigt. Jetzt zeigt Einstellungen → AI-Provider → Lokale Modelle klar installiert/fehlt an und installiert das Modell mit einem Klick (Fortschritt); der Test-Knopf prüft die echte Präsenz.
+
+---
+
 ## v1.15.0 — 2026-08-13
 
 ### Behoben
