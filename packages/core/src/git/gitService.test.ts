@@ -12,6 +12,7 @@ import {
   saveBinary,
   pull,
   move,
+  remove,
   sync,
   isSyncPending,
   noteHistory,
@@ -320,6 +321,48 @@ describe("gitService — offline-tolerant save (Forgejo unreachable)", () => {
 
     expect(existsSync(join(v.workdir, "20_notes/x-renamed.md"))).toBe(true);
     expect(isSyncPending()).toBe(true);
+  });
+
+  it("remove is offline-tolerant: pending, file gone locally, commit exists (AC1/AC2)", async () => {
+    await goOffline();
+
+    const res = await remove("20_notes/x.md", "note gelöscht: 20_notes/x");
+
+    // The delete degraded to pending instead of throwing.
+    expect(res.sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(res.synced).toBe(false);
+    expect(res.pending).toBe(true);
+    expect(isSyncPending()).toBe(true);
+
+    // The deletion really is safe: file gone on disk AND the rm-commit is HEAD.
+    expect(existsSync(join(v.workdir, "20_notes/x.md"))).toBe(false);
+    expect(await g(v.workdir, ["log", "-1", "--pretty=%s"])).toBe(
+      "note gelöscht: 20_notes/x",
+    );
+    expect(await g(v.workdir, ["rev-parse", "HEAD"])).toBe(res.sha);
+    // Clean tree — the next write still works (no half-applied rebase).
+    expect(await g(v.workdir, ["status", "--porcelain"])).toBe("");
+  });
+
+  it("remove is fully synced when Forgejo is reachable (regression)", async () => {
+    // No goOffline() — the real bare remote is reachable in this suite's setup.
+    const res = await remove("20_notes/x.md", "note gelöscht: 20_notes/x");
+
+    expect(res.synced).toBe(true);
+    expect(res.pending).toBe(false);
+    expect(isSyncPending()).toBe(false);
+    // The deletion reached the remote: the path is gone upstream.
+    await expect(g(v.remote, ["show", "main:20_notes/x.md"])).rejects.toBeTruthy();
+  });
+
+  it("a REAL non-remote error (path does not exist) still throws", async () => {
+    // `git rm` on a nonexistent path fails BEFORE any commit — that is a genuine
+    // caller error, not a Forgejo blip, so offline-tolerance must NOT swallow it.
+    await expect(
+      remove("20_notes/does-not-exist.md", "note gelöscht: ghost"),
+    ).rejects.toBeTruthy();
+    // Nothing was committed and no pending flag was raised by the failed delete.
+    expect(isSyncPending()).toBe(false);
   });
 
   it("a REAL merge conflict still throws while offline-tolerance is active (AC2)", async () => {
