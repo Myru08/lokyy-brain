@@ -1021,14 +1021,68 @@ export async function saveBinary(
   });
 }
 
-/** Löscht eine Datei und pusht das ebenfalls nach Forgejo. */
-export async function remove(relPath: string, message: string): Promise<void> {
+/**
+ * Löscht eine Datei und bringt das nach Forgejo — offline-tolerant wie
+ * `save`/`saveBinary`/`move` (Story: offline-toleranter Delete).
+ *
+ * Der lokale Lösch-Commit (`git rm`) entsteht IMMER und ist danach in git
+ * sicher; jeder Fehler danach betrifft nur das Erreichen von Forgejo, nie die
+ * Löschung selbst. Ist das Remote nicht erreichbar, wird das Working-Copy als
+ * unsynced markiert und `{ synced: false, pending: true }` zurückgegeben statt
+ * zu werfen — der nächste `sync()`/`save()` holt den Push nach. Bei erreichbarem
+ * Remote unverändert voll synchron (`synced: true`). Ein echter Fehler (Pfad
+ * existiert nicht → `git rm` schlägt fehl; oder ein echter Merge-Konflikt) wirft
+ * weiterhin typisiert, damit die Route ihn sauber melden kann.
+ *
+ * Gibt — wie `save`/`saveBinary` — ein `SaveResult` zurück, damit die
+ * Delete-Route den Sync-Status durchreichen kann.
+ */
+export async function remove(relPath: string, message: string): Promise<SaveResult> {
   return serialize(async () => {
     const c = config();
+
+    /** Mirrors `writeAndSync`/`saveBinary`'s settle — same offline contract. */
+    const settle = async (
+      outcome: SyncRecovery | "no-remote",
+    ): Promise<SaveResult> => {
+      const sha = await git(["rev-parse", "HEAD"]);
+      if (outcome === "pending") {
+        markSyncPending(c.vaultDir);
+        return { sha, synced: false, pending: true };
+      }
+      if (outcome === "no-remote") {
+        return { sha, synced: false, pending: false };
+      }
+      markSynced(c.vaultDir);
+      return { sha, synced: true, pending: false };
+    };
+
+    // `git rm` throws for a nonexistent/invalid path — that is a REAL error and
+    // must surface BEFORE any commit, exactly as before (route → clean 4xx/409).
     await git(["rm", "-r", "--", relPath]);
     await git(["commit", "-m", message]);
-    await git(["pull", "--rebase", "--autostash", "origin", c.gitBranch]);
-    await git(["push", "origin", c.gitBranch]);
+    // From here on the deletion is SAFE in git. Every failure below is about
+    // reaching Forgejo — it may degrade the result, never lose the delete.
+
+    // Kein Remote (Setup-Wizard noch nicht gelaufen) -> nur lokaler Commit.
+    if (!(await hasRemote())) {
+      return settle("no-remote");
+    }
+
+    try {
+      await git(["pull", "--rebase", "--autostash", "origin", c.gitBranch]);
+    } catch (err) {
+      // Delete: kein Byte-Vergleich (expected=null). Unreachable remote → der
+      // Lösch-Commit liegt lokal sicher und wartet; echter Konflikt wirft.
+      return settle(await handlePullFailure(err, relPath, null, c.gitBranch));
+    }
+
+    try {
+      await git(["push", "origin", c.gitBranch]);
+    } catch (err) {
+      return settle(handlePushFailure(err, relPath));
+    }
+    return settle("synced");
   });
 }
 

@@ -255,6 +255,27 @@ curl -s -o /dev/null -w '%{http_code}\n' https://lokyy.example.tld/health
 another device on purpose, drop the `127.0.0.1:` prefix from the specific port
 line — and know that everyone on that network then sees the login page.
 
+### Lokal vs. Remote erreichbar machen (`docker-compose.yml`)
+
+The generic `docker-compose.yml` publishes three host ports — `8787` (API),
+`3000` (Forgejo UI) and `2222` (Forgejo SSH) — and their bind address is a
+single variable, `LOKYY_BIND_ADDR`:
+
+| `LOKYY_BIND_ADDR` | Effect |
+|-------------------|--------|
+| _unset_ / `127.0.0.1` | **Default, safe.** Reachable only from the host itself. |
+| `0.0.0.0` | Reachable from the whole network (every interface). |
+| `<interface-ip>` | Reachable on that one interface only. |
+
+The default keeps a fresh install off the network. Do **not** just flip it to
+`0.0.0.0` to go remote: the recommended remote setup is a **reverse proxy that
+terminates TLS** in front of the app, with `LOKYY_COOKIE_SECURE=true` so the
+session cookie never travels over plain HTTP. The API already enforces login on
+every data route (since the session sweep, issue #37), but the login exchange
+itself must be encrypted. If the proxy runs on the same host, leave
+`LOKYY_BIND_ADDR=127.0.0.1` and let the proxy reach the app over localhost;
+only widen it when the proxy or client lives on another machine.
+
 ---
 
 ## 10. Configure AI providers (optional)

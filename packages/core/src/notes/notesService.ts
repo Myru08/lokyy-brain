@@ -2,7 +2,14 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { Note, NoteSummary, TreeNode } from "@lokyy/shared";
 import { coreConfig, indexVaultId } from "../util/coreConfig.js";
-import { lastModified, move, pull, remove, save } from "../git/gitService.js";
+import {
+  lastModified,
+  move,
+  pull,
+  remove,
+  save,
+  type SaveResult,
+} from "../git/gitService.js";
 import {
   parseAliases,
   parseLinks,
@@ -819,13 +826,21 @@ export async function moveEntry(
   }
 }
 
-/** Notiz oder Ordner löschen. */
+/**
+ * Notiz oder Ordner löschen.
+ *
+ * Reicht das `SaveResult` von `gitService.remove` durch (offline-toleranter
+ * Delete): ist Forgejo nicht erreichbar, ist die Löschung lokal committet und
+ * kommt als `{ synced: false, pending: true }` zurück statt zu werfen — die
+ * Route meldet dann 200 + Sync-Status statt eines 5xx. Ein echter Fehler
+ * (Pfad existiert nicht) wirft weiterhin.
+ */
 export async function deleteEntry(
   path: string,
   kind: "note" | "folder",
-): Promise<void> {
+): Promise<SaveResult> {
   const rel = kind === "note" ? `${path}.md` : path;
-  await remove(rel, `${kind} gelöscht: ${path}`);
+  const result = await remove(rel, `${kind} gelöscht: ${path}`);
   if (kind === "note") {
     // Phase A Wave A1 / Story 2 — drop the BM25 row.
     queueSearchIndexRemove(path);
@@ -833,6 +848,7 @@ export async function deleteEntry(
   // ID-Badge / AI-Prompt feature — drop the ULID cache so a deleted
   // note stops resolving via findByUlid.
   invalidateUlidCache();
+  return result;
 }
 
 /* ------------------------------------------------------------------ *

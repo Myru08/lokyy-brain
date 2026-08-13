@@ -124,6 +124,12 @@ export default defineConfig({
         // bypass the SPA's navigateFallback so the browser hits the network
         // and receives the backend's 302 instead of a cached index.html.
         navigateFallbackDenylist: [/^\/api\//],
+        // NOTE (issue #39): the three data-cache `cacheName`s below — "notes",
+        // "vault-tree", "graph" — are purged on logout/401 by `clearDataCaches`
+        // in `pwa/src/api.ts` (DATA_RUNTIME_CACHES). Workbox uses an explicit
+        // `cacheName` verbatim, so those strings are the exact Cache Storage
+        // keys. Rename one here → rename it there too, or the logout purge
+        // silently misses it. The font caches are intentionally NOT purged.
         runtimeCaching: [
           {
             urlPattern: /\/api\/notes/,

@@ -23,13 +23,20 @@ const KIND_ORDER = ["personal", "shared", "company"];
 
 export function VaultSwitcher() {
   const [vaults, setVaults] = useState<VaultListItem[] | null>(null);
+  // issue #43: >1 vault and no LOKYY_VAULT_ID pin — search/index use the oldest
+  // deterministically, but the operator should know the choice is ambiguous
+  // (often the fingerprint of an accidental second registration).
+  const [ambiguous, setAmbiguous] = useState(false);
   const [open, setOpen] = useState(false);
   const activeId = getActiveVaultCookie();
 
   useEffect(() => {
     api
       .getVaults()
-      .then((r) => setVaults(r.vaults))
+      .then((r) => {
+        setVaults(r.vaults);
+        setAmbiguous(r.ambiguous);
+      })
       .catch(() => setVaults([]));
   }, []);
 
@@ -95,6 +102,26 @@ export function VaultSwitcher() {
         </span>
         <span style={{ color: C.textDim }}>▾</span>
       </button>
+      {ambiguous && (
+        <div
+          role="alert"
+          title="Mehrere Vaults vorhanden und kein LOKYY_VAULT_ID gesetzt. Suche und Indexierung nutzen deterministisch den ältesten Vault. Setze LOKYY_VAULT_ID (oder entferne den überzähligen Vault), um die Mehrdeutigkeit aufzulösen."
+          style={{
+            marginTop: 6,
+            padding: "6px 10px",
+            background: "rgba(180,120,0,0.14)",
+            border: `1px solid ${C.gold}`,
+            borderRadius: 6,
+            color: C.gold,
+            fontFamily: FONT.ui,
+            fontSize: 11,
+            lineHeight: 1.35,
+          }}
+        >
+          ⚠︎ Mehrere Vaults, keiner gepinnt — Suche/Index nutzen den ältesten.
+          LOKYY_VAULT_ID setzen.
+        </div>
+      )}
       {open && (
         <div
           style={{

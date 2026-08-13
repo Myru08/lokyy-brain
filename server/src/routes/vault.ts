@@ -236,6 +236,13 @@ vaultRoutes.post("/move", async (c) => {
 });
 
 // DELETE /api/vault/entry?path=…&kind=note|folder
+//
+// Offline-tolerant wie der Save-Pfad (Story: offline-toleranter Delete): ist
+// Forgejo nicht erreichbar, ist die Löschung lokal committet und sicher — die
+// Antwort ist dann 200 { ok:true, synced:false, pending:true }, KEIN 5xx. Der
+// nächste Sync holt den Push nach. Nur ein ECHTER Fehler (Pfad existiert nicht,
+// oder ein echter Merge-Konflikt) surfacet weiterhin als sauberer Fehlerstatus
+// (mirrors notes.ts#mapSaveError / die Sync-Route oben).
 vaultRoutes.delete("/entry", async (c) => {
   const path = c.req.query("path");
   const kind = c.req.query("kind") as "note" | "folder" | undefined;
@@ -243,11 +250,29 @@ vaultRoutes.delete("/entry", async (c) => {
     return c.json({ error: "path und kind erforderlich" }, 400);
   }
   try {
-    await deleteEntry(path, kind);
-    return c.json({ ok: true });
+    const { synced, pending } = await deleteEntry(path, kind);
+    return c.json({ ok: true, synced, pending });
   } catch (err) {
+    // Echter Konflikt (jemand anderes hat divergent gepusht) → 409.
+    if (err instanceof MergeConflictError) {
+      return c.json({ ok: false, error: "merge-conflict", message: err.message }, 409);
+    }
+    // Nicht-transienter Backend-Fehler (Remote falsch konfiguriert, Auth) → 503.
+    if (err instanceof GitBackendError) {
+      return c.json(
+        {
+          ok: false,
+          error: "git-backend-unavailable",
+          message: err.message,
+          retryable: err.transient,
+          retryAfter: err.transient ? 5 : undefined,
+        },
+        503,
+      );
+    }
+    // Unbekannt (z. B. `git rm` auf nicht existierendem Pfad) → 409 (Legacy).
     return c.json(
-      { error: err instanceof Error ? err.message : "Löschen fehlgeschlagen" },
+      { ok: false, error: err instanceof Error ? err.message : "Löschen fehlgeschlagen" },
       409,
     );
   }

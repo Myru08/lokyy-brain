@@ -28,6 +28,13 @@ export {
   vaultsRoot,
   // Story 5.8: the single vault id both search tiers (write AND read) agree on.
   indexVaultId,
+  // issue #43: deterministic active-vault cache control — callers that change
+  // the set of vault rows (registration, provisioning) invalidate it so the
+  // next resolution picks up the new reality without a restart.
+  invalidateActiveVaultId,
+  primeActiveVaultId,
+  getCachedActiveVaultId,
+  setCachedActiveVaultId,
 } from "./util/coreConfig.js";
 
 // ─── gitService (Story 1.3) ─────────────────────────────────────────────
@@ -495,6 +502,7 @@ export {
 export {
   chunkNote,
   approximateTokens,
+  maxTokensUpperBound,
   hashChunk,
   type Chunk,
   type ChunkType,
@@ -742,6 +750,14 @@ export type { McpToken, NewMcpToken } from "./db/schema/mcpTokens.js";
 
 // ─── Vault registry queries (multi-tenant, M3) ──────────────────────────
 export { getVaultById } from "./vaults/index.js";
+
+// ─── Deterministic active-vault resolution (issue #43) ──────────────────
+export {
+  pickActiveVault,
+  selectActiveVault,
+  type ActiveVaultRow,
+  type ActiveVaultSelection,
+} from "./vaults/activeVault.js";
 
 // ─── Sidebar menu config (Epic 11 / Story 11.1) ─────────────────────────
 // Lokyy-Workspace sidebar menu = (folder) + (view type). System-Items are

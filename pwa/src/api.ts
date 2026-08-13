@@ -624,6 +624,49 @@ function announceUnauthenticated(): void {
   window.dispatchEvent(new CustomEvent(UNAUTHENTICATED_EVENT));
 }
 
+/**
+ * The Workbox NetworkFirst runtime caches that hold vault DATA — note bodies
+ * (`/api/notes`), the file tree (`/api/vault/tree`) and the graph
+ * (`/api/graph`). These names are the explicit `cacheName`s declared in
+ * `pwa/vite.config.ts`; Workbox uses an explicit `cacheName` VERBATIM (no
+ * `workbox-…` prefix/suffix), so the strings must match that file exactly.
+ * Kept in sync by hand — renaming a cache in one place without the other
+ * silently defeats the logout purge.
+ *
+ * Deliberately EXCLUDES the Workbox precache (the app shell) and the
+ * Google-Fonts caches (`google-fonts-stylesheets` / `google-fonts-webfonts`):
+ * those hold no user data, and dropping them would break the offline boot for
+ * no security gain.
+ */
+export const DATA_RUNTIME_CACHES = ["notes", "vault-tree", "graph"] as const;
+
+/**
+ * Purge the vault-data runtime caches from the browser's Cache Storage.
+ *
+ * Called when the session ends for a reason that means the cached vault data no
+ * longer belongs to the person at the keyboard: an explicit logout, or a 401
+ * from an expired/revoked session. Leaving readable note bodies in Cache
+ * Storage after logout would undercut the access gate on a shared device.
+ *
+ * It must NOT be called on a plain offline fetch failure — the offline cache is
+ * a feature and has to survive a dropped network. This helper only deletes; the
+ * caller owns the logout-vs-offline decision (`AuthGate` clears on a real 401
+ * response, never in its network-error `catch`).
+ *
+ * Never throws and never rejects: Cache Storage is absent in Node/vitest and on
+ * insecure origins, so a missing API is a silent no-op. Only the three data
+ * caches above are touched — the precache and font caches are left intact.
+ */
+export async function clearDataCaches(): Promise<void> {
+  try {
+    if (typeof caches === "undefined") return;
+    await Promise.all(DATA_RUNTIME_CACHES.map((name) => caches.delete(name)));
+  } catch {
+    // Cache Storage unavailable or blocked (insecure origin, private mode) —
+    // nothing to clear, and a failed purge must never break the logout flow.
+  }
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -1688,9 +1731,23 @@ export const api = {
   /* ──── Owner vault-switcher (LBMT-C) ──── */
 
   /** All vaults the owner can open, with kind + which is the default singleton. */
-  getVaults: (): Promise<{ defaultVaultId: string; vaults: VaultListItem[] }> =>
+  getVaults: (): Promise<{
+    defaultVaultId: string;
+    /** issue #43: the vault search + indexing deterministically use (or null pre-setup). */
+    activeVaultId: string | null;
+    /** issue #43: >1 vault and no LOKYY_VAULT_ID pin — the active choice is a guess. */
+    ambiguous: boolean;
+    vaultCount: number;
+    vaults: VaultListItem[];
+  }> =>
     fetch(`${BASE}/vaults`, { credentials: "include" }).then(
-      json<{ defaultVaultId: string; vaults: VaultListItem[] }>,
+      json<{
+        defaultVaultId: string;
+        activeVaultId: string | null;
+        ambiguous: boolean;
+        vaultCount: number;
+        vaults: VaultListItem[];
+      }>,
     ),
 
   /* ──── Multi-tenant — customer/shared vaults (LBMT-1.5) ──── */

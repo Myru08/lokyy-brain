@@ -102,6 +102,47 @@ export const OPEN_API_PREFIXES = [
 ] as const;
 
 /**
+ * The single full-surface wildcard that is deliberately NOT a data route: the
+ * CORS + vault-switcher middleware in `app.ts` (`app.use("/api/*", …)`), plus
+ * the bare `/api` a mount can leave behind. Neither carries auth semantics of
+ * its own — the guards installed below them do — so the drift guard treats
+ * them as classified by construction instead of demanding a table entry. Kept
+ * as an explicit, minimal allowance: anything narrower than the whole surface
+ * (e.g. a stray `app.use("/api/foo/*", …)` without a matching prefix) still
+ * has to earn its place in {@link GUARDED_API_PREFIXES} or
+ * {@link OPEN_API_PREFIXES}.
+ */
+export const API_SURFACE_WILDCARDS: ReadonlyArray<string> = ["/api", "/api/*"];
+
+/**
+ * Is a single registered `/api` path accounted for by the guard tables?
+ *
+ * Matching rule (segment-prefix): a path is covered when it equals a prefix
+ * exactly (`/api/notes` ↔ `/api/notes`) or begins with `${prefix}/`
+ * (`/api/notes/:id{.+}` ↔ `/api/notes`). Hono registers concrete paths, not
+ * prefix globs, so the `:param` and `{.+}` fragments are just later segments —
+ * plain string-prefix matching classifies them without parsing the pattern.
+ */
+export function isClassifiedApiPath(path: string): boolean {
+  if (API_SURFACE_WILDCARDS.includes(path)) return true;
+  return [...GUARDED_API_PREFIXES, ...OPEN_API_PREFIXES].some(
+    (prefix) => path === prefix || path.startsWith(`${prefix}/`),
+  );
+}
+
+/**
+ * Default-deny drift check: every `/api` path in `registeredPaths` that is
+ * neither guarded nor deliberately open, sorted for a stable message. An empty
+ * result is the passing state. Pure over its input so it can be exercised both
+ * against the real router registry and against a synthetic list.
+ */
+export function unclassifiedApiPaths(registeredPaths: Iterable<string>): string[] {
+  return [...new Set(registeredPaths)]
+    .filter((path) => path.startsWith("/api") && !isClassifiedApiPath(path))
+    .sort();
+}
+
+/**
  * Install the guards. MUST run before the route groups are mounted — Hono
  * dispatches middleware and handlers in registration order, so a `use()` added
  * after a `route()` never sees that route's requests.

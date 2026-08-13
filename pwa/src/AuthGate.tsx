@@ -1,6 +1,6 @@
 import { createContext, useEffect, useState } from "react";
 import { Login } from "./Login.js";
-import { UNAUTHENTICATED_EVENT } from "./api.js";
+import { clearDataCaches, UNAUTHENTICATED_EVENT } from "./api.js";
 import { C, FONT } from "./theme.js";
 
 interface SessionUser {
@@ -25,12 +25,23 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
     try {
       const res = await fetch("/api/auth/me", { credentials: "include" });
       if (!res.ok) {
+        // A real HTTP answer that isn't OK means the session is gone: a 401
+        // from an expired/revoked cookie, or an explicit logout that reloaded
+        // the page (the logout POST clears the cookie, so this GET now 401s).
+        // Either way the cached vault data belongs to a logged-out state, so
+        // purge the runtime caches before dropping to the login screen — a
+        // locally-readable copy would undercut the access gate. A NETWORK
+        // failure lands in the `catch` below and must NOT clear (offline is a
+        // feature, see clearDataCaches).
+        await clearDataCaches();
         setState("guest");
         return;
       }
       const user = (await res.json()) as SessionUser;
       setState({ user });
     } catch {
+      // Fetch threw → offline / server unreachable. Keep the caches so the
+      // offline experience survives; just fall back to the login screen.
       setState("guest");
     }
   }

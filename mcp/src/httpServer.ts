@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { handleOAuthRoute, verifyToken, deriveBase } from "./oauth.js";
@@ -90,7 +91,17 @@ export function isLegacyBearer(
   bearer: string | undefined,
   token: string | undefined,
 ): boolean {
-  return Boolean(token) && Boolean(bearer) && bearer === token;
+  // Precondition (Story 7.10): both sides must be non-empty. An unset env token
+  // or a bare `Authorization: Bearer ` header (empty value) never authorizes.
+  if (!token || !bearer) return false;
+  // Constant-time equality via SHA-256 digest-then-timingSafeEqual: a raw `===`
+  // short-circuits and leaks length/prefix through a timing side channel, and
+  // `timingSafeEqual` THROWS on unequal buffer lengths (which itself leaks the
+  // length). Hashing both sides to a fixed 32-byte digest first makes the
+  // comparison length-independent and constant-time regardless of input size.
+  const bearerDigest = createHash("sha256").update(bearer).digest();
+  const tokenDigest = createHash("sha256").update(token).digest();
+  return timingSafeEqual(bearerDigest, tokenDigest);
 }
 
 async function readBody(req: IncomingMessage): Promise<unknown> {

@@ -36,6 +36,7 @@ describe.skipIf(!DB_URL)("own-vault MCP tokens (Story 7.10)", () => {
   let vaultId: string;
   let foreignVaultId: string;
   let foreignTokenId: string;
+  let foreignToken: string;
 
   beforeAll(async () => {
     base = await mkdtemp(join(tmpdir(), "lokyy-mcp-tokens-"));
@@ -108,6 +109,9 @@ describe.skipIf(!DB_URL)("own-vault MCP tokens (Story 7.10)", () => {
       label: "Kunde",
     });
     foreignTokenId = foreign.row.id;
+    // Kept for the cross-tenant resolution test below — the plaintext exists
+    // only here, right after minting, and is never persisted.
+    foreignToken = foreign.token;
 
     const { adminRoutes } = await import("./admin.js");
     app = new Hono();
@@ -228,6 +232,69 @@ describe.skipIf(!DB_URL)("own-vault MCP tokens (Story 7.10)", () => {
     expect(res.status).toBe(200);
     const raw = JSON.stringify(await res.json());
     expect(raw).not.toContain("<set-LOKYY_MCP_TOKEN-env-and-restart>");
+  });
+
+  // ── MCP-token hardening / cross-tenant isolation (issue #39) ─────────────
+  // The admin surface above proves one vault cannot LIST or REVOKE another
+  // vault's tokens. These lock the layer underneath it: bearer → vault
+  // resolution, the actual gatekeeper the `/mcp` request path calls.
+
+  it("resolves each vault's bearer to its OWN vault only — no cross-tenant leak", async () => {
+    // A fresh bearer bound to the operator's OWN (personal) vault …
+    const mine = await core.createMcpToken({
+      vaultId,
+      agentId: "claude-code",
+      role: "write",
+      label: "isolation-own",
+    });
+
+    // … each bearer resolves strictly to the vault it was minted for.
+    expect(await core.lookupMcpToken(mine.token)).toMatchObject({
+      vaultId,
+      role: "write",
+    });
+    expect(await core.lookupMcpToken(foreignToken)).toMatchObject({
+      vaultId: foreignVaultId,
+      role: "write",
+    });
+
+    // The own-vault bearer must NEVER carry the foreign vault, and vice versa —
+    // this is the cross-tenant isolation guarantee at the resolution layer, the
+    // point where a bearer is turned into read/write authority over a vault.
+    expect((await core.lookupMcpToken(mine.token))!.vaultId).not.toBe(foreignVaultId);
+    expect((await core.lookupMcpToken(foreignToken))!.vaultId).not.toBe(vaultId);
+  });
+
+  it("rejects an absent, empty, or unknown bearer (→ null → 401 upstream)", async () => {
+    // A bare `Authorization: Bearer ` header slices to "" — must not resolve.
+    expect(await core.lookupMcpToken("")).toBeNull();
+    // Well-formed-looking but never issued.
+    expect(await core.lookupMcpToken("lokyy_mcp_deadbeef_never_issued")).toBeNull();
+    // Arbitrary garbage.
+    expect(await core.lookupMcpToken("../../etc/passwd")).toBeNull();
+  });
+
+  it("matches bearers by SHA-256 digest, not by prefix or partial value", async () => {
+    const issued = await core.createMcpToken({
+      vaultId,
+      agentId: "claude-code",
+      role: "read",
+      label: "digest-lock",
+    });
+
+    // The exact bearer resolves …
+    expect(await core.lookupMcpToken(issued.token)).toMatchObject({
+      vaultId,
+      role: "read",
+    });
+
+    // … but a value sharing the ENTIRE bearer except its last character hashes
+    // to a different digest and must NOT resolve. The lookup compares the
+    // fixed-width SHA-256 hex, never the raw secret — so there is no
+    // byte-at-a-time timing channel to walk a valid token out of the server.
+    const tampered = issued.token.slice(0, -1) + (issued.token.endsWith("A") ? "B" : "A");
+    expect(issued.token).not.toBe(tampered);
+    expect(await core.lookupMcpToken(tampered)).toBeNull();
   });
 });
 

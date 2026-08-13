@@ -5,7 +5,7 @@ import { getActiveGeneration } from "../llm/embeddingsMigration.js";
 import { DEFAULT_EMBEDDINGS_GENERATION } from "../db/schema/embeddingsMigration.js";
 import {
   chunkNote,
-  approximateTokens,
+  maxTokensUpperBound,
   EMBED_MODEL_CONTEXT_TOKENS,
   type Chunk,
   type ChunkType,
@@ -140,7 +140,10 @@ export class Tier2Provider implements MemoryProvider {
         throw new EmbeddingInputTooLargeError(
           res.status,
           detail.trim().slice(0, 200),
-          approximateTokens(text),
+          // Report the conservative upper bound (#42): the neutral ~4-chars
+          // estimate under-counts the dense content that triggers THIS error,
+          // which is exactly when an honest token number matters.
+          maxTokensUpperBound(text),
         );
       }
       throw new EmbeddingUnavailableError(

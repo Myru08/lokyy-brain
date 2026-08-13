@@ -39,12 +39,14 @@
 #     der Wizard spricht Forgejo nur per HTTP an, s.u.)
 #   • postgres / ollama bleiben intern (kein `ports:`) — wie in der Coolify-Datei.
 #
-# Das `127.0.0.1:`-Präfix ist Absicht (Security-Sweep, Issue #37): ohne es hört
-# Docker auf ALLEN Interfaces und der Stack hängt im Heim- oder Firmennetz. Wer
-# bewusst vom Handy/Tablet im selben WLAN zugreifen will, entfernt das Präfix an
-# genau der einen Zeile, die er braucht — und macht sich klar, dass dann jeder im
-# Netz die Login-Seite sieht. Die API selbst verlangt seit demselben Sweep eine
-# gültige Session, der Port ist also nicht mehr die einzige Schutzschicht.
+# Die Bind-Adresse ist konfigurierbar, Default sicher: `${LOKYY_BIND_ADDR:-127.0.0.1}`
+# bindet ohne gesetzte Variable nur an localhost (nur vom eigenen Rechner erreichbar,
+# Security-Sweep Issue #37). Wer bewusst vom Handy/Tablet im selben WLAN — oder
+# remote — zugreifen will, setzt EINE Variable: `LOKYY_BIND_ADDR=0.0.0.0` (oder eine
+# konkrete Interface-IP) öffnet alle Host-Ports fürs Netz. Für echten Fernzugriff
+# zusätzlich Reverse-Proxy + HTTPS + `LOKYY_COOKIE_SECURE=true` empfohlen (siehe
+# docs/DEPLOY.md). Die API verlangt seit dem Sweep ohnehin auf allen Daten-Routen
+# eine gültige Session — der Port ist nicht mehr die einzige Schutzschicht.
 #
 # Start:
 #   docker compose -f docker-compose.local.yml up -d
@@ -114,7 +116,7 @@ services:
     image: codeberg.org/forgejo/forgejo:9
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8790:3000"   # Web-UI  → http://localhost:8790 (3000/3001 sind auf vielen
+      - "${LOKYY_BIND_ADDR:-127.0.0.1}:8790:3000"   # Web-UI  → http://localhost:8790 (3000/3001 sind auf vielen
       # Dev-Rechnern von anderen Tools belegt — Next.js, Grafana & Co. — daher
       # bewusst ein unüblicherer Port hier.
     # Kein Host-SSH-Port: der Wizard/GIT_REMOTE sprechen Forgejo intern per
@@ -145,7 +147,7 @@ services:
       target: server          # WICHTIG: sonst würde die letzte Stage (mcp) gebaut.
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8787:8787"
+      - "${LOKYY_BIND_ADDR:-127.0.0.1}:8787:8787"
     depends_on:
       postgres:
         condition: service_healthy
@@ -199,7 +201,7 @@ services:
       dockerfile: pwa/Dockerfile
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8095:80"
+      - "${LOKYY_BIND_ADDR:-127.0.0.1}:8095:80"
     depends_on:
       lokyy-brain:
         condition: service_started
@@ -218,7 +220,7 @@ services:
       target: mcp             # WICHTIG: explizit mcp-Stage.
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8788:8788"
+      - "${LOKYY_BIND_ADDR:-127.0.0.1}:8788:8788"
     depends_on:
       postgres:
         condition: service_healthy
@@ -237,6 +239,11 @@ services:
       - LOKYY_MCP_TOKEN=${LOKYY_MCP_TOKEN:-local_dev_token_change_me_32_chars_min}
       - LOKYY_MCP_HTTP_PORT=8788
       - LOKYY_BRAIN_URL=http://lokyy-brain:8787
+      # Tier2 embeddings: the MCP write path builds Tier2Provider without an
+      # explicit host, so it reads OLLAMA_HOST (else falls back to localhost,
+      # which is not Ollama inside this container → ECONNREFUSED). Mirror the
+      # lokyy-brain service value.
+      - OLLAMA_HOST=http://ollama:11434
       - NODE_ENV=production
     volumes:
       - vault-data:/var/lokyy/vault

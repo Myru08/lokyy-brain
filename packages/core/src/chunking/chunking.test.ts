@@ -1,7 +1,10 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   chunkNote,
   approximateTokens,
+  maxTokensUpperBound,
   hashChunk,
   EMBED_MODEL_CONTEXT_TOKENS,
   DEFAULT_MAX_BODY_FULL_TOKENS,
@@ -45,7 +48,9 @@ describe("Story 5.8 AC#3/AC#4 — chunk size is bounded by the model context win
     const body = `## Huge Section\n\n${paragraph("S", 40_000)}`;
     const chunks = chunkNote({ title: "Huge", body });
     for (const c of chunks) {
-      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(
+      // Gate on the CONSERVATIVE bound, not the neutral ~4-chars estimate:
+      // the latter is what let #42 through (it under-counted dense content).
+      expect(maxTokensUpperBound(c.anchored)).toBeLessThanOrEqual(
         EMBED_MODEL_CONTEXT_TOKENS,
       );
     }
@@ -55,7 +60,9 @@ describe("Story 5.8 AC#3/AC#4 — chunk size is bounded by the model context win
     const paras = Array.from({ length: 6 }, (_, i) => paragraph(`P${i}`, 6_000));
     const chunks = chunkNote({ title: "Wide", body: paras.join("\n\n") });
     for (const c of chunks) {
-      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(
+      // Gate on the CONSERVATIVE bound, not the neutral ~4-chars estimate:
+      // the latter is what let #42 through (it under-counted dense content).
+      expect(maxTokensUpperBound(c.anchored)).toBeLessThanOrEqual(
         EMBED_MODEL_CONTEXT_TOKENS,
       );
     }
@@ -88,7 +95,9 @@ describe("Story 5.8 AC#3/AC#4 — chunk size is bounded by the model context win
     const sections = chunks.filter((c) => c.chunkType === "section");
     expect(sections.length).toBeGreaterThan(1);
     for (const c of chunks) {
-      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(
+      // Gate on the CONSERVATIVE bound, not the neutral ~4-chars estimate:
+      // the latter is what let #42 through (it under-counted dense content).
+      expect(maxTokensUpperBound(c.anchored)).toBeLessThanOrEqual(
         EMBED_MODEL_CONTEXT_TOKENS,
       );
     }
@@ -111,7 +120,97 @@ describe("Story 5.8 AC#3/AC#4 — chunk size is bounded by the model context win
       maxChunkTokens: 60,
     });
     for (const c of chunks) {
-      expect(approximateTokens(c.anchored)).toBeLessThanOrEqual(60);
+      expect(maxTokensUpperBound(c.anchored)).toBeLessThanOrEqual(60);
+    }
+  });
+});
+
+describe("#42 — dense German/technical markdown never overruns the model window", () => {
+  // The bug report's exact input: the vault's shipped SPEC.md. Read the real
+  // file so the fixture tracks whatever the scaffold actually ships.
+  const specPath = fileURLToPath(new URL("../vault/SPEC.md", import.meta.url));
+  const specBody = readFileSync(specPath, "utf8");
+
+  /**
+   * Model the REAL nomic-embed-text token count independently of the code's
+   * own estimator (otherwise the test is circular). Measured empirically on
+   * this file: 4325 chars -> ~2546 tokens = 1.70 chars/token. We use 1.70 as
+   * the "truth" the code must stay under; the code budgets at a stricter 1.5,
+   * so it has margin against this and slightly denser content.
+   */
+  const MEASURED_CHARS_PER_TOKEN = 1.7;
+  const realTokens = (s: string): number =>
+    Math.ceil(s.length / MEASURED_CHARS_PER_TOKEN);
+
+  it("the fixture reproduces the failure conditions (short file, dense tokens)", () => {
+    // Guards the premise: a body the OLD gate (chars/4) waved through as
+    // ~1081 tokens is really ~2546 — over the 2048 window. If SPEC.md is ever
+    // trimmed below the window this test's premise is gone and it should be
+    // revisited rather than silently passing.
+    expect(approximateTokens(specBody)).toBeLessThan(EMBED_MODEL_CONTEXT_TOKENS);
+    expect(realTokens(specBody)).toBeGreaterThan(EMBED_MODEL_CONTEXT_TOKENS);
+  });
+
+  it("no chunk from the real SPEC.md exceeds the window at MEASURED density", () => {
+    const chunks = chunkNote({ title: "lokyy-vault — SPEC", body: specBody });
+    // On the OLD code this failed: a single 4325-char body_full chunk modelled
+    // at 1.70 chars/token is ~2546 real tokens > 2048.
+    for (const c of chunks) {
+      expect(realTokens(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+    }
+  });
+
+  it("the whole-body body_full leg is dropped when it can't fit the window", () => {
+    const chunks = chunkNote({ title: "lokyy-vault — SPEC", body: specBody });
+    const bodyFull = chunks.find((c) => c.chunkType === "body_full");
+    // Either no body_full at all, or (for a hypothetically smaller SPEC) one
+    // that genuinely fits. Never a body_full that overruns the model.
+    if (bodyFull) {
+      expect(realTokens(bodyFull.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+    } else {
+      expect(chunks.some((c) => c.chunkType === "section")).toBe(true);
+    }
+  });
+
+  it("a long, heading-free dense body stays under the window on every chunk", () => {
+    // A worst case the SPEC doesn't cover: one huge section with no H-splits,
+    // built from a dense token soup (short symbol-heavy words + IDs) so the
+    // MEASURED-density model is punishing. All legs — body_full (dropped),
+    // section (split), sliding (skipped/split) — must still fit.
+    const dense = Array.from({ length: 400 }, (_, i) =>
+      `Cross-Modul-Schreibvorgang-${i} 01HPXY9Z${i}ULID; Frontmatter-Fence.`,
+    ).join(" ");
+    const body = `## Ein einziger dichter Abschnitt ohne Untergliederung\n\n${dense}`;
+    const chunks = chunkNote({ title: "Dicht", body });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const c of chunks) {
+      // Conservative bound the CODE guarantees, density-independent.
+      expect(maxTokensUpperBound(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+      // And the MEASURED-density model of reality, with margin.
+      expect(realTokens(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
+    }
+  });
+
+  it("a pathological giant title cannot overrun the window on any chunk", () => {
+    // Malformed frontmatter: a 10k-char title. The anchor prefix (title +
+    // breadcrumb) prepends to EVERY chunk, so an unclamped giant title would
+    // blow the window on all of them. The clamp must contain it.
+    const title = "T".repeat(10_000);
+    const body = "# H\n\nsome body paragraph here.\n\nand another paragraph.";
+    const chunks = chunkNote({ title, body });
+    expect(chunks.length).toBeGreaterThan(0);
+    for (const c of chunks) {
+      expect(maxTokensUpperBound(c.anchored)).toBeLessThanOrEqual(
+        EMBED_MODEL_CONTEXT_TOKENS,
+      );
     }
   });
 });
