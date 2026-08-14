@@ -357,7 +357,15 @@ const DIAGNOSTIC_SERVICE_ORDER: { key: string; label: string }[] = [
   { key: "postgres", label: "Postgres" },
   { key: "ollama", label: "Ollama" },
   { key: "embeddings", label: "Embeddings" },
+  // Vor „Suche": diese Gruppe nennt die URSACHE, die die Such-Sonden nur als
+  // Symptom zeigen (nicht zugewiesene Embedding-Rolle → 0 semantische Treffer).
+  // In der Lesereihenfolge Provider → Routing → Suchergebnis.
+  { key: "ki-routing", label: "KI-Provider / Task-Routing" },
   { key: "search", label: "Suche (Tier 1 / Tier 2 / Combined)" },
+  // Direkt nach „Suche": beide messen Index-Gesundheit — dort der Füllstand
+  // („fehlt, was da sein sollte"), hier die Gegenrichtung („liegt da, wessen
+  // Notiz es nicht mehr gibt").
+  { key: "stores", label: "Abgeleitete Stores (Verwaisungen)" },
   { key: "sleep-agent", label: "Sleep-Agent" },
   { key: "mcp", label: "MCP" },
   { key: "git", label: "Git / Vault" },
