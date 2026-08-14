@@ -169,6 +169,11 @@ export {
 // the MCP-wiring agent imports them straight from `@lokyy/core`.
 export {
   listNotes,
+  // issue #62 — Pfad-ID + Frontmatter-ULID im Bulk, ein Pull für den ganzen
+  // Aufruf. Ersetzt den Eigenbau-Kopfscan im Verwaisungs-Check (#59).
+  listNoteIdentities,
+  type NoteIdentity,
+  type ListIdentitiesOpts,
   getNote,
   saveNote,
   getTree,
