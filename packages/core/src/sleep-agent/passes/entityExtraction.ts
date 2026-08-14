@@ -33,6 +33,20 @@ import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
  *   - `MAX_TEXT_PER_NOTE = 4000` chars — long notes are truncated head-only;
  *      good enough for the surface entity-set, the full-body pass lives in
  *      Phase D when spaCy/GLiNER take over.
+ *   - `nerTokenBudget()`               — per-note output ceiling, see below.
+ *
+ * Issue #53 — the pass used to fail SILENTLY on every longer note: a fixed
+ * `maxTokens: 1000` cut the model off mid-object (`done_reason: "length"`),
+ * the closing `]` never arrived, `tryParseJsonArray` returned null, and the
+ * caller did `errors++; continue;` without a single log line. Three changes
+ * keep that from recurring, each effective on its own:
+ *   1. the token budget scales with the note length (`nerTokenBudget`),
+ *   2. the prompt no longer asks for `contextSnippet` — by far the largest
+ *      per-entity cost — the snippet is derived locally from the note text,
+ *   3. `ChatResult.finishReason` is evaluated: a `length` abort is logged and
+ *      counted separately from "model produced garbage", so the two failure
+ *      modes are distinguishable in `SleepPassResult.notes` without a
+ *      log dive.
  *
  * Privacy: per-note `routeContextFromNote` — `privacy: local-only` notes
  * never hit a cloud provider; if the local NER chain is empty, the note is
@@ -57,17 +71,79 @@ const VALID_TYPE_SET = new Set<string>([
   "event",
 ]);
 
+/**
+ * NOTE: no `contextSnippet` field. It used to ask the model for ~100 chars of
+ * surrounding text per entity — the single largest contributor to the output
+ * length (a 100-char German snippet costs ~35 tokens, more than the rest of
+ * the object combined) and the reason the 1000-token budget blew up. The
+ * snippet is now derived from the note text in `deriveSnippet()`: cheaper,
+ * and accurate instead of paraphrased-by-the-model.
+ */
 const NER_PROMPT = `Extract named entities from the following text. For each entity, output:
 - displayName (as it appears in text, but cleaned)
 - type: one of [person, organization, location, concept, date, event]
 - confidence: 0..1
-- contextSnippet: ~100 chars around the mention
 
 Output ONLY valid JSON array. No preamble. Schema:
-[{"displayName": "...", "type": "...", "confidence": 0.x, "contextSnippet": "..."}]
+[{"displayName": "...", "type": "...", "confidence": 0.x}]
 
 Text:
 {{TEXT}}`;
+
+/**
+ * Per-note output-token budget.
+ *
+ * Fixed budgets are the bug (#53): a note that yields more entities than the
+ * budget allows is cut off mid-JSON and silently lost. The budget therefore
+ * scales with the amount of text the model actually sees.
+ *
+ * Calibration (snippet-free schema, measured against the Ollama NER chain):
+ *   - one entity object serializes to ~25-30 tokens; `TOKENS_PER_ENTITY = 45`
+ *     leaves headroom for long German compounds and umlaut-heavy names,
+ *     which tokenize worse than the English average.
+ *   - `CHARS_PER_ENTITY = 120` is deliberately pessimistic — normal prose sits
+ *     nearer one entity per 200 chars; 120 covers list-shaped notes (meeting
+ *     attendees, tool lists) that are almost pure entities.
+ *   - `OVERHEAD = 64` pays for the array brackets and any short preamble the
+ *     model insists on emitting.
+ *
+ * The ceiling stays: the budget is what the run may spend WORST case, and on
+ * a CPU-only Ollama install every extra 1000 tokens is roughly half a minute
+ * per note (× `NOTES_PER_RUN`). At `NER_MAX_TOKENS = 2000` a fully degenerate
+ * run stays inside ~20 minutes. The formula itself tops out at ~1560 tokens
+ * for a `MAX_TEXT_PER_NOTE`-length note, so the cap only catches the pathological
+ * case — it is a guard, not the normal operating point.
+ */
+const NER_TOKENS_PER_ENTITY = 45;
+const NER_CHARS_PER_ENTITY = 120;
+const NER_TOKENS_OVERHEAD = 64;
+const NER_MIN_TOKENS = 600;
+const NER_MAX_TOKENS = 2000;
+
+export function nerTokenBudget(textLength: number): number {
+  const expectedEntities = Math.ceil(Math.max(0, textLength) / NER_CHARS_PER_ENTITY);
+  const budget = NER_TOKENS_OVERHEAD + expectedEntities * NER_TOKENS_PER_ENTITY;
+  return Math.max(NER_MIN_TOKENS, Math.min(NER_MAX_TOKENS, budget));
+}
+
+/** Chars of surrounding text kept on each side of a mention. */
+const SNIPPET_RADIUS = 60;
+
+/**
+ * Locate `displayName` in the note text and cut a short window around it.
+ * Case-insensitive, first occurrence wins. Returns "" when the name doesn't
+ * literally appear (the model cleaned it, or hallucinated it) — `context` is
+ * a nullable display-only column, so an empty snippet is harmless.
+ */
+export function deriveSnippet(text: string, displayName: string): string {
+  const needle = displayName.trim();
+  if (needle.length === 0) return "";
+  const at = text.toLowerCase().indexOf(needle.toLowerCase());
+  if (at < 0) return "";
+  const start = Math.max(0, at - SNIPPET_RADIUS);
+  const end = Math.min(text.length, at + needle.length + SNIPPET_RADIUS);
+  return text.slice(start, end).replace(/\s+/g, " ").trim();
+}
 
 /** Loose JSON-array extractor — tolerates LLM preamble / trailing text. */
 function tryParseJsonArray(text: string): unknown[] | null {
@@ -120,6 +196,14 @@ export const entityExtractionPass: SleepPass = {
     let processed = 0;
     let errors = 0;
     let entitiesCreated = 0;
+    /** Model hit the output ceiling — entities were provably lost (#53). */
+    let truncated = 0;
+    /** Model finished normally but produced no parseable JSON array. */
+    let parseFailures = 0;
+    /** `upsertEntity` threw for a single extracted entity. */
+    let upsertFailures = 0;
+    /** Note skipped: local-only note, no local `ner` provider available. */
+    let providerSkips = 0;
 
     try {
       const routing = await getLlmRouting();
@@ -130,13 +214,18 @@ export const entityExtractionPass: SleepPass = {
       try {
         const probe = router.getProviderChain("ner");
         if (probe.length === 0 || !probe[0].chat) {
+          console.warn(
+            "[sleep-agent] entity-extraction aborted: no ner provider configured (or the configured one has no chat capability)",
+          );
           return { processed: 0, errors: 1, notes: "no ner provider configured" };
         }
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[sleep-agent] entity-extraction aborted: ner unavailable: ${message}`);
         return {
           processed: 0,
           errors: 1,
-          notes: `ner unavailable: ${err instanceof Error ? err.message : String(err)}`,
+          notes: `ner unavailable: ${message}`,
         };
       }
 
@@ -191,14 +280,26 @@ export const entityExtractionPass: SleepPass = {
             const chain = router.getProviderChain("ner", ctx);
             provider = chain.find((p) => p.chat) ?? null;
           } catch (err) {
-            if (!(err instanceof LlmUnavailable)) {
+            if (err instanceof LlmUnavailable) {
+              // local-only note with no local ner provider → skip cleanly.
+              // Counted (and surfaced in `notes`) but not logged per note:
+              // on a fully local-only vault this would spam one line per note.
+              providerSkips++;
+            } else {
               errors++;
+              console.warn(
+                `[sleep-agent] entity-extraction note "${candidate.id}" provider routing failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
             }
-            // local-only note with no local ner provider → skip cleanly.
             continue;
           }
           if (!provider?.chat) {
             errors++;
+            console.warn(
+              `[sleep-agent] entity-extraction note "${candidate.id}" skipped: ner chain has no chat-capable provider`,
+            );
             continue;
           }
 
@@ -206,16 +307,38 @@ export const entityExtractionPass: SleepPass = {
           const prompt = NER_PROMPT.replace("{{TEXT}}", text);
           const messages: ChatMessage[] = [{ role: "user", content: prompt }];
 
+          const maxTokens = nerTokenBudget(text.length);
           const result = await provider.chat(messages, {
-            maxTokens: 1000,
+            maxTokens,
             temperature: 0.1,
           });
 
+          const hitTokenCeiling = result.finishReason === "length";
+          if (hitTokenCeiling) {
+            // Provably lost entities: the model was still writing when the
+            // budget ran out. Counted even if the salvageable prefix parses.
+            truncated++;
+            console.warn(
+              `[sleep-agent] entity-extraction note "${candidate.id}" hit the token ceiling ` +
+                `(finishReason=length, maxTokens=${maxTokens}, outputTokens=${result.usage.outputTokens}, ` +
+                `textChars=${text.length}) — entities were cut off`,
+            );
+          }
+
           const rawArray = tryParseJsonArray(result.text);
           if (rawArray === null) {
-            // LLM produced no parseable JSON array — count it once and
-            // move on. Note remains unprocessed; next run retries.
+            // No parseable JSON array. Two very different causes, kept
+            // apart on purpose: a `length` abort is a budget problem, a
+            // `stop` with garbage is a model/prompt problem.
             errors++;
+            if (!hitTokenCeiling) {
+              parseFailures++;
+              console.warn(
+                `[sleep-agent] entity-extraction note "${candidate.id}" produced no parseable JSON array ` +
+                  `(finishReason=${result.finishReason}, ${result.text.length} chars)`,
+              );
+            }
+            // Note remains unprocessed; the next run retries it.
             continue;
           }
 
@@ -234,25 +357,50 @@ export const entityExtractionPass: SleepPass = {
           for (const raw of rawArray) {
             const ex = coerceExtracted(raw);
             if (!ex) continue;
+            // The snippet is ours now, not the model's — see NER_PROMPT.
+            // A model that still emits one keeps it as fallback.
+            const snippet = deriveSnippet(bodyText, ex.displayName);
+            if (snippet.length > 0) ex.contextSnippet = snippet;
             try {
               await upsertEntity(ex, candidate.id, observedAt);
               entitiesCreated++;
-            } catch {
+            } catch (err) {
               errors++;
+              upsertFailures++;
+              console.warn(
+                `[sleep-agent] entity-extraction upsert failed for "${ex.displayName}" (${ex.type}) ` +
+                  `in note "${candidate.id}": ${err instanceof Error ? err.message : String(err)}`,
+              );
             }
           }
           processed++;
-        } catch {
+        } catch (err) {
           errors++;
+          console.warn(
+            `[sleep-agent] entity-extraction note "${candidate.id}" failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
         }
       }
+
+      // Failure modes stay distinguishable in `sleep_agent_runs.passStats`
+      // — the whole point of #53 was that `errors: 6` told nobody anything.
+      const detail: string[] = [];
+      if (truncated > 0) detail.push(`${truncated} truncated (token ceiling)`);
+      if (parseFailures > 0) detail.push(`${parseFailures} unparseable`);
+      if (upsertFailures > 0) detail.push(`${upsertFailures} upsert-failed`);
+      if (providerSkips > 0) detail.push(`${providerSkips} skipped (no local ner)`);
 
       return {
         processed,
         errors,
-        notes: `extracted from ${processed} notes, ${entitiesCreated} entity-mentions`,
+        notes:
+          `extracted from ${processed} notes, ${entitiesCreated} entity-mentions` +
+          (detail.length > 0 ? `; ${detail.join(", ")}` : ""),
       };
     } catch (e) {
+      console.error(`[sleep-agent] entity-extraction pass failed: ${String(e).slice(0, 500)}`);
       return {
         processed,
         errors: errors + 1,
