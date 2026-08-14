@@ -12,6 +12,16 @@ import { defineConfig } from "vitest/config";
  */
 export default defineConfig({
   test: {
+    /**
+     * ACHTUNG, zweite Wirkung: diese Zeile ist auch der Contention-Schutz.
+     * `server/` hat vier Testdateien mit echtem git/`execFile`
+     * (`vaultCompliance`, `tenants`, `forgejoStatus`, `scaffoldVault`) — dieselbe
+     * Klasse wie in `@lokyy/core`, wo parallele git-Kindprozesse denselben Test
+     * von 1,0 s auf 14,9 s drücken und die Defaults (5 s / 10 s) reißen lassen.
+     * Hier passiert das nur deshalb nicht, weil serialisiert wird.
+     * Wer `fileParallelism` anschaltet, MUSS im selben Zug die Timeouts anheben
+     * (Vorbild: `testTimeout`/`hookTimeout` in `packages/core/vitest.config.ts`).
+     */
     fileParallelism: false,
   },
 });
