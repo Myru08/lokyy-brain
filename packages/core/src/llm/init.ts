@@ -69,9 +69,14 @@ function instantiate(cfg: ProviderConfig): LlmProvider {
       });
     }
     case "ollama": {
+      // `timeoutMs` bleibt hier bewusst ein reines Durchreichen: die
+      // Präzedenz Config → `LOKYY_OLLAMA_TIMEOUT_MS` → Default lebt im
+      // Provider (`resolveOllamaTimeoutMs`), damit sie auch für die
+      // Konstruktionsstellen außerhalb dieser Factory gilt (issue #54).
       return new OllamaProvider({
         baseUrl: cfg.baseUrl,
         defaultChatModel: cfg.defaultModel,
+        timeoutMs: cfg.timeoutMs,
       });
     }
     case "openai-compat": {
@@ -95,6 +100,7 @@ function instantiate(cfg: ProviderConfig): LlmProvider {
       return new LocalReranker({
         baseUrl: cfg.baseUrl,
         judgeModel: cfg.defaultModel,
+        timeoutMs: cfg.timeoutMs,
       });
     }
     default:

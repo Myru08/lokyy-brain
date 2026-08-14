@@ -25,7 +25,10 @@ export interface OllamaProviderOptions {
   defaultChatModel?: string;
   /** Default embedding model when `EmbedOpts.model` is omitted. */
   defaultEmbedModel?: string;
-  /** Request timeout in milliseconds. */
+  /**
+   * Request timeout in milliseconds. Omitted → `LOKYY_OLLAMA_TIMEOUT_MS`,
+   * then `OLLAMA_DEFAULT_TIMEOUT_MS` (see `resolveOllamaTimeoutMs`).
+   */
   timeoutMs?: number;
 }
 
@@ -81,10 +84,59 @@ export const OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434";
 export const OLLAMA_DEFAULT_CHAT_MODEL = "llama3.1:8b";
 export const OLLAMA_DEFAULT_EMBED_MODEL = "nomic-embed-text";
 
+/**
+ * Default request timeout for LOCAL inference (issue #54).
+ *
+ * Herleitung: lokale Inferenz und Cloud-Inferenz liegen eine Größenordnung
+ * auseinander — ein gemeinsamer Default (früher 60 s, am Cloud-Verhalten
+ * bemessen) kann für beide nicht stimmen. Ein Beta-Tester hat auf einer
+ * Privacy-Max-Installation (Docker Desktop / Apple Silicon, keine GPU-
+ * Durchreichung, 5,5 von 7,7 GiB belegt) **76,6 s für einen einzigen
+ * `llama3.1:8b`-Call** gemessen — der `topic-synthesis`-Pass konnte dort also
+ * strukturell NIE gelingen. Setups mit weniger RAM swappen und liegen darüber;
+ * der Tier-3-Spike hat auf vergleichbarer Hardware 347 s pro Notiz (mehrere
+ * Calls) gemessen.
+ *
+ * 300 s = ~4× die gemessenen 76,6 s. Genug Luft für RAM-Druck und Modell-
+ * Ladezeit beim ersten Call, und trotzdem eine echte Obergrenze: ein wirklich
+ * hängender Request blockiert einen Sleep-Agent-Pass nicht endlos. Wer
+ * langsamer ist, hebt `LOKYY_OLLAMA_TIMEOUT_MS` an.
+ */
+export const OLLAMA_DEFAULT_TIMEOUT_MS = 300_000;
+
+/** Env-Var, mit der Betreiber den lokalen Inferenz-Timeout anheben. */
+export const OLLAMA_TIMEOUT_ENV_VAR = "LOKYY_OLLAMA_TIMEOUT_MS";
+
 const DEFAULT_BASE_URL = OLLAMA_DEFAULT_BASE_URL;
 const DEFAULT_CHAT_MODEL = OLLAMA_DEFAULT_CHAT_MODEL;
 const DEFAULT_EMBED_MODEL = OLLAMA_DEFAULT_EMBED_MODEL;
-const DEFAULT_TIMEOUT_MS = 60_000;
+
+/**
+ * Resolve the effective request timeout: explizite Option → Env-Var →
+ * Default. Gleiche Präzedenz wie `resolveOllamaHost` (provider-Wert schlägt
+ * Env schlägt Default), und aus demselben Grund hier im Provider statt am
+ * Konstruktionsort: JEDE Konstruktionsstelle (init.ts, ollamaModels.ts,
+ * LocalReranker) profitiert ohne Durchreichen, so wie `Tier2Provider` bereits
+ * `OLLAMA_HOST` im Konstruktor liest.
+ *
+ * Ungültige Env-Werte (leer, nicht-numerisch, ≤ 0, NaN, Infinity) fallen
+ * still auf den Default zurück — ein Tippfehler in der `.env` darf den
+ * Serverstart nicht verhindern.
+ */
+export function resolveOllamaTimeoutMs(
+  explicitMs?: number,
+  envValue?: string,
+): number {
+  if (typeof explicitMs === "number" && Number.isFinite(explicitMs) && explicitMs > 0) {
+    return Math.floor(explicitMs);
+  }
+  const raw = (envValue ?? process.env[OLLAMA_TIMEOUT_ENV_VAR] ?? "").trim();
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
+  }
+  return OLLAMA_DEFAULT_TIMEOUT_MS;
+}
 
 export class OllamaProvider implements LlmProvider {
   public readonly info: ProviderInfo;
@@ -98,7 +150,7 @@ export class OllamaProvider implements LlmProvider {
     this.baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
     this.defaultChatModel = opts.defaultChatModel ?? DEFAULT_CHAT_MODEL;
     this.defaultEmbedModel = opts.defaultEmbedModel ?? DEFAULT_EMBED_MODEL;
-    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.timeoutMs = resolveOllamaTimeoutMs(opts.timeoutMs);
 
     this.info = {
       name: "ollama",

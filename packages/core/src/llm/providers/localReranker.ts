@@ -35,13 +35,15 @@ export interface LocalRerankerOptions {
   judgeModel?: string;
   /** Max concurrent judge-calls (default 5). */
   maxConcurrency?: number;
-  /** Per-request timeout in ms (default 30s). */
+  /**
+   * Per-request timeout in ms. Omitted → `LOKYY_OLLAMA_TIMEOUT_MS` bzw. der
+   * Ollama-Default (siehe `resolveOllamaTimeoutMs`).
+   */
   timeoutMs?: number;
 }
 
 const DEFAULT_JUDGE_MODEL = "llama3.1:8b";
 const DEFAULT_MAX_CONCURRENCY = 5;
-const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_DOC_CHARS = 4_000;
 
 const JUDGE_SYSTEM =
@@ -103,10 +105,16 @@ export class LocalReranker implements LlmProvider {
   constructor(opts: LocalRerankerOptions = {}) {
     this.judgeModel = opts.judgeModel ?? DEFAULT_JUDGE_MODEL;
     this.maxConcurrency = opts.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    // Kein eigener 30-s-Default mehr (issue #54): der Judge läuft auf
+    // derselben lokalen Ollama-Instanz wie jeder andere Call. Auf CPU-only-
+    // Setups dominiert die Prompt-Evaluation eines 4.000-Zeichen-Dokuments,
+    // und `maxConcurrency` Calls konkurrieren zusätzlich um dieselbe Engine —
+    // 30 s waren dort noch knapper als die 60 s im Chat-Pfad. `timeoutMs`
+    // undefined lassen heißt: `LOKYY_OLLAMA_TIMEOUT_MS` bzw. Ollama-Default.
     this.ollama = new OllamaProvider({
       baseUrl: opts.baseUrl,
       defaultChatModel: this.judgeModel,
-      timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      timeoutMs: opts.timeoutMs,
     });
 
     this.info = {
