@@ -198,6 +198,16 @@ services:
       # ACHTUNG: Geht der Wert verloren, sind bereits verschlüsselte Tokens
       # unlesbar — Forgejo muss dann in den Einstellungen neu verbunden werden.
       - LOKYY_DATA_KEY=${LOKYY_DATA_KEY:-}
+      # Request-Timeout der lokalen Inferenz (ollama, local-reranker). Upstream
+      # liest sie seit v1.17 in resolveOllamaTimeoutMs und nennt sie in
+      # .env.coolify.example, reicht sie hier aber nicht durch — ohne diese
+      # Zeile bleibt jeder in Coolify gesetzte Wert wirkungslos.
+      # Der Upstream-Default 300000 ist für diesen Host zu knapp: topic-synthesis
+      # braucht auf 4 vCPU ohne GPU gemessene ~260 s pro Cluster (Prompt bis
+      # 2.000 Token bei 17,4 Tok/s + 800 Token Generierung bei 8,45 Tok/s +
+      # bis 49 s Kaltstart). 600000 lässt Luft und bleibt eine echte
+      # Obergrenze, damit ein hängender Request keinen Pass endlos blockiert.
+      - LOKYY_OLLAMA_TIMEOUT_MS=${LOKYY_OLLAMA_TIMEOUT_MS:-600000}
       - PORT=8787
       - NODE_ENV=production
     volumes:
