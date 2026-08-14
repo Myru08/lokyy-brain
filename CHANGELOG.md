@@ -16,6 +16,20 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.17.0 — 2026-08-14
+
+### Behoben
+- **Gelöschte und verschobene Notizen hinterlassen keine Reste mehr in der semantischen Suche.** Bisher wurde nur der Volltext-Index aufgeräumt — beim Verschieben und im Papierkorb genauso. Falsche Treffer gab es nicht, aber der Ballast wuchs mit jeder Löschung.
+- **Fehlende semantische Einträge lassen sich endlich nachziehen.** War der Embedding-Dienst beim Speichern nicht erreichbar, blieb die Notiz dauerhaft ohne Eintrag — es half nur erneutes Speichern, Notiz für Notiz. Jetzt holt der Nachtlauf das nach, und du kannst es selbst anstossen.
+- **Die Diagnose zeigt jetzt, ob die semantische Suche überhaupt befüllt ist.** Unter *Einstellungen → Diagnose* steht neu „note_embeddings befüllt“. Der Check sagt ausdrücklich dazu, dass „Suchindex neu aufbauen“ hier nicht hilft — das baut nur den Volltext-Index.
+- **Der Nachtlauf verschweigt keine Fehler mehr.** Die Entitäten-Erkennung brach bei längeren Notizen mitten in der Antwort ab und zählte das stumm mit. Jetzt reicht der Platz, und wenn doch etwas abbricht, stehen Grund und Notiz im Protokoll.
+- **Lokale KI-Modelle bekommen mehr Zeit.** Ohne Grafikkarte dauert ein Modellaufruf oft länger als die bisherige feste 60-Sekunden-Grenze — der Nachtlauf-Schritt konnte also nie fertig werden. Jetzt sind es fünf Minuten, einstellbar über `LOKYY_OLLAMA_TIMEOUT_MS`.
+
+### Danke
+Alle fünf Punkte gehen auf einen ausführlichen Testbericht aus der Community zurück — inklusive selbst nachgestellter Messungen. Genau so wird das Ding besser.
+
+---
+
 ## v1.16.0 — 2026-08-13
 
 ### Behoben
@@ -29,14 +43,14 @@ aktuelle Version steht immer ganz oben.
 ### Behoben
 - **Sehr lange Dokumente landen jetzt vollständig in der intelligenten Suche.** Große Notizen waren zu groß fürs Suchmodell und wurden dabei komplett übersprungen — Ursache war eine zu optimistische Größen-Schätzung (deutsche/technische Texte zählen anders als englische Prosa). Lokyy rechnet jetzt konservativ und zerlegt lange Notizen sauber; nichts fällt mehr raus.
 - **Bei mehr als einem Vault war unklar, welcher gesucht wurde.** Eine Zweitregistrierung konnte still einen zweiten Datenspeicher anlegen, danach zeigten Suche und Ablage evtl. auf verschiedene. Jetzt wählt Lokyy immer eindeutig denselben Vault für beides; bei mehreren weist die Oberfläche darauf hin.
-- **Über die App-/Weboberfläche wurden bisher gar keine semantischen Einträge gespeichert** (ein interner Verknüpfungsfehler mit dem gewählten Vault) — mitbehoben. Die semantische Suche funktioniert damit auf allen Wegen, nicht nur über die KI. Ältere betroffene Notizen zieht der Nachtlauf nach.
+- **Über die App-/Weboberfläche wurden bisher gar keine semantischen Einträge gespeichert** (ein interner Verknüpfungsfehler mit dem gewählten Vault) — mitbehoben. Die semantische Suche funktioniert damit auf allen Wegen, nicht nur über die KI. *(Korrektur, nachgetragen mit v1.17: Für ältere betroffene Notizen gab es damals noch keinen Nachzieh-Weg — die Zusage an dieser Stelle war falsch. Seit v1.17 holt der Nachtlauf-Schritt „embedding-backfill“ das tatsächlich nach, und du kannst es auch selbst anstossen.)*
 
 ---
 
 ## v1.14.0 — 2026-08-13
 
 ### Behoben
-- **Die intelligente (semantische) Suche funktioniert wieder, wenn deine KI den Vault über MCP befüllt.** Dem lokalen MCP-Container fehlte eine Einstellung — dadurch wurden im Hintergrund keine Embeddings erzeugt und die Suche fiel still auf reinen Volltext zurück, obwohl alles gesund aussah. Behoben, mit Wächter gegen Rückfall. Neue Notizen werden wieder korrekt semantisch indexiert; ältere zieht der Nachtlauf nach.
+- **Die intelligente (semantische) Suche funktioniert wieder, wenn deine KI den Vault über MCP befüllt.** Dem lokalen MCP-Container fehlte eine Einstellung — dadurch wurden im Hintergrund keine Embeddings erzeugt und die Suche fiel still auf reinen Volltext zurück, obwohl alles gesund aussah. Behoben, mit Wächter gegen Rückfall. Neue Notizen werden wieder korrekt semantisch indexiert. *(Korrektur, nachgetragen mit v1.17: „ältere zieht der Nachtlauf nach“ stimmte nicht — einen solchen Nachtlauf-Schritt gab es damals nicht. Seit v1.17 gibt es ihn.)*
 - **Löschen funktioniert jetzt auch offline.** War Forgejo nicht erreichbar, brach Löschen mit einer technischen Meldung ab (als letzter nicht-offline-toleranter Vorgang). Jetzt wird lokal gespeichert und später synchronisiert — wie beim Speichern.
 
 ### Sicherheit
