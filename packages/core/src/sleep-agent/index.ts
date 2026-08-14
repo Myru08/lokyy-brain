@@ -349,3 +349,5 @@ export function _resetSleepAgentForTests(): void {
 
 export { TERMINAL_STATUSES };
 export * from "./types.js";
+// issue #58 — the pass error-log helpers travel with the type they fill in.
+export * from "./errorSamples.js";

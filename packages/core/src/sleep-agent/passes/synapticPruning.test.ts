@@ -48,6 +48,17 @@ function assertSerializableParams(params: unknown[]): void {
 /** Bind-Parameter jedes rohen `execute()` — pro Test frisch. */
 let executedParams: unknown[][] = [];
 
+/** Kanten, die `buildGraph()` liefert — pro Test setzbar (siehe #58-Block). */
+let graphEdges: Array<{ source: string; target: string }> = [];
+
+/** Schaltet den Kanten-Loop auf Totalausfall der `edge_weights`-Abfrage. */
+let selectFails = false;
+
+const DEFAULT_EDGES = [
+  { source: "10_projects/lokyy.md", target: "20_topics/ki-agenten.md" },
+  { source: "20_topics/ki-agenten.md", target: "30_captures/urls/artikel.md" },
+];
+
 const dialect = new PgDialect();
 
 /** Kettbares No-op für die typisierten Drizzle-Aufrufe im Kanten-Loop. */
@@ -69,7 +80,10 @@ const fakeDb = {
     assertSerializableParams(built.params);
     return [] as unknown[];
   },
-  select: () => chainable([] as unknown[]),
+  select: () => {
+    if (selectFails) throw new Error("edge_weights unavailable");
+    return chainable([] as unknown[]);
+  },
   insert: () => chainable(undefined),
   update: () => chainable(undefined),
 };
@@ -86,10 +100,7 @@ vi.mock("../../graph/graphService.js", () => ({
       { id: "20_topics/ki-agenten.md", label: "ki-agenten" },
       { id: "30_captures/urls/artikel.md", label: "artikel" },
     ],
-    edges: [
-      { source: "10_projects/lokyy.md", target: "20_topics/ki-agenten.md" },
-      { source: "20_topics/ki-agenten.md", target: "30_captures/urls/artikel.md" },
-    ],
+    edges: graphEdges,
   }),
 }));
 
@@ -113,6 +124,9 @@ vi.mock("../../scoring/store.js", () => ({
 
 const { synapticPruningPass } = await import("./synapticPruning.js");
 const { coRetrievalPairs } = await import("../../scoring/retrievalLog.js");
+const { MAX_ERROR_SAMPLES, errorSamplesTruncated } = await import(
+  "../errorSamples.js"
+);
 
 import type { SleepRun } from "../types.js";
 
@@ -131,6 +145,8 @@ function makeRun(): SleepRun {
 
 beforeEach(() => {
   executedParams = [];
+  graphEdges = [...DEFAULT_EDGES];
+  selectFails = false;
 });
 
 describe("synaptic-pruning Pass", () => {
@@ -156,6 +172,55 @@ describe("synaptic-pruning Pass", () => {
       expect(p).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
     }
     expect(executedParams.flat().some((p) => p instanceof Date)).toBe(false);
+  });
+});
+
+/**
+ * Issue #58 — der Deckel, End-to-End durch einen echten Pass.
+ *
+ * `synaptic-pruning` läuft über JEDE Kante des Graphen und ist damit der Pass,
+ * der den Deckel im Betrieb tatsächlich reißt. Der Unit-Test des Protokolls
+ * beweist die Mechanik; dieser hier beweist, dass der Pass sie auch benutzt —
+ * und dass `errors` dabei die WAHRE Gesamtzahl behält, nicht die der Stichprobe.
+ */
+describe("synaptic-pruning — errorSamples (#58)", () => {
+  it("deckelt die Stichprobe, behält aber die volle Fehlerzahl", async () => {
+    graphEdges = Array.from({ length: 25 }, (_, i) => ({
+      source: `10_projects/note-${i}.md`,
+      target: `20_topics/ziel-${i}.md`,
+    }));
+    selectFails = true;
+
+    const result = await synapticPruningPass.run(makeRun());
+
+    expect(result.errors).toBe(25);
+    expect(result.errorSamples).toHaveLength(MAX_ERROR_SAMPLES);
+    expect(errorSamplesTruncated(result)).toBe(true);
+  });
+
+  it("nennt in jeder Stichprobe die Notiz und den Grund", async () => {
+    selectFails = true;
+
+    const result = await synapticPruningPass.run(makeRun());
+
+    expect(result.errorSamples).toEqual([
+      {
+        noteId: "10_projects/lokyy.md",
+        reason: "edge → 20_topics/ki-agenten.md: edge_weights unavailable",
+      },
+      {
+        noteId: "20_topics/ki-agenten.md",
+        reason: "edge → 30_captures/urls/artikel.md: edge_weights unavailable",
+      },
+    ]);
+  });
+
+  it("liefert im Erfolgsfall eine leere Stichprobe", async () => {
+    const result = await synapticPruningPass.run(makeRun());
+
+    expect(result.errors).toBe(0);
+    expect(result.errorSamples).toEqual([]);
+    expect(errorSamplesTruncated(result)).toBe(false);
   });
 });
 

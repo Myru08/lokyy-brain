@@ -137,10 +137,17 @@ const fakeProvider = {
   testConnection: async () => ({ ok: true }),
 };
 
+/**
+ * Die `ner`-Provider-Kette. Pro Test setzbar: eine LEERE Kette ist der Fall
+ * „kein NER-Provider konfiguriert" — ein Fehler, der zu keiner einzelnen Notiz
+ * gehört (siehe Sentinel-Konvention, #58).
+ */
+let nerChain: unknown[] = [];
+
 vi.mock("../../llm/router.js", () => ({
   LlmRouter: class {
     getProviderChain() {
-      return [fakeProvider];
+      return nerChain;
     }
     getProvider() {
       return fakeProvider;
@@ -152,6 +159,7 @@ vi.mock("../../llm/router.js", () => ({
 const { entityExtractionPass, nerTokenBudget, deriveSnippet } = await import(
   "./entityExtraction.js"
 );
+const { isPassScoped, PASS_SCOPE_NOTE_ID } = await import("../errorSamples.js");
 
 import type { SleepRun } from "../types.js";
 
@@ -187,6 +195,7 @@ let warnSpy: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
   upserted.length = 0;
   seenMaxTokens = undefined;
+  nerChain = [fakeProvider];
   warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
@@ -264,6 +273,69 @@ describe("entity-extraction — Erfolgsfall", () => {
     expect(oliver?.contextSnippet).toContain("Single Source of Truth");
     // Frontmatter gehört nicht in den Snippet — er kommt aus dem Body.
     expect(oliver?.contextSnippet).not.toContain("created:");
+  });
+});
+
+/**
+ * Issue #58 — aus dem Zähler wird ein Diagnosekanal.
+ *
+ * #53 wurde für DIESEN Pass mit Logzeilen gelöst; Logzeilen liegen aber im
+ * Container-Log und nicht im Nacht-Protokoll. Dieselbe Information steht jetzt
+ * strukturiert in `pass_stats` — pro Fehler die Notiz und der Grund, und für
+ * pass-weite Fehler der Sentinel statt einer erfundenen ID.
+ */
+describe("entity-extraction — errorSamples (#58)", () => {
+  it("nennt beim Token-Abbruch Notiz-ID und Ursache", async () => {
+    chatResponse = { text: TRUNCATED_JSON, finishReason: "length" };
+
+    const result = await entityExtractionPass.run(makeRun());
+
+    expect(result.errorSamples).toHaveLength(1);
+    expect(result.errorSamples[0].noteId).toBe("10_projects/lokyy/architektur");
+    expect(result.errorSamples[0].reason).toMatch(/truncated/);
+    expect(isPassScoped(result.errorSamples[0])).toBe(false);
+  });
+
+  it("unterscheidet den Parse-Fehler im Grund vom Abbruch", async () => {
+    chatResponse = { text: "Keine Entitäten gefunden.", finishReason: "stop" };
+
+    const result = await entityExtractionPass.run(makeRun());
+
+    expect(result.errorSamples[0].reason).toMatch(/unparseable/);
+    expect(result.errorSamples[0].reason).not.toMatch(/truncated/);
+  });
+
+  it("meldet einen fehlenden NER-Provider pass-weit statt gegen eine Notiz", async () => {
+    nerChain = [];
+
+    const result = await entityExtractionPass.run(makeRun());
+
+    expect(result.errors).toBe(1);
+    expect(result.errorSamples).toHaveLength(1);
+    // KEINE erfundene Notiz-ID — der Sentinel sagt „gehört zum Pass".
+    expect(isPassScoped(result.errorSamples[0])).toBe(true);
+    expect(result.errorSamples[0].noteId).toBe(PASS_SCOPE_NOTE_ID);
+    expect(result.errorSamples[0].reason).toBe("no ner provider configured");
+  });
+
+  it("hält `notes` und Stichprobe widerspruchsfrei: Kategorie oben, Instanz unten", async () => {
+    chatResponse = { text: TRUNCATED_JSON, finishReason: "length" };
+
+    const result = await entityExtractionPass.run(makeRun());
+
+    // `notes` zählt die KATEGORIE, die Stichprobe nennt den FALL. Keine
+    // Notiz-ID in `notes`, keine Aggregatzahl in der Stichprobe.
+    expect(result.notes).toMatch(/1 truncated/);
+    expect(result.notes).not.toContain("10_projects/lokyy/architektur");
+    expect(result.errorSamples[0].reason).not.toMatch(/^\d+ /);
+  });
+
+  it("liefert im Erfolgsfall eine leere Stichprobe", async () => {
+    chatResponse = { text: VALID_JSON, finishReason: "stop" };
+
+    const result = await entityExtractionPass.run(makeRun());
+
+    expect(result.errorSamples).toEqual([]);
   });
 });
 

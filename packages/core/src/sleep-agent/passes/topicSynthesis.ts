@@ -28,6 +28,7 @@ import { getNote, createNote } from "../../notes/notesService.js";
 import { isHandsOffZone } from "../rawGuard.js";
 import { LlmRouter } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
 const MIN_CLUSTER_SIZE = 3;
@@ -50,13 +51,16 @@ export const topicSynthesisPass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
+    // #58 — the unit of work is a CLUSTER, not a note. Samples are keyed on
+    // the cluster's first member (the note an operator can actually open) and
+    // name the community id in the reason.
+    const errors = createPassErrorLog();
 
     try {
       // 1. Build the wikilink graph + detect communities.
       const graph = await buildGraph();
       if (graph.nodes.length < MIN_CLUSTER_SIZE) {
-        return { processed: 0, errors: 0, notes: "vault too small" };
+        return errors.result(0, "vault too small");
       }
       const result = detectCommunities(graph);
 
@@ -68,11 +72,10 @@ export const topicSynthesisPass: SleepPass = {
         .slice(0, MAX_CLUSTERS_PER_RUN);
 
       if (eligibleCommunities.length === 0) {
-        return {
-          processed: 0,
-          errors: 0,
-          notes: `no eligible clusters (modularity=${result.modularity.toFixed(3)})`,
-        };
+        return errors.result(
+          0,
+          `no eligible clusters (modularity=${result.modularity.toFixed(3)})`,
+        );
       }
 
       // 3. Resolve the LLM provider for `topic-synthesis`. Mirrors the
@@ -81,11 +84,10 @@ export const topicSynthesisPass: SleepPass = {
       const router = new LlmRouter(routing);
       const provider = router.getProvider("topic-synthesis");
       if (!provider.chat) {
-        return {
-          processed: 0,
-          errors: 1,
-          notes: "no topic-synthesis chat provider",
-        };
+        const reason = "no topic-synthesis chat provider";
+        console.warn(`[sleep-agent] topic-synthesis aborted: ${reason}`);
+        errors.recordPassScoped(reason);
+        return errors.result(0, reason);
       }
 
       const generatedAt = new Date().toISOString();
@@ -110,7 +112,12 @@ export const topicSynthesisPass: SleepPass = {
             .join("\n\n---\n\n");
 
           if (!contentBlock) {
-            errors++;
+            // Every member was hands-off or vanished between buildGraph and
+            // getNote — nothing left to synthesize from.
+            errors.record(
+              members[0] ?? "",
+              `cluster ${communityId}: no readable member notes (${members.length} members)`,
+            );
             continue;
           }
 
@@ -151,7 +158,10 @@ export const topicSynthesisPass: SleepPass = {
 
           processed++;
         } catch (err) {
-          errors++;
+          errors.record(
+            members[0] ?? "",
+            `cluster ${communityId}: ${err instanceof Error ? err.message : String(err)}`,
+          );
           console.warn(
             `[sleep-agent] topic-synthesis cluster "${communityId}" failed: ${
               err instanceof Error ? err.message : String(err)
@@ -160,17 +170,13 @@ export const topicSynthesisPass: SleepPass = {
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `synthesized ${processed} topic notes from ${eligibleCommunities.length} clusters (modularity=${result.modularity.toFixed(3)})`,
-      };
+        `synthesized ${processed} topic notes from ${eligibleCommunities.length} clusters (modularity=${result.modularity.toFixed(3)})`,
+      );
     } catch (err) {
-      return {
-        processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(err).slice(0, 200)}`,
-      };
+      errors.recordPassScoped(err);
+      return errors.result(processed, `pass-error: ${String(err).slice(0, 200)}`);
     }
   },
 };

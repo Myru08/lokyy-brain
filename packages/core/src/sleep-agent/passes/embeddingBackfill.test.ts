@@ -190,6 +190,40 @@ describe("embedding-backfill Pass", () => {
     expect(result.notes).toMatch(/stopped early/);
   });
 
+  /**
+   * Issue #58 — die zwei Fehlerformen dieses Passes sehen in einer Zahl
+   * identisch aus und könnten für die Diagnose nicht verschiedener sein:
+   * eine Notiz, die WIRFT (dieser Chunk ist kaputt) gegen eine Notiz, die
+   * ohne Murren durchläuft und nichts schreibt (der Embedding-Dienst ist
+   * still ausgefallen — genau der Ausfall, für den es diesen Pass gibt).
+   */
+  it("unterscheidet werfende und still leer bleibende Notizen im Grund", async () => {
+    noteIds = ["a.md", "kaputt.md"];
+    indexNote = vi.fn(async (noteId: string) => {
+      if (noteId === "kaputt.md") throw new Error("chunk rejected");
+      /* a.md: löst auf, schreibt aber nichts → stiller Ausfall */
+    });
+
+    const result = await embeddingBackfillPass.run(makeRun());
+
+    expect(result.errors).toBe(2);
+    expect(result.errorSamples.map((s) => s.noteId)).toEqual([
+      "a.md",
+      "kaputt.md",
+    ]);
+    expect(result.errorSamples[0].reason).toMatch(/no vectors/);
+    expect(result.errorSamples[1].reason).toBe("chunk rejected");
+  });
+
+  it("liefert im Erfolgsfall eine leere Stichprobe", async () => {
+    noteIds = ["a.md"];
+
+    const result = await embeddingBackfillPass.run(makeRun());
+
+    expect(result.errors).toBe(0);
+    expect(result.errorSamples).toEqual([]);
+  });
+
   it("bindet nur treiber-serialisierbare Parameter an rohes SQL", async () => {
     // Lehre aus dem synaptic-pruning-Bug: ein `Date` im rohen `execute()`
     // sprengt postgres.js auf dem `unsafe`-Pfad.

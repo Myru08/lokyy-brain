@@ -12,6 +12,7 @@ import { Tier2Provider } from "../../memory/Tier2Provider.js";
 import { LlmRouter, routeContextFromNote } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
 import { LlmUnavailable } from "../../llm/errors.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { ChatMessage, ToolDef } from "../../llm/types.js";
 import type { SleepPass, SleepPassResult } from "../types.js";
 
@@ -138,7 +139,11 @@ export const mem0ClassifierPass: SleepPass = {
 
   async run(): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
+    // #58 — three of this pass's five error branches were bare `errors++` on
+    // a malformed model answer, which is exactly the failure an operator needs
+    // named: "the classifier answered without a tool call" and "the DB write
+    // failed" are the same `errors: 1` otherwise.
+    const errors = createPassErrorLog();
 
     try {
       const routing = await getLlmRouting();
@@ -149,14 +154,16 @@ export const mem0ClassifierPass: SleepPass = {
       try {
         const probe = router.getProviderChain("mem0-classifier");
         if (probe.length === 0 || !probe[0].chat) {
-          return { processed: 0, errors: 1, notes: "no mem0-classifier provider configured" };
+          const reason = "no mem0-classifier provider configured";
+          errors.recordPassScoped(reason);
+          return errors.result(0, reason);
         }
       } catch (err) {
-        return {
-          processed: 0,
-          errors: 1,
-          notes: `mem0-classifier unavailable: ${err instanceof Error ? err.message : String(err)}`,
-        };
+        const reason = `mem0-classifier unavailable: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+        errors.recordPassScoped(reason);
+        return errors.result(0, reason);
       }
 
       const allNotes = await listNotes();
@@ -171,7 +178,7 @@ export const mem0ClassifierPass: SleepPass = {
         });
 
       if (rawCandidates.length === 0) {
-        return { processed: 0, errors: 0, notes: "no fresh captures" };
+        return errors.result(0, "no fresh captures");
       }
 
       const tier2 = new Tier2Provider({ vaultId: DEFAULT_VAULT_ID });
@@ -185,7 +192,7 @@ export const mem0ClassifierPass: SleepPass = {
       );
 
       for (const candidate of sorted) {
-        if (processed + errors >= CANDIDATE_CAP) break;
+        if (processed + errors.count >= CANDIDATE_CAP) break;
 
         try {
           // Skip if we already produced a decision for this capture.
@@ -221,7 +228,10 @@ export const mem0ClassifierPass: SleepPass = {
             throw err;
           }
           if (!chatProvider || !chatProvider.chat) {
-            errors++;
+            errors.record(
+              candidate.id,
+              "mem0-classifier chain has no chat-capable provider",
+            );
             continue;
           }
 
@@ -274,13 +284,19 @@ Decide the operation.`;
             (c) => c.name === CLASSIFY_TOOL.name,
           ) ?? result.toolCalls?.[0];
           if (!toolCall) {
-            errors++;
+            errors.record(
+              candidate.id,
+              `classifier answered without a tool call (finishReason=${result.finishReason})`,
+            );
             continue;
           }
 
           const parsed = parseClassifyInput(toolCall.input);
           if (!parsed) {
-            errors++;
+            errors.record(
+              candidate.id,
+              `tool call has the wrong shape: ${JSON.stringify(toolCall.input).slice(0, 120)}`,
+            );
             continue;
           }
 
@@ -290,7 +306,10 @@ Decide the operation.`;
             (parsed.operation === "UPDATE" || parsed.operation === "DELETE") &&
             !parsed.targetNoteId
           ) {
-            errors++;
+            errors.record(
+              candidate.id,
+              `${parsed.operation} without targetNoteId — unresolvable, not queued`,
+            );
             continue;
           }
 
@@ -309,7 +328,7 @@ Decide the operation.`;
 
           processed++;
         } catch (err) {
-          errors++;
+          errors.record(candidate.id, err);
           console.warn(
             `[mem0-classifier] candidate ${candidate.id} failed: ${
               err instanceof Error ? err.message : String(err)
@@ -318,19 +337,18 @@ Decide the operation.`;
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `queued ${processed} review-entries (${errors} errors)`,
-      };
+        `queued ${processed} review-entries (${errors.count} errors)`,
+      );
     } catch (err) {
-      return {
+      errors.recordPassScoped(err);
+      return errors.result(
         processed,
-        errors: errors + 1,
-        notes: `pass-level-error: ${
+        `pass-level-error: ${
           err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200)
         }`,
-      };
+      );
     }
   },
 };

@@ -2,7 +2,8 @@ import { recomputeAll } from "../../scoring/store.js";
 import { listNotes, getNote } from "../../notes/notesService.js";
 import { parseFrontmatter, type DocType } from "../../frontmatter/index.js";
 import { DOC_TYPES } from "../../frontmatter/types.js";
-import type { SleepPass } from "../types.js";
+import { PASS_SCOPE_NOTE_ID } from "../errorSamples.js";
+import type { SleepPass, SleepPassResult } from "../types.js";
 
 /**
  * Phase A Wave A2 / Story 7 — first sleep-agent pass.
@@ -24,13 +25,21 @@ import type { SleepPass } from "../types.js";
  *   - Missing / unparseable `updated` → fall back to the file's
  *     last-commit `updatedAt`, then to `now` — recency decay still
  *     produces a defined number.
+ *
+ * #58 — THE ONE PASS THAT CANNOT SAMPLE PER NOTE, and it says so out loud.
+ * The per-note try/catch lives inside `recomputeAll` (scoring/store.ts), which
+ * logs `[scoring] recomputeOne failed for <id>` and then returns counts only.
+ * This pass never sees the failing ids, so inventing per-note samples here
+ * would be fabrication. It emits one pass-scoped sample naming the gap
+ * instead. Closing it properly means having `recomputeAll` return its failures
+ * — a change in the scoring module, not here.
  */
 const DOC_TYPE_SET = new Set<string>(DOC_TYPES);
 
 export const importanceRecomputePass: SleepPass = {
   name: "importance-recompute",
   phases: ["nrem"],
-  async run() {
+  async run(): Promise<SleepPassResult> {
     const iter = (async function* () {
       const notes = await listNotes();
       for (const summary of notes) {
@@ -61,6 +70,20 @@ export const importanceRecomputePass: SleepPass = {
         };
       }
     })();
-    return await recomputeAll(iter);
+
+    const { processed, errors } = await recomputeAll(iter);
+    return {
+      processed,
+      errors,
+      errorSamples:
+        errors === 0
+          ? []
+          : [
+              {
+                noteId: PASS_SCOPE_NOTE_ID,
+                reason: `recomputeAll reported ${errors} per-note failure(s); ids and reasons are only in the "[scoring] recomputeOne failed" log lines`,
+              },
+            ],
+    };
   },
 };

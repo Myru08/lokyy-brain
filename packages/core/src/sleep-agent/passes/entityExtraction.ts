@@ -14,6 +14,7 @@ import { getLlmRouting } from "../../llm/configStore.js";
 import { LlmUnavailable } from "../../llm/errors.js";
 import { parseFrontmatter } from "../../frontmatter/index.js";
 import { isHandsOffZone } from "../rawGuard.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { ChatMessage } from "../../llm/types.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
@@ -194,8 +195,17 @@ export const entityExtractionPass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
     let entitiesCreated = 0;
+    /**
+     * #58 — this pass was already the best-instrumented one (that's what the
+     * #53 fix produced). The counters below stay: they aggregate BY CATEGORY
+     * for `notes`. What changes is that every branch that bumps the error
+     * count now hands over the note id and the reason too, using the same
+     * category words — so `notes` ("2 truncated, 1 unparseable") and the
+     * samples ("<id>: unparseable …") describe the same thing at two zoom
+     * levels instead of duplicating each other.
+     */
+    const errors = createPassErrorLog();
     /** Model hit the output ceiling — entities were provably lost (#53). */
     let truncated = 0;
     /** Model finished normally but produced no parseable JSON array. */
@@ -217,16 +227,15 @@ export const entityExtractionPass: SleepPass = {
           console.warn(
             "[sleep-agent] entity-extraction aborted: no ner provider configured (or the configured one has no chat capability)",
           );
-          return { processed: 0, errors: 1, notes: "no ner provider configured" };
+          // Pass-wide: no note is at fault, so no note id is invented.
+          errors.recordPassScoped("no ner provider configured");
+          return errors.result(0, "no ner provider configured");
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         console.warn(`[sleep-agent] entity-extraction aborted: ner unavailable: ${message}`);
-        return {
-          processed: 0,
-          errors: 1,
-          notes: `ner unavailable: ${message}`,
-        };
+        errors.recordPassScoped(`ner unavailable: ${message}`);
+        return errors.result(0, `ner unavailable: ${message}`);
       }
 
       const allNotes = await listNotes();
@@ -262,7 +271,7 @@ export const entityExtractionPass: SleepPass = {
       }
 
       if (candidates.length === 0) {
-        return { processed: 0, errors: 0, notes: "no candidates" };
+        return errors.result(0, "no candidates");
       }
 
       for (const candidate of candidates) {
@@ -286,7 +295,12 @@ export const entityExtractionPass: SleepPass = {
               // on a fully local-only vault this would spam one line per note.
               providerSkips++;
             } else {
-              errors++;
+              errors.record(
+                candidate.id,
+                `provider routing failed: ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
               console.warn(
                 `[sleep-agent] entity-extraction note "${candidate.id}" provider routing failed: ${
                   err instanceof Error ? err.message : String(err)
@@ -296,7 +310,10 @@ export const entityExtractionPass: SleepPass = {
             continue;
           }
           if (!provider?.chat) {
-            errors++;
+            errors.record(
+              candidate.id,
+              "ner chain has no chat-capable provider",
+            );
             console.warn(
               `[sleep-agent] entity-extraction note "${candidate.id}" skipped: ner chain has no chat-capable provider`,
             );
@@ -329,8 +346,14 @@ export const entityExtractionPass: SleepPass = {
           if (rawArray === null) {
             // No parseable JSON array. Two very different causes, kept
             // apart on purpose: a `length` abort is a budget problem, a
-            // `stop` with garbage is a model/prompt problem.
-            errors++;
+            // `stop` with garbage is a model/prompt problem. The sample says
+            // WHICH — that distinction was the entire point of #53.
+            errors.record(
+              candidate.id,
+              hitTokenCeiling
+                ? `truncated at the token ceiling (maxTokens=${maxTokens}, textChars=${text.length})`
+                : `unparseable model output (finishReason=${result.finishReason}, ${result.text.length} chars)`,
+            );
             if (!hitTokenCeiling) {
               parseFailures++;
               console.warn(
@@ -365,7 +388,12 @@ export const entityExtractionPass: SleepPass = {
               await upsertEntity(ex, candidate.id, observedAt);
               entitiesCreated++;
             } catch (err) {
-              errors++;
+              errors.record(
+                candidate.id,
+                `upsert-failed for "${ex.displayName}" (${ex.type}): ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
               upsertFailures++;
               console.warn(
                 `[sleep-agent] entity-extraction upsert failed for "${ex.displayName}" (${ex.type}) ` +
@@ -375,7 +403,7 @@ export const entityExtractionPass: SleepPass = {
           }
           processed++;
         } catch (err) {
-          errors++;
+          errors.record(candidate.id, err);
           console.warn(
             `[sleep-agent] entity-extraction note "${candidate.id}" failed: ${
               err instanceof Error ? err.message : String(err)
@@ -392,20 +420,15 @@ export const entityExtractionPass: SleepPass = {
       if (upsertFailures > 0) detail.push(`${upsertFailures} upsert-failed`);
       if (providerSkips > 0) detail.push(`${providerSkips} skipped (no local ner)`);
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes:
-          `extracted from ${processed} notes, ${entitiesCreated} entity-mentions` +
+        `extracted from ${processed} notes, ${entitiesCreated} entity-mentions` +
           (detail.length > 0 ? `; ${detail.join(", ")}` : ""),
-      };
+      );
     } catch (e) {
       console.error(`[sleep-agent] entity-extraction pass failed: ${String(e).slice(0, 500)}`);
-      return {
-        processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(e).slice(0, 200)}`,
-      };
+      errors.recordPassScoped(e);
+      return errors.result(processed, `pass-error: ${String(e).slice(0, 200)}`);
     }
   },
 };

@@ -13,6 +13,7 @@ import { isPeerType, type PeerType } from "../../frontmatter/types.js";
 import { resolveVaultProfile } from "../../frontmatter/profiles.js";
 import { isRawImmutable, isHandsOffZone } from "../rawGuard.js";
 import { computeRelationshipStrength } from "../../peers/index.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
 /**
@@ -56,7 +57,10 @@ export const peerProfileUpdatePass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
+    // #58 — the frontmatter write-back below used to swallow its exception
+    // into a bare `errors++`, so a peer whose .md failed to save looked
+    // identical to one whose whole update blew up. The reasons now say which.
+    const errors = createPassErrorLog();
     const db = database();
 
     try {
@@ -267,16 +271,21 @@ export const peerProfileUpdatePass: SleepPass = {
             try {
               const newContent = serializeFrontmatter(updatedFm, noteBody);
               await saveNote(noteId, newContent);
-            } catch {
+            } catch (err) {
               // Frontmatter write-back is best-effort. Sidecar already
               // captured the truth.
-              errors++;
+              errors.record(
+                noteId,
+                `frontmatter write-back failed (sidecar is up to date): ${
+                  err instanceof Error ? err.message : String(err)
+                }`,
+              );
             }
           }
 
           processed++;
         } catch (err) {
-          errors++;
+          errors.record(noteId, err);
           console.warn(
             `[peer-profile-update] note "${noteId}" failed: ${
               err instanceof Error ? err.message : String(err)
@@ -285,17 +294,16 @@ export const peerProfileUpdatePass: SleepPass = {
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `${processed} peers updated, ${errors} errors`,
-      };
+        `${processed} peers updated, ${errors.count} errors`,
+      );
     } catch (err) {
-      return {
+      errors.recordPassScoped(err);
+      return errors.result(
         processed,
-        errors: errors + 1,
-        notes: `pass-error: ${err instanceof Error ? err.message : String(err)}`,
-      };
+        `pass-error: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   },
 };

@@ -6,6 +6,7 @@ import { getMemoryProvider } from "../../memory/index.js";
 import { getActiveGeneration } from "../../llm/embeddingsMigration.js";
 import { DEFAULT_EMBEDDINGS_GENERATION } from "../../db/schema/embeddingsMigration.js";
 import { indexVaultId } from "../../util/coreConfig.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepPassResult, SleepRun } from "../types.js";
 
 /**
@@ -123,7 +124,11 @@ export const embeddingBackfillPass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
+    // #58 — the two failure modes here look identical in a counter and could
+    // not matter more in a diagnosis: a note that THREW, versus a note that
+    // resolved happily and wrote no vectors (the silent Ollama outage this
+    // pass exists to catch). The reasons keep them apart.
+    const errors = createPassErrorLog();
 
     try {
       const vaultId = indexVaultId();
@@ -137,11 +142,7 @@ export const embeddingBackfillPass: SleepPass = {
         .filter((id) => !alreadyIndexed.has(id));
 
       if (missing.length === 0) {
-        return {
-          processed: 0,
-          errors: 0,
-          notes: "all notes have Tier-2 embeddings",
-        };
+        return errors.result(0, "all notes have Tier-2 embeddings");
       }
 
       const batch = missing.slice(0, EMBEDDING_BACKFILL_NOTES_PER_RUN);
@@ -164,11 +165,14 @@ export const embeddingBackfillPass: SleepPass = {
           } else {
             // Resolved but wrote nothing → embedding service silently
             // unavailable (see CONSECUTIVE_MISS_ABORT).
-            errors++;
+            errors.record(
+              noteId,
+              `indexNote() resolved but wrote no vectors for generation "${generation}" — embedding service silently unavailable`,
+            );
             consecutiveMisses++;
           }
         } catch (err) {
-          errors++;
+          errors.record(noteId, err);
           consecutiveMisses++;
           console.warn(
             `[sleep-agent] embedding-backfill failed for "${noteId}": ${
@@ -183,19 +187,14 @@ export const embeddingBackfillPass: SleepPass = {
       }
 
       const remaining = missing.length - processed;
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes:
-          `embedded ${processed} note(s), ${errors} failed, ${remaining} still missing` +
+        `embedded ${processed} note(s), ${errors.count} failed, ${remaining} still missing` +
           (abortReason ? ` — stopped early: ${abortReason}` : ""),
-      };
+      );
     } catch (err) {
-      return {
-        processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(err).slice(0, 200)}`,
-      };
+      errors.recordPassScoped(err);
+      return errors.result(processed, `pass-error: ${String(err).slice(0, 200)}`);
     }
   },
 };
