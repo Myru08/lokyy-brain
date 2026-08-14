@@ -16,6 +16,21 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.18.0 — 2026-08-14
+
+### Behoben
+- **Die intelligente Suche gewichtet endlich, wie sie soll.** Lokyy berechnet nächtlich die Wichtigkeit jeder Notiz — diese Werte kamen bei der Suche nie an, weil sie unter einem anderen Schlüssel lagen. Jede Notiz galt als durchschnittlich. Jetzt zählen auch Aufrufe und Bearbeitungen mit.
+- **Ganze Ordner löschen räumt jetzt vollständig auf.** Beim Löschen einzelner Notizen stimmte seit v1.17 alles; wurde ein ganzer Ordner gelöscht oder verschoben, blieben die Sucheinträge der enthaltenen Notizen liegen.
+- **Der Nachtlauf sagt jetzt, WELCHE Notiz Ärger macht.** Bisher stand im Protokoll nur eine Fehlerzahl. Jetzt steht zu jedem Fehler die betroffene Notiz und der Grund dabei — bei jedem Arbeitsschritt, nicht nur bei einem.
+
+### Neu
+- **Die Diagnose findet Karteileichen.** Unter *Einstellungen → Diagnose* gibt es den neuen Punkt „Abgeleitete Stores (Verwaisungen)": er zeigt, ob irgendwo noch Einträge zu Notizen liegen, die es nicht mehr gibt. Reine Anzeige — es wird nichts gelöscht.
+
+### Danke
+Die Ordner-Lücke und die Idee, Fehler mit Notiz und Grund zu melden, gehen auf den Testbericht aus der Community zurück, der schon v1.17 ausgelöst hat. Der Rest kam beim Aufräumen selbst ans Licht.
+
+---
+
 ## v1.17.0 — 2026-08-14
 
 ### Behoben
