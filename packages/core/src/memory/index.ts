@@ -72,6 +72,63 @@ export function queueIndexRefresh(vaultId: string, noteId: string): void {
   );
 }
 
+/**
+ * Fire-and-forget Gegenstück zu {@link queueIndexRefresh} (Issue #51). Call
+ * after every successful delete/move of a note. Returns immediately; the
+ * Tier-2 removal (`DELETE FROM note_embeddings`) runs on a microtask, so the
+ * request path stays fast even when Postgres is slow or down.
+ *
+ * WHY this exists: `CombinedProvider.removeNote()` — which deletes from BOTH
+ * tiers and already carries the Tier-2 error handling — had ZERO call sites.
+ * The real delete/move path only ran `queueSearchIndexRemove` (Tier 1 / BM25),
+ * so every deleted or moved note left its embeddings behind as orphaned
+ * vectors. This is the missing mirror of the write path.
+ *
+ * Deliberately NOT routed through `runGuardedIndexWrite`. Three reasons, the
+ * third being the one that actually settles it:
+ *
+ * 1. State collision. The breaker keeps exactly ONE entry per noteId and a
+ *    successful write DELETES it. Sharing that entry between two backends
+ *    would let a successful Tier-2 delete clear a Tier-1 quarantine (the
+ *    poison note resumes storming the BM25 pool) and a failing Tier-2 delete
+ *    quarantine a perfectly healthy BM25 row. The health snapshot (Story
+ *    10.8) would stop meaning what it claims to mean.
+ *
+ * 2. Wrong failure mode. The breaker was built for ParadeDB BM25 index
+ *    maintenance blowing up on poison CONTENT (42601) — genuinely per-note.
+ *    Tier 2 here is a plain parametrised DELETE with no index maintenance.
+ *
+ * 3. A per-note breaker is the wrong SHAPE for Tier 2 in general. Tier-2
+ *    failures that reach a caller are overwhelmingly global, not per-note:
+ *    `CombinedProvider.indexNote` already swallows `EmbeddingUnavailable`
+ *    (Ollama down), so what actually propagates is Postgres — pool
+ *    exhaustion, connection refused — which fails for EVERY note at once.
+ *    Quarantine only lifts on a successful write, and a quarantined note is
+ *    skipped, so nothing can ever succeed: a five-minute pool hiccup would
+ *    permanently desync the embeddings of every note saved in that window.
+ *    That is strictly worse than the current bare catch.
+ *
+ * NOTE (offen, eigene Story): the Tier-2 WRITE path (`queueIndexRefresh`) is
+ * likewise unguarded — no breaker, no backoff. That is a known gap, not an
+ * oversight of this change: Story 10.1 hardened Tier 1 and never covered
+ * Tier 2. Closing it properly needs a GLOBAL (per-backend) breaker with
+ * half-open recovery rather than this per-note one, AND staleness detection
+ * in the `embeddingBackfill` sleep pass — that pass currently only finds
+ * notes with NO row, so any UPDATE a breaker discards would stay stale
+ * forever. Do not bolt Tier 2 onto `runGuardedIndexWrite`.
+ *
+ * Never throws — neither synchronously nor asynchronously. Provider
+ * construction happens INSIDE the microtask so even a broken config cannot
+ * bubble into `deleteEntry`/`moveEntry`.
+ */
+export function queueIndexRemove(vaultId: string, noteId: string): void {
+  void Promise.resolve()
+    .then(() => getMemoryProvider(vaultId).removeNote(noteId))
+    .catch((err) =>
+      console.error("[memory] removeNote failed (non-blocking)", { vaultId, noteId, err }),
+    );
+}
+
 /** Singleton Tier1BM25 — no per-vault state, the table is keyed by note_id. */
 const tier1Bm25Singleton = new Tier1BM25();
 

@@ -36,6 +36,7 @@ import { TypeFolderMismatchError } from "../errors/TypeFolderMismatchError.js";
 import { checkPathMatchesType } from "./folderMap.js";
 import {
   queueIndexRefresh,
+  queueIndexRemove,
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
 } from "../memory/index.js";
@@ -59,6 +60,24 @@ function queueBothSearchTiers(
   const vaultId = indexVaultId();
   queueSearchIndexRefresh(vaultId, noteId, title, body, tags, forgotten);
   queueIndexRefresh(vaultId, noteId);
+}
+
+/**
+ * Issue #51 — Spiegelbild von {@link queueBothSearchTiers} für den Löschpfad.
+ *
+ * Vorher räumte Löschen/Verschieben nur Tier 1 (`queueSearchIndexRemove`) ab;
+ * die Tier-2-Vektoren in `note_embeddings` blieben verwaist liegen. Beim Move
+ * ist das besonders sichtbar: die `note_id` IST der Pfad ohne ".md", ein Move
+ * erzeugt also eine neue Zeile und lässt die alte zurück.
+ *
+ * Beide Zweige sind fire-and-forget und werfen nicht — der Aufrufer wartet
+ * NIE auf die Index-Bereinigung. Tier 1 läuft weiterhin durch den Per-Note-
+ * Circuit-Breaker (Story 10.1), Tier 2 bewusst nicht (Begründung an
+ * `queueIndexRemove`).
+ */
+function queueBothSearchTiersRemove(noteId: string): void {
+  queueSearchIndexRemove(noteId);
+  queueIndexRemove(indexVaultId(), noteId);
 }
 
 /**
@@ -799,8 +818,10 @@ export async function moveEntry(
   // Phase A Wave A1 / Story 2 — keep BM25 corpus in sync on rename/move.
   // The note id == path-without-".md", so a move changes the id. Remove the
   // old row, then upsert the new one from the freshly read note.
+  // Issue #51: das gilt für BEIDE Tiers — sonst bleiben die Embeddings der
+  // alten note_id als Karteileichen zurück.
   if (kind === "note") {
-    queueSearchIndexRemove(from);
+    queueBothSearchTiersRemove(from);
     const c = coreConfig();
     const newAbs = join(c.vaultDir, ...to.split("/")) + ".md";
     try {
@@ -843,7 +864,8 @@ export async function deleteEntry(
   const result = await remove(rel, `${kind} gelöscht: ${path}`);
   if (kind === "note") {
     // Phase A Wave A1 / Story 2 — drop the BM25 row.
-    queueSearchIndexRemove(path);
+    // Issue #51 — und die Tier-2-Embeddings gleich mit.
+    queueBothSearchTiersRemove(path);
   }
   // ID-Badge / AI-Prompt feature — drop the ULID cache so a deleted
   // note stops resolving via findByUlid.
@@ -903,9 +925,10 @@ export interface TrashResult {
  * (Story 10.3, AC#1). The original leaf name is the slug; a date prefix keeps
  * the trash chronologically sorted and avoids collisions when the same note
  * name is trashed on different days. Goes through the existing `moveEntry`,
- * so the move is committed via `gitService` and the BM25 index is updated to
- * the new path (AC#3 — the note stays indexed under its trash path, which is
- * acceptable; a follow-up re-index is unnecessary).
+ * so the move is committed via `gitService` and both search tiers are updated
+ * to the new path (AC#3 — the note stays indexed under its trash path, which
+ * is acceptable; a follow-up re-index is unnecessary). Issue #51: the old id
+ * is dropped from Tier 1 AND Tier 2, so trashing leaves no orphaned vectors.
  *
  * Throws when the source note does not exist (`not-found` is the caller's
  * concern — Agent C checks existence first; this guard is defensive so a

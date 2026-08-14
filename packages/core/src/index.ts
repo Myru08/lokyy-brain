@@ -454,6 +454,7 @@ export {
   getTier1BM25,
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
+  queueIndexRemove,
   // Phase C Wave C3 / Story 2 — Cognee `forget()` UI primitive.
   queueForgottenToggle,
   // Story 10.1 quarantine API — consumed by get_health (Story 10.8). The
