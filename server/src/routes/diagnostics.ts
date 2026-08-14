@@ -412,6 +412,64 @@ async function checkSearchIndexFill(): Promise<DiagnosticCheck> {
   });
 }
 
+// ── note_embeddings corpus fill-level (issue #52) ─────────────────────────────
+// The Tier-1 sibling above has existed for a while; Tier 2 had no equivalent —
+// and that is precisely why 14 of 19 notes could sit without a single embedding
+// without anything ever saying so. Tier-2 rows are written ONLY by the save path
+// (fire-and-forget), so every save during an Ollama outage leaves a permanent
+// hole that no check, no log and no UI surfaced. An unmeasured gap is an
+// invisible gap: without this check the backfill nobody knows they need is a
+// button nobody presses.
+//
+// Same shape as `checkSearchIndexFill` deliberately: same group, same
+// short-lived single connection, same 50%-threshold, same warn-not-error
+// verdict (semantic search degrades to full-text, it does not break). If
+// `note_embeddings` doesn't exist yet (pre-migration) the query throws →
+// guard() turns it into an error check, not a 500.
+//
+// Counted as DISTINCT note_id: a note has several chunk rows (title, body_full,
+// one per H2 section), so a raw COUNT(*) would compare apples to oranges
+// against the note count. Not scoped by vault — same as the Tier-1 sibling; on
+// a multi-vault install both checks over-count identically.
+export async function checkEmbeddingIndexFill(): Promise<DiagnosticCheck> {
+  return guard("search", "note_embeddings befüllt", async () => {
+    const totalNotes = (await listNotes()).length;
+
+    let sql: ReturnType<typeof postgres> | null = null;
+    try {
+      sql = postgres(config.databaseUrl, { max: 1, idle_timeout: 2 });
+      const rows = await sql<{ n: string }[]>`
+        SELECT COUNT(DISTINCT note_id)::text AS n FROM note_embeddings
+      `;
+      const embedded = Number(rows[0]?.n ?? "0");
+
+      // Deliberate deviation from the Tier-1 sibling: an EMPTY vault stays
+      // `info`. The sibling warns at 0/0, which fires on every fresh install —
+      // exactly when an operator first opens Diagnostics and can least judge
+      // which warnings matter. Nothing to index is not a defect.
+      const low = totalNotes > 0 && embedded < totalNotes * 0.5;
+      if (totalNotes > 0 && (embedded === 0 || low)) {
+        return {
+          ok: false,
+          severity: "warn" as const,
+          detail:
+            `Semantische Einträge fehlen (${embedded}/${totalNotes} Notizen mit Embedding). ` +
+            `'Suchindex neu aufbauen' hilft hier NICHT — das baut nur den Volltext-Index. ` +
+            `Nachziehen über POST /api/search/embeddings/backfill (oder abwarten: der ` +
+            `Nachtlauf-Pass 'embedding-backfill' holt bis zu 25 Notizen pro Lauf nach).`,
+        };
+      }
+      return {
+        ok: true,
+        severity: "info" as const,
+        detail: `${embedded}/${totalNotes} Notizen mit Embedding (Tier 2).`,
+      };
+    } finally {
+      if (sql) await sql.end().catch(() => {});
+    }
+  });
+}
+
 // ── Sleep-agent scheduler + last run ──────────────────────────────────────────
 async function checkSleepAgent(): Promise<DiagnosticCheck[]> {
   const armed = await guard("sleep-agent", "Scheduler armiert", async () => {
@@ -708,6 +766,7 @@ diagnosticsRoutes.get("/", async (c) => {
       checkSearchTier2().then((x) => [x]),
       checkSearchCombined().then((x) => [x]),
       checkSearchIndexFill().then((x) => [x]),
+      checkEmbeddingIndexFill().then((x) => [x]),
       checkSleepAgent(),
       checkMcpHealth().then((x) => [x]),
       checkGitVault().then((x) => [x]),

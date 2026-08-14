@@ -1,5 +1,7 @@
 import { Hono } from "hono";
+import { sql } from "drizzle-orm";
 import {
+  database,
   EmbeddingUnavailableError,
   LlmRouter,
   RagFusion,
@@ -94,6 +96,259 @@ searchRoutes.post("/search/reindex", async (c) => {
 
   return c.json({ indexed, failed, ms: Date.now() - started });
 });
+
+// ─── Tier-2 embedding backfill (issue #52) ───────────────────────────────
+//
+// WHY THIS EXISTS: `/search/reindex` above rebuilds Tier 1 (BM25) ONLY.
+// Tier 2 embeddings are written exclusively by the save path
+// (`queueIndexRefresh` → `indexNote`), fire-and-forget — so every note saved
+// while Ollama was down / mis-wired stayed without embeddings forever, and
+// the only repair was re-saving each note by hand (a beta tester had 14 of
+// 19 notes unindexed). This endpoint is the manual repair; the
+// `embedding-backfill` sleep pass is the unattended one.
+//
+// WHY A BACKGROUND JOB INSTEAD OF A BLOCKING REQUEST: embedding one note
+// costs several Ollama round-trips (title + body_full + one per H2 section)
+// and on a CPU-only install each of those is seconds, not milliseconds. A
+// blocking request over a realistic vault runs for minutes to hours and dies
+// in a reverse-proxy read timeout — with no way to tell "still working" from
+// "crashed", and the work silently continuing server-side either way. A
+// batch-with-continuation design has the same defect in miniature: any batch
+// large enough to be useful can still outlive the proxy timeout, and the
+// caller must then guess a safe batch size per hardware. So: POST starts the
+// run and returns immediately (202); GET polls progress. Every request stays
+// O(ms) regardless of vault size or hardware. `limit` still bounds a single
+// run so an operator can take it in deliberate steps.
+
+interface BackfillJob {
+  running: boolean;
+  startedAt: string;
+  finishedAt: string | null;
+  /** Notes in the vault at run start. */
+  total: number;
+  /** Already had embeddings → not touched (always 0 when `force`). */
+  skipped: number;
+  /** Verified to have embeddings after indexNote. */
+  indexed: number;
+  /** Threw, or produced no rows (embedding service silently down). */
+  failed: number;
+  /** Candidates left over — per-run `limit`, or an early abort. */
+  remaining: number;
+  force: boolean;
+  limit: number;
+  lastError: string | null;
+  ms: number;
+}
+
+/**
+ * Single in-flight run per process, same model as the sleep-agent's
+ * `running` flag. A second POST while one is active gets a 409 with the
+ * live job rather than starting a competing run — two runs would fight over
+ * the same Ollama instance and halve each other's throughput.
+ */
+let backfillJob: BackfillJob | null = null;
+
+const BACKFILL_DEFAULT_LIMIT = 200;
+const BACKFILL_MAX_LIMIT = 5_000;
+
+/**
+ * How many consecutive notes may come back WITHOUT embeddings before the run
+ * gives up. `CombinedProvider.indexNote` swallows `EmbeddingUnavailableError`
+ * (Tier 2 is fire-and-forget on the save path), so a resolved `indexNote`
+ * proves nothing — with Ollama down it resolves and writes no rows. Hence
+ * every note is verified against `note_embeddings` afterwards, and a run
+ * against a dead embedding service stops after a handful of no-ops instead
+ * of walking the whole vault.
+ */
+const BACKFILL_CONSECUTIVE_MISS_ABORT = 5;
+
+const emptyBackfillJob = (): BackfillJob => ({
+  running: false,
+  startedAt: "",
+  finishedAt: null,
+  total: 0,
+  skipped: 0,
+  indexed: 0,
+  failed: 0,
+  remaining: 0,
+  force: false,
+  limit: 0,
+  lastError: null,
+  ms: 0,
+});
+
+/**
+ * noteIds that already have at least one chunk row.
+ *
+ * NOT filtered by embeddings generation: the active-generation tag is not
+ * exported from `@lokyy/core`, and after a generation migration a note may
+ * hold rows of the previous generation only. Effect: such a note reads as
+ * "indexed" here and is skipped — `force=true` is the escape hatch, and the
+ * sleep pass (inside core, where the generation IS reachable) does the
+ * generation-scoped check. For the bug this endpoint repairs — notes with NO
+ * embeddings at all — the two are identical.
+ */
+async function noteIdsWithEmbeddings(vaultId: string): Promise<Set<string>> {
+  const rows = await database().execute<{ note_id: string }>(sql`
+    SELECT DISTINCT note_id
+    FROM note_embeddings
+    WHERE vault_id = ${vaultId}
+  `);
+  const out = new Set<string>();
+  for (const row of rows as unknown as Array<{ note_id: string }>) {
+    if (typeof row.note_id === "string") out.add(row.note_id);
+  }
+  return out;
+}
+
+/** True once the note has at least one chunk row. */
+async function noteHasEmbeddings(
+  noteId: string,
+  vaultId: string,
+): Promise<boolean> {
+  const rows = await database().execute<{ note_id: string }>(sql`
+    SELECT note_id
+    FROM note_embeddings
+    WHERE note_id = ${noteId}
+      AND vault_id = ${vaultId}
+    LIMIT 1
+  `);
+  return (rows as unknown as unknown[]).length > 0;
+}
+
+/**
+ * The run itself. Never throws — every failure lands in the job snapshot, so
+ * the polling client always gets numbers instead of a dead job.
+ */
+async function runEmbeddingBackfill(job: BackfillJob): Promise<void> {
+  const started = Date.now();
+  try {
+    const vaultId = indexVaultId();
+    const summaries = await listNotes();
+    job.total = summaries.length;
+
+    const alreadyIndexed = job.force
+      ? new Set<string>()
+      : await noteIdsWithEmbeddings(vaultId);
+    const candidates = summaries
+      .map((s) => s.id)
+      .filter((id) => !alreadyIndexed.has(id));
+    job.skipped = summaries.length - candidates.length;
+    job.remaining = candidates.length;
+
+    const provider = getMemoryProvider(vaultId);
+    const batch = candidates.slice(0, job.limit);
+    let consecutiveMisses = 0;
+
+    for (const noteId of batch) {
+      try {
+        await provider.indexNote(noteId);
+        if (await noteHasEmbeddings(noteId, vaultId)) {
+          job.indexed += 1;
+          consecutiveMisses = 0;
+        } else {
+          job.failed += 1;
+          consecutiveMisses += 1;
+          job.lastError = `no embeddings written for "${noteId}" — embedding service (Ollama) reachable?`;
+        }
+      } catch (err) {
+        // Per-note errors are counted, never thrown: one poison note must
+        // not abort the run for every note behind it.
+        job.failed += 1;
+        consecutiveMisses += 1;
+        job.lastError = `${noteId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+      job.remaining = Math.max(0, candidates.length - job.indexed - job.failed);
+      job.ms = Date.now() - started;
+
+      if (consecutiveMisses >= BACKFILL_CONSECUTIVE_MISS_ABORT) {
+        job.lastError = `stopped early: no vectors written for ${consecutiveMisses} notes in a row — check that the embedding service is running`;
+        break;
+      }
+    }
+  } catch (err) {
+    job.lastError = err instanceof Error ? err.message : String(err);
+  } finally {
+    job.ms = Date.now() - started;
+    job.finishedAt = new Date().toISOString();
+    job.running = false;
+  }
+}
+
+/**
+ * POST /api/search/embeddings/backfill — start a Tier-2 backfill run.
+ *
+ * Params (query string or JSON body, query wins):
+ *   force  — `true` re-indexes every note, not just those without embeddings.
+ *            Cheap in practice: `Tier2Provider` skips chunks whose content
+ *            hash is unchanged, so a forced run over an up-to-date vault
+ *            costs DB reads, not Ollama calls.
+ *   limit  — max notes to process in THIS run (default 200, max 5000).
+ *            Leftovers are reported as `remaining`; POST again to continue.
+ *
+ * Returns 202 `{ started: true, job }` immediately, or 409
+ * `{ started: false, reason: "already_running", job }`.
+ */
+searchRoutes.post("/search/embeddings/backfill", async (c) => {
+  if (backfillJob?.running) {
+    return c.json(
+      { started: false, reason: "already_running", job: backfillJob },
+      409,
+    );
+  }
+
+  const body = await c.req
+    .json<{ force?: boolean; limit?: number }>()
+    .catch(() => ({}) as { force?: boolean; limit?: number });
+  const forceParam = c.req.query("force");
+  const limitParam = c.req.query("limit");
+  const force =
+    forceParam === undefined
+      ? body.force === true
+      : forceParam === "1" || forceParam === "true";
+  const rawLimit = Number(limitParam ?? body.limit ?? BACKFILL_DEFAULT_LIMIT);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(1, Math.min(BACKFILL_MAX_LIMIT, Math.floor(rawLimit)))
+    : BACKFILL_DEFAULT_LIMIT;
+
+  const job: BackfillJob = {
+    ...emptyBackfillJob(),
+    running: true,
+    startedAt: new Date().toISOString(),
+    force,
+    limit,
+  };
+  backfillJob = job;
+  // Detached on purpose — see the design note above. Errors are captured
+  // inside `runEmbeddingBackfill`; the `.catch` is belt-and-braces so an
+  // unexpected throw can never surface as an unhandled rejection.
+  void runEmbeddingBackfill(job).catch((err) => {
+    job.lastError = err instanceof Error ? err.message : String(err);
+    job.running = false;
+    job.finishedAt = new Date().toISOString();
+  });
+
+  return c.json({ started: true, job }, 202);
+});
+
+/**
+ * GET /api/search/embeddings/backfill — progress of the current/last run.
+ *
+ * Always answers with the full job shape (zeroed when no run ever started),
+ * so the caller can render numbers without a null check:
+ *   { running, startedAt, finishedAt, total, skipped, indexed, failed,
+ *     remaining, force, limit, lastError, ms }
+ */
+searchRoutes.get("/search/embeddings/backfill", (c) => {
+  return c.json(backfillJob ?? emptyBackfillJob());
+});
+
+/** Test seam — drops job state so cases start from a clean slate. */
+export function _resetEmbeddingBackfillForTests(): void {
+  backfillJob = null;
+}
 
 searchRoutes.post("/search", async (c) => {
   const { query, limit, tagFilter, folderPrefix } = await c.req.json<{

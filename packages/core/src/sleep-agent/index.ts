@@ -16,6 +16,7 @@ import { entityExtractionPass } from "./passes/entityExtraction.js";
 import { biTemporalValidationPass } from "./passes/biTemporalValidation.js";
 import { peerProfileUpdatePass } from "./passes/peerProfileUpdate.js";
 import { ulidBackfillPass } from "./passes/ulidBackfill.js";
+import { embeddingBackfillPass } from "./passes/embeddingBackfill.js";
 import type {
   SleepPass,
   SleepPhase,
@@ -59,6 +60,14 @@ const ALL_PASSES: SleepPass[] = [
   // id + type + updated frontmatter and writes back via saveNote (which
   // commits, syncs BM25, refreshes temporal-edges, drops the ULID cache).
   ulidBackfillPass,
+  // issue #52 — Tier-2 Embedding-Backfill.
+  // NREM-phase pass; indexes up to 25 notes per run that have no row in
+  // `note_embeddings` for the active generation, through the same
+  // `getMemoryProvider().indexNote()` path the save hook uses. Resumable:
+  // whatever the per-run cap / time budget leaves over is picked up by the
+  // next run. Runs AFTER ulid-backfill on purpose — notes that just got a
+  // ULID are then indexable in the same night.
+  embeddingBackfillPass,
   // Future: multiChunkReEmbedPass, multiTraceConsolidationPass, …
 ];
 
