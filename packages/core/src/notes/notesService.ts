@@ -35,10 +35,13 @@ import { FrontmatterValidationError } from "../errors/FrontmatterValidationError
 import { TypeFolderMismatchError } from "../errors/TypeFolderMismatchError.js";
 import { checkPathMatchesType } from "./folderMap.js";
 import {
+  queueBulkTierRefresh,
+  queueBulkTierRemove,
   queueIndexRefresh,
   queueIndexRemove,
   queueSearchIndexRefresh,
   queueSearchIndexRemove,
+  type BulkRefreshItem,
 } from "../memory/index.js";
 import { syncWikilinksToTemporalEdges } from "../graph/temporalEdges.js";
 import { invalidateUlidCache } from "./findByUlid.js";
@@ -78,6 +81,32 @@ function queueBothSearchTiers(
 function queueBothSearchTiersRemove(noteId: string): void {
   queueSearchIndexRemove(noteId);
   queueIndexRemove(indexVaultId(), noteId);
+}
+
+/**
+ * Issue #56 — alle `note_id`s unterhalb eines Ordners einsammeln.
+ *
+ * MUSS vor der Git-Operation laufen: danach sind die Dateien weg und der Walk
+ * fände nichts mehr. Wirft NIE (AC#5) — die Git-Operation ist die Wahrheit,
+ * der Index ist abgeleitet. Existiert der Ordner nicht oder fehlen die
+ * Leserechte, kommt eine leere Liste zurück und das Löschen läuft normal
+ * weiter; der Fehler wird nur geloggt.
+ */
+async function collectFolderNoteIds(folderPath: string): Promise<string[]> {
+  const c = coreConfig();
+  const rel = folderPath.replace(/\/+$/, "");
+  const absDir = join(c.vaultDir, ...rel.split("/"));
+  try {
+    const files = await walk(absDir);
+    return files.map((abs) => pathToId(relative(c.vaultDir, abs)));
+  } catch (err) {
+    console.warn(
+      `[notesService] Ordner-Walk für "${folderPath}" fehlgeschlagen — Index-Bereinigung übersprungen: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+    return [];
+  }
 }
 
 /**
@@ -809,6 +838,11 @@ export async function moveEntry(
 ): Promise<void> {
   const fromRel = kind === "note" ? `${from}.md` : from;
   const toRel = kind === "note" ? `${to}.md` : to;
+  // Issue #56 — beim Ordner-Move VOR der Git-Operation einsammeln: die
+  // note_id IST der Pfad ohne ".md", der Move ändert also die ID JEDER
+  // enthaltenen Notiz. Nach dem Move liegt unter dem alten Pfad nichts mehr.
+  const movedNoteIds =
+    kind === "folder" ? await collectFolderNoteIds(from) : [];
   await move(fromRel, toRel, `${kind} verschoben: ${from} -> ${to}`);
   // ID-Badge / AI-Prompt feature — drop the ULID cache so the moved
   // note's new path is what findByUlid returns. The ULID itself is
@@ -845,6 +879,50 @@ export async function moveEntry(
       // Note disappeared between move and read — ignore.
     }
   }
+
+  // Issue #56 — Ordner-Move: alte IDs aus beiden Tiers raus, Notizen unter
+  // den NEUEN IDs wieder rein. Der neue Pfad entsteht durch Präfix-Tausch
+  // (`from` → `to`), ein zweiter Walk ist unnötig. Beides läuft gebündelt und
+  // seriell auf der Bulk-Kette (AC#6); der Request-Pfad wartet nie (AC#4).
+  if (kind === "folder" && movedNoteIds.length > 0) {
+    const vaultId = indexVaultId();
+    const fromPrefix = from.replace(/\/+$/, "");
+    const toPrefix = to.replace(/\/+$/, "");
+    const c = coreConfig();
+
+    queueBulkTierRemove(vaultId, movedNoteIds);
+
+    const items: BulkRefreshItem[] = movedNoteIds.map((oldId) => {
+      const newId = toPrefix + oldId.slice(fromPrefix.length);
+      return {
+        noteId: newId,
+        // Lazy: die Datei wird erst im seriellen Worker gelesen, nicht im
+        // Request-Pfad.
+        load: async () => {
+          const abs = join(c.vaultDir, ...newId.split("/")) + ".md";
+          try {
+            const moved = await readNoteFile(abs);
+            let movedForgotten = false;
+            try {
+              movedForgotten = isForgotten(parseFrontmatter(moved.body).data);
+            } catch {
+              movedForgotten = false;
+            }
+            return {
+              title: moved.title,
+              body: moved.body,
+              tags: moved.tags,
+              forgotten: movedForgotten,
+            };
+          } catch {
+            // Notiz zwischen Move und Re-Index verschwunden — überspringen.
+            return null;
+          }
+        },
+      };
+    });
+    queueBulkTierRefresh(vaultId, items);
+  }
 }
 
 /**
@@ -861,11 +939,20 @@ export async function deleteEntry(
   kind: "note" | "folder",
 ): Promise<SaveResult> {
   const rel = kind === "note" ? `${path}.md` : path;
+  // Issue #56 — beim Ordner-Löschen die enthaltenen note_ids VOR dem `remove`
+  // einsammeln; danach sind die Dateien weg. Wirft nie (AC#5).
+  const folderNoteIds =
+    kind === "folder" ? await collectFolderNoteIds(path) : [];
   const result = await remove(rel, `${kind} gelöscht: ${path}`);
   if (kind === "note") {
     // Phase A Wave A1 / Story 2 — drop the BM25 row.
     // Issue #51 — und die Tier-2-Embeddings gleich mit.
     queueBothSearchTiersRemove(path);
+  } else if (folderNoteIds.length > 0) {
+    // Issue #56 — der Ordner-Pfad räumte bislang GAR NICHTS ab: die Dateien
+    // verschwanden, die Notizen blieben in `note_search` UND `note_embeddings`
+    // stehen. Gebündelt + seriell statt N paralleler Microtasks (AC#6).
+    queueBulkTierRemove(indexVaultId(), folderNoteIds);
   }
   // ID-Badge / AI-Prompt feature — drop the ULID cache so a deleted
   // note stops resolving via findByUlid.

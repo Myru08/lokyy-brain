@@ -129,6 +129,179 @@ export function queueIndexRemove(vaultId: string, noteId: string): void {
     );
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+ *  Issue #56 — Bulk-Index-Pflege für ORDNER-Operationen
+ *
+ *  Beim Einzel-Delete entsteht genau EINE Bereinigung. Ein gelöschter (oder
+ *  verschobener) Ordner bringt N Notizen auf einmal mit. Der naive Weg —
+ *  `for (id of ids) queueBothSearchTiersRemove(id)` — feuert N unabhängige
+ *  Microtasks los, von denen jeder eine eigene DB-Verbindung zieht. Das ist
+ *  exakt die Form des Ausfalls vom 2026-05-28 (siehe die lange Begründung an
+ *  `queueIndexRemove` oben): eine Welle fire-and-forget-Writes fuhr den
+ *  Connection-Pool leer und riss das Backend mit.
+ *
+ *  Die Antwort auf AC#6 besteht aus zwei Teilen, die zusammen greifen:
+ *
+ *   1. GEBÜNDELT — pro Chunk von {@link BULK_INDEX_CHUNK} IDs geht genau EINE
+ *      `DELETE ... WHERE note_id = ANY($1)` pro Tier raus. Die Query-Zahl
+ *      hängt damit nicht mehr an der Ordnergröße: 500 Notizen sind 3 Queries,
+ *      nicht 1000. Der Chunk existiert nur, damit ein einzelner Parameter und
+ *      ein einzelnes Statement nicht beliebig groß werden.
+ *
+ *   2. SERIELL — ALLE Bulk-Jobs (auch die aus gleichzeitigen Requests) hängen
+ *      an EINER prozessweiten Promise-Kette. Zu jedem Zeitpunkt ist höchstens
+ *      eine Index-Operation in flight, egal wie viele Ordner parallel gelöscht
+ *      werden. Ein Sturm ist damit strukturell unmöglich, nicht bloß
+ *      unwahrscheinlich.
+ *
+ *  Warum NICHT durch `runGuardedIndexWrite` (den Per-Note-Breaker aus Story
+ *  10.1): der Breaker hält State pro noteId und existiert gegen ein poison-
+ *  CONTENT-Retry-Loop. Hier läuft pro Notiz genau EIN Versuch pro Ordner-
+ *  Operation, es gibt kein Re-Firing — das Problem, gegen das der Breaker
+ *  schützt, kann in diesem Pfad gar nicht entstehen. Zusätzlich sind die
+ *  Bulk-Deletes reine parametrisierte DELETEs ohne Index-Maintenance über
+ *  Content. Ein per-Note-Breaker über einer Bulk-Query wäre außerdem gar nicht
+ *  zuordenbar. Der Einzel-Notiz-Pfad bleibt unverändert am Breaker (AC#7).
+ *
+ *  Fehler werden geloggt, nie geworfen — weder synchron noch asynchron. Die
+ *  Git-Operation ist die Wahrheit, der Index ist abgeleitet (AC#5).
+ * ──────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Maximale Anzahl note_ids pro gebündelter Lösch-Query. Groß genug, dass
+ * typische Ordner in EINE Query passen; klein genug, dass ein einzelnes
+ * Statement/Parameter-Array beschränkt bleibt.
+ */
+export const BULK_INDEX_CHUNK = 200;
+
+/**
+ * Eine Notiz, die nach einem Ordner-Move unter ihrer NEUEN ID indiziert wird.
+ * `load` ist bewusst lazy: der Request-Pfad liest keine N Dateien, das
+ * passiert erst im seriellen Worker. `null` ⇒ Notiz ist zwischen Move und
+ * Re-Index verschwunden, wird still übersprungen.
+ */
+export interface BulkRefreshItem {
+  noteId: string;
+  load: () => Promise<{
+    title: string;
+    body: string;
+    tags: string[];
+    forgotten: boolean;
+  } | null>;
+}
+
+/** Die eine prozessweite Kette. Rejected nie — jeder Job fängt selbst. */
+let bulkChain: Promise<void> = Promise.resolve();
+
+function enqueueBulk(label: string, job: () => Promise<void>): void {
+  bulkChain = bulkChain
+    .then(job)
+    .catch((err) =>
+      console.error(`[memory] bulk ${label} failed (non-blocking)`, err),
+    );
+}
+
+/**
+ * Test-/Shutdown-Hook: wartet, bis die aktuell eingereihten Bulk-Jobs durch
+ * sind. Der Produktionspfad ruft das NIE auf — er ist fire-and-forget (AC#4).
+ */
+export function flushBulkIndexQueue(): Promise<void> {
+  return bulkChain;
+}
+
+/**
+ * Fire-and-forget-Bereinigung für ALLE Notizen eines gelöschten oder
+ * verschobenen Ordners (Issue #56, AC#2). Kehrt sofort zurück; die Arbeit
+ * läuft gebündelt und seriell auf der Bulk-Kette.
+ */
+export function queueBulkTierRemove(vaultId: string, noteIds: string[]): void {
+  const ids = [...new Set(noteIds)];
+  if (ids.length === 0) return;
+
+  enqueueBulk(`remove(${ids.length})`, async () => {
+    // Provider-Konstruktion INNERHALB des Jobs — eine kaputte Konfiguration
+    // darf nicht in `deleteEntry` hochblubbern.
+    const provider = getMemoryProvider(vaultId);
+
+    for (let i = 0; i < ids.length; i += BULK_INDEX_CHUNK) {
+      const chunk = ids.slice(i, i + BULK_INDEX_CHUNK);
+      // Beide Tiers einzeln kapseln: fällt einer aus, räumt der andere
+      // trotzdem ab, und die restlichen Chunks laufen weiter.
+      try {
+        await tier1Bm25Singleton.removeMany(chunk);
+      } catch (err) {
+        console.error("[memory] bulk note_search remove failed (non-blocking)", {
+          vaultId,
+          count: chunk.length,
+          err,
+        });
+      }
+      try {
+        await provider.t2.removeNotes(chunk);
+      } catch (err) {
+        console.error("[memory] bulk note_embeddings remove failed (non-blocking)", {
+          vaultId,
+          count: chunk.length,
+          err,
+        });
+      }
+    }
+
+    // Der strukturelle In-Memory-Index (Tier1Provider) kennt keine IDs — er
+    // wird komplett verworfen und bei der nächsten Query neu gebaut. Einmal
+    // pro Ordner reicht also; N Aufrufe wären N-mal dieselbe Zuweisung.
+    try {
+      await provider.t1.removeNote(ids[0]!);
+    } catch (err) {
+      console.error("[memory] structural index invalidation failed", { err });
+    }
+  });
+}
+
+/**
+ * Fire-and-forget-Re-Indizierung nach einem Ordner-MOVE (Issue #56, AC#3).
+ * Die `note_id` IST der Pfad ohne ".md" — ein Ordner-Move ändert also die ID
+ * jeder enthaltenen Notiz. Ohne diesen Schritt wären die Notizen nach einem
+ * Move semantisch unauffindbar, bis sie einzeln neu gespeichert werden.
+ *
+ * Läuft auf derselben seriellen Kette wie {@link queueBulkTierRemove}, also
+ * garantiert NACH dem Entfernen der alten IDs und mit Nebenläufigkeit 1 — bei
+ * Tier 2 hängt an jeder Notiz ein Ollama-Embedding, das parallel zu feuern
+ * genau der Sturm wäre, den AC#6 verbietet.
+ */
+export function queueBulkTierRefresh(
+  vaultId: string,
+  items: BulkRefreshItem[],
+): void {
+  if (items.length === 0) return;
+
+  enqueueBulk(`refresh(${items.length})`, async () => {
+    const provider = getMemoryProvider(vaultId);
+    for (const item of items) {
+      try {
+        const doc = await item.load();
+        if (doc === null) continue; // Notiz ist inzwischen weg — überspringen.
+        await tier1Bm25Singleton.upsert(
+          item.noteId,
+          vaultId,
+          doc.title,
+          doc.body,
+          doc.tags,
+          doc.forgotten,
+        );
+        await provider.indexNote(item.noteId);
+      } catch (err) {
+        // Eine kaputte Notiz darf die übrigen nicht mitreißen.
+        console.error("[memory] bulk reindex failed for note (non-blocking)", {
+          vaultId,
+          noteId: item.noteId,
+          err,
+        });
+      }
+    }
+  });
+}
+
 /** Singleton Tier1BM25 — no per-vault state, the table is keyed by note_id. */
 const tier1Bm25Singleton = new Tier1BM25();
 

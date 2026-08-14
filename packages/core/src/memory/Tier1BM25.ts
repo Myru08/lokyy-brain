@@ -160,6 +160,28 @@ export class Tier1BM25 {
   }
 
   /**
+   * Remove MANY notes in a single statement (Issue #56, AC#6).
+   *
+   * WHY a bulk variant exists: deleting a folder with N notes used to have no
+   * cleanup path at all; the naive fix — N calls to `remove()` — would fan out
+   * into N fire-and-forget writes against the isolated index pool, which is the
+   * exact shape of the 2026-05-28 outage. One `= ANY(...)` per chunk keeps the
+   * query count independent of folder size. The caller (`queueBulkTierRemove`
+   * in `./index.ts`) chunks and awaits sequentially.
+   *
+   * The ids are bound as ONE `text[]` parameter via `sql.param(...)` for the
+   * same reason as `upsert`'s tags: in drizzle-orm 0.36.4 a bare `${array}` is
+   * expanded into a placeholder list — `()` for the empty array, which Postgres
+   * rejects with 42601.
+   */
+  async removeMany(noteIds: string[]): Promise<void> {
+    if (noteIds.length === 0) return;
+    await indexDatabase().execute(sql`
+      DELETE FROM note_search WHERE note_id = ANY(${sql.param(noteIds)}::text[])
+    `);
+  }
+
+  /**
    * Toggle the `forgotten` flag for an existing note_search row
    * (Phase C Wave C3 / Story 2). Returns `true` if a row was actually
    * updated, `false` if the row is missing — the caller can then decide
