@@ -20,6 +20,13 @@ import type { LlmRole, LlmRoutingConfig, ProviderConfig } from "@lokyy/core";
 import { config } from "../config.js";
 import { logBuffer } from "../lib/logBuffer.js";
 import { forgejoStatus, toDiagnosticFields } from "../lib/forgejoStatus.js";
+import {
+  DERIVED_STORES,
+  MAX_KNOWN_IDS,
+  collectDerivedStoreOrphans,
+  collectVaultUlids,
+  type DerivedStore,
+} from "../lib/derivedStoreOrphans.js";
 
 /**
  * `GET /api/diagnostics` — an in-app, per-service self-test suite.
@@ -470,6 +477,139 @@ export async function checkEmbeddingIndexFill(): Promise<DiagnosticCheck> {
   });
 }
 
+// ── Verwaiste Zeilen je abgeleitetem Store (issue #59 / E3 von #55) ───────────
+// Die beiden Checks oben messen den FÜLLSTAND von zwei Tabellen: fehlt etwas,
+// das da sein sollte? Diese Gruppe misst die Gegenrichtung für die übrigen acht
+// Stores: liegt etwas da, dessen Notiz es nicht mehr gibt? Keiner der Stores hat
+// einen Löschpfad (bewusst kein Fremdschlüssel — eine tote Index-Zeile darf
+// keinen Rebase blockieren), also bleibt beim Löschen und Verschieben von
+// Notizen etwas liegen. Wie viel, wusste bisher niemand, weil nichts danach
+// gesehen hat. Dieser Check ist genau dieses Nachsehen — und die Messgrundlage,
+// mit der sich E1 (#55) beziffern lässt statt vermuten.
+//
+// Eigene Service-Gruppe „stores" statt „search": diese Zeilen prüfen Scoring,
+// Peers, Entitäten, Kanten und Lint — mit Suche hat davon nichts zu tun, und
+// acht zusätzliche Zeilen in der Such-Gruppe würden deren vier Sonden
+// zuschütten. Die Diagnose-UI gruppiert generisch nach `service`, also kostet
+// die neue Gruppe keine UI-Änderung.
+//
+// `warn`, nie `error`: eine verwaiste Zeile bricht zur Laufzeit nichts, sie
+// verbraucht Platz und verfälscht Aggregate. Read-only — Aufräumen ist #57.
+
+/** Quelle der Frontmatter-ULIDs. Injizierbar, damit der Test ohne Vault läuft. */
+export type UlidReader = (pathIds: string[]) => Promise<Set<string>>;
+
+/** Kurzer Zusatz zu den bewusst ungeprüften Spalten eines Stores. */
+function exclusionNote(store: DerivedStore): string {
+  if (!store.excluded?.length) return "";
+  const parts = store.excluded.map((e) => `${e.column} (${e.reason})`);
+  return ` Ungeprüft: ${parts.join("; ")}.`;
+}
+
+export async function checkDerivedStoreOrphans(
+  readUlids: UlidReader = (ids) => collectVaultUlids(ids, config.vaultDir),
+): Promise<DiagnosticCheck[]> {
+  const started = Date.now();
+
+  /** Ein einheitliches Ergebnis je Store, wenn gar nicht geprüft werden konnte. */
+  const skipAll = (detail: string): DiagnosticCheck[] =>
+    DERIVED_STORES.map((s) => ({
+      service: "stores",
+      name: `Verwaiste Zeilen: ${s.table}`,
+      ok: true,
+      severity: "info" as const,
+      detail,
+    }));
+
+  try {
+    // Der Dateibestand ist die Wahrheit — keine gecachte Liste. `listNotes()`
+    // pullt vorher und liest den Vault frisch von Platte.
+    const pathIds = (await listNotes()).map((n) => n.id);
+
+    // Leerer Vault: JEDE Zeile hätte keine Datei. Das als Verwaisung zu melden,
+    // wäre auf jeder frischen Installation ein Alarm ohne Substanz — dieselbe
+    // Falle, die der Embedding-Check oben bewusst umgeht.
+    if (pathIds.length === 0) {
+      return skipAll("Keine Notiz im Vault — nichts abzugleichen.");
+    }
+    if (pathIds.length > MAX_KNOWN_IDS) {
+      return skipAll(
+        `Vault mit ${pathIds.length} Notizen über der Prüfgrenze (${MAX_KNOWN_IDS}) — Abgleich übersprungen.`,
+      );
+    }
+
+    // Beide ID-Räume, siehe Modulkopf von derivedStoreOrphans.ts: `note_scoring`
+    // wird von zwei Pfaden mit unterschiedlichen IDs beschrieben. Nur gegen die
+    // Pfad-IDs geprüft, wäre nach dem ersten Nachtlauf jede Zeile „verwaist".
+    const ulids = await readUlids(pathIds);
+    const knownIds = [...new Set([...pathIds, ...ulids])];
+
+    const results = await collectDerivedStoreOrphans(config.databaseUrl, knownIds);
+
+    return results.map((r, idx) => {
+      const store = DERIVED_STORES.find((s) => s.table === r.table)!;
+      const suffix = exclusionNote(store);
+      const base = {
+        service: "stores",
+        name: `Verwaiste Zeilen: ${r.table}`,
+        latencyMs: idx === 0 ? Date.now() - started : undefined,
+      };
+
+      if (!r.present) {
+        return {
+          ...base,
+          ok: true,
+          severity: "info" as const,
+          detail: `Tabelle fehlt noch (vor der Migration) — nichts abzugleichen.`,
+        };
+      }
+
+      if (r.orphanRows === 0) {
+        return {
+          ...base,
+          ok: true,
+          severity: "info" as const,
+          detail: `${r.label}: keine verwaisten Zeilen (${r.totalRows} geprüft).${suffix}`,
+        };
+      }
+
+      const sample =
+        r.samples.length > 0 ? ` z. B. ${r.samples.slice(0, 3).join(", ")}.` : "";
+      // Beim Array-Store ist „Zeile verwaist" nicht dasselbe wie „Zeile weg":
+      // ein Befund über drei Notizen, von denen eine fehlt, ist danach ein
+      // Befund über zwei. Nur die vollständig verwaisten Zeilen wären als
+      // Ganzes löschbar — deshalb getrennt ausgewiesen.
+      const detail =
+        r.fullyOrphanRows === undefined
+          ? `${r.label}: ${r.orphanRows} von ${r.totalRows} Zeilen zeigen auf keine existierende Notiz.${sample}`
+          : `${r.label}: ${r.orphanRows} von ${r.totalRows} Zeilen enthalten mindestens eine unbekannte Notiz-ID, ` +
+            `davon ${r.fullyOrphanRows} vollständig verwaist (alle IDs unbekannt).${sample}`;
+
+      return {
+        ...base,
+        ok: false,
+        severity: "warn" as const,
+        detail: `${detail}${suffix} Messung, kein Eingriff — Aufräumen ist Issue #57.`,
+      };
+    });
+  } catch (err) {
+    // Gleiche Form wie `checkKiRouting`: eine Gruppe kann nicht in `guard()`
+    // laufen, weil die eine einzelne Zeile zurückgibt. `warn`, nicht `error` —
+    // ein DB-Ausfall wird von `checkPostgres` bereits als Fehler gemeldet;
+    // hier ihn zu wiederholen erzeugt nur Rauschen.
+    return [
+      {
+        service: "stores",
+        name: "Verwaisungs-Abgleich",
+        ok: false,
+        severity: "warn",
+        latencyMs: Date.now() - started,
+        detail: brief(`Abgleich nicht möglich (${errMsg(err)}).`),
+      },
+    ];
+  }
+}
+
 // ── Sleep-agent scheduler + last run ──────────────────────────────────────────
 async function checkSleepAgent(): Promise<DiagnosticCheck[]> {
   const armed = await guard("sleep-agent", "Scheduler armiert", async () => {
@@ -767,6 +907,7 @@ diagnosticsRoutes.get("/", async (c) => {
       checkSearchCombined().then((x) => [x]),
       checkSearchIndexFill().then((x) => [x]),
       checkEmbeddingIndexFill().then((x) => [x]),
+      checkDerivedStoreOrphans(),
       checkSleepAgent(),
       checkMcpHealth().then((x) => [x]),
       checkGitVault().then((x) => [x]),
