@@ -71,6 +71,11 @@ const bad = (stderr = "boom"): RunResult => ({ code: 1, stdout: "", stderr, time
 
 interface Scenario {
   dirty?: string;
+  /**
+   * With `dirty` set: does `git diff --ignore-space-at-eol` still report content
+   * changes? `true` = real edits (abort), `false`/unset = line-ending-only (safe).
+   */
+  contentDiff?: boolean;
   ahead?: number;
   behind?: number;
   fetchFails?: boolean;
@@ -158,6 +163,10 @@ function harness(scenario: Scenario = {}) {
   function gitResult(args: string[]): RunResult {
       const [verb] = args;
       if (verb === "status") return ok(scenario.dirty ?? "");
+      // `git diff --ignore-space-at-eol --quiet`: exit 1 = real content diff,
+      // exit 0 = no content diff (dirtiness was line-ending-only).
+      if (verb === "diff") return scenario.contentDiff ? bad() : ok();
+      if (verb === "checkout") return ok();
       if (verb === "rev-parse" && args[1] === "--abbrev-ref") return ok("main");
       if (verb === "rev-parse") return ok(pulled ? NEW_SHA : OLD_SHA);
       if (verb === "fetch") return scenario.fetchFails ? bad("could not resolve host") : ok();
@@ -226,14 +235,15 @@ describe("the happy path", () => {
 });
 
 describe("aborts that must not touch anything", () => {
-  it("aborts on a dirty working copy", async () => {
-    const h = harness({ dirty: " M server/src/index.ts\n" });
+  it("aborts on a dirty working copy with real edits", async () => {
+    const h = harness({ dirty: " M server/src/index.ts\n", contentDiff: true });
     const snapshot = await h.run();
 
     expect(snapshot.result).toBe("aborted");
     expect(snapshot.message).toMatch(/local changes/);
     expect(flat(h.gitCalls).some((c) => c.startsWith("pull"))).toBe(false);
     expect(flat(h.gitCalls).some((c) => c.startsWith("reset"))).toBe(false);
+    expect(flat(h.gitCalls).some((c) => c.startsWith("checkout"))).toBe(false);
     expect(flat(h.dockerCalls).some((c) => c.includes(" build ") || c.includes(" up "))).toBe(false);
   });
 
@@ -259,6 +269,50 @@ describe("aborts that must not touch anything", () => {
     const snapshot = await h.run();
     expect(snapshot.result).toBe("already-up-to-date");
     expect(flat(h.dockerCalls).some((c) => c.includes(" build "))).toBe(false);
+  });
+});
+
+describe("a CRLF-only dirty working copy must not block the update (Windows, #49)", () => {
+  it("discards the line-ending noise and updates anyway", async () => {
+    const h = harness({ dirty: " M server/src/index.ts\n M pwa/src/App.tsx\n", contentDiff: false });
+    const snapshot = await h.run();
+
+    expect(snapshot.result).toBe("success");
+    // The line-ending differences were checked (diff --ignore-space-at-eol) and
+    // then discarded (checkout -- .) before the pull.
+    expect(h.gitCalls).toContainEqual(["diff", "--ignore-space-at-eol", "--quiet"]);
+    expect(h.gitCalls).toContainEqual(["checkout", "--", "."]);
+    expect(flat(h.gitCalls).some((c) => c.startsWith("pull"))).toBe(true);
+    expect(snapshot.log.join("\n")).toMatch(/line ending/i);
+  });
+
+  it("still aborts when the dirtiness includes real content, not just line endings", async () => {
+    const h = harness({ dirty: " M server/src/index.ts\n", contentDiff: true });
+    const snapshot = await h.run();
+
+    expect(snapshot.result).toBe("aborted");
+    expect(snapshot.message).toMatch(/local changes/);
+    expect(flat(h.gitCalls).some((c) => c.startsWith("checkout"))).toBe(false);
+    expect(flat(h.gitCalls).some((c) => c.startsWith("pull"))).toBe(false);
+  });
+
+  it("aborts when the dirtiness includes untracked files, even with clean diffs", async () => {
+    const h = harness({ dirty: "?? server/src/new-thing.ts\n", contentDiff: false });
+    const snapshot = await h.run();
+
+    expect(snapshot.result).toBe("aborted");
+    expect(snapshot.message).toMatch(/local changes/);
+    // Untracked content is never line-ending noise — nothing gets discarded.
+    expect(flat(h.gitCalls).some((c) => c.startsWith("checkout"))).toBe(false);
+    expect(flat(h.gitCalls).some((c) => c.startsWith("pull"))).toBe(false);
+  });
+
+  it("leaves a clean working copy completely untouched (no diff probe, no checkout)", async () => {
+    const h = harness();
+    await h.run();
+
+    expect(flat(h.gitCalls).some((c) => c.startsWith("diff"))).toBe(false);
+    expect(flat(h.gitCalls).some((c) => c.startsWith("checkout"))).toBe(false);
   });
 });
 

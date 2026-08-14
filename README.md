@@ -513,6 +513,56 @@ Für den produktiven Einsatz auf einem eigenen Server (z. B.
 
 Details: **[→ docs/DEPLOY.md](docs/DEPLOY.md)**
 
+## Semantische Suche nachziehen (Embedding-Backfill)
+
+Die semantischen Einträge (Tier 2) entstehen beim Speichern einer Notiz — im
+Hintergrund, ohne den Speichervorgang aufzuhalten. War der Embedding-Dienst
+(Ollama) in dem Moment nicht erreichbar, bleibt die Notiz ohne Embedding und
+taucht in der semantischen Suche nicht auf. **„Suchindex neu aufbauen"
+(`POST /api/search/reindex`) repariert das nicht** — das baut nur den
+Volltext-Index (Tier 1) neu.
+
+Zum Nachziehen gibt es zwei Wege:
+
+**Automatisch:** Der Nachtlauf hat einen Pass `embedding-backfill` (NREM-Phase,
+läuft im 30-Minuten-Leerlauf und um 03:00). Er nimmt sich pro Lauf bis zu 25
+Notizen ohne Embedding vor und setzt beim nächsten Lauf fort — auf einer
+CPU-only-Installation dauert eine Notiz mehrere Sekunden, deshalb das Budget.
+Ergebnis pro Lauf steht in `sleep_agent_runs.pass_stats["embedding-backfill"]`.
+
+**Manuell:** Ein Hintergrundlauf über die API, der sofort antwortet:
+
+```bash
+# Lauf starten (202) — nur Notizen ohne Embeddings
+curl -X POST http://localhost:8787/api/search/embeddings/backfill
+
+# alles neu einbetten, in Schritten von 50 Notizen
+curl -X POST "http://localhost:8787/api/search/embeddings/backfill?force=true&limit=50"
+
+# Fortschritt abfragen
+curl http://localhost:8787/api/search/embeddings/backfill
+```
+
+| Parameter | Default | Wirkung |
+|-----------|---------|---------|
+| `force`   | `false` | `true` bettet **alle** Notizen neu ein, nicht nur die ohne Embedding. Unveränderte Textabschnitte werden trotzdem übersprungen (Inhalts-Hash), es kostet also kaum Ollama-Zeit. |
+| `limit`   | `200`   | Wie viele Notizen dieser eine Lauf höchstens bearbeitet (max. 5000). Der Rest steht als `remaining` in der Antwort — einfach erneut starten. |
+
+Beide Parameter gehen als Query-String oder als JSON-Body. Die Statusantwort
+liefert `running`, `total`, `skipped`, `indexed`, `failed`, `remaining`, `ms`
+und `lastError`. Ein zweiter Start während eines laufenden Laufs wird mit `409`
+abgelehnt.
+
+**Woran du siehst, dass es nötig ist:** *Einstellungen → Diagnose* hat unter
+`search` den Check **„note_embeddings befüllt"** — er zeigt, wie viele Notizen
+überhaupt einen semantischen Eintrag haben, und warnt bei deutlicher
+Unterdeckung mit dem Hinweis auf den Backfill.
+
+Wichtig für die Fehlersuche: Notizen, bei denen nach dem Indexieren *keine*
+Vektoren in der Datenbank stehen, zählen als `failed` — nicht als Erfolg. Läuft
+der Embedding-Dienst gar nicht, bricht der Lauf nach fünf solchen Notizen ab und
+sagt das in `lastError`, statt sinnlos den ganzen Vault durchzugehen.
+
 ## Projekt-Status
 
 **Beta.** Produktiv im Einsatz, aktiv weiterentwickelt. Fertig & getestet:

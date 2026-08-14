@@ -10,6 +10,7 @@ import { getMemoryProvider } from "../../memory/index.js";
 import { parseFrontmatter, validateFrontmatter } from "../../frontmatter/index.js";
 import { DOC_TYPES } from "../../frontmatter/types.js";
 import { isHandsOffZone } from "../rawGuard.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { DocType } from "../../frontmatter/index.js";
 import { LlmRouter } from "../../llm/router.js";
 import { getLlmRouting } from "../../llm/configStore.js";
@@ -66,8 +67,15 @@ export const lintPass: SleepPass = {
 
   async run(): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
     let findingsCreated = 0;
+    /**
+     * #58 — this pass had SEVEN bare `errors++` and not a single log line: a
+     * lint run reporting `errors: 7` told an operator nothing about which of
+     * the five heuristics broke. Every sample's reason therefore leads with
+     * the heuristic name (`orphan-check`, `missing-link-check`, …), because
+     * "which check" is the first question and the note id is the second.
+     */
+    const errors = createPassErrorLog();
 
     try {
       const graph = await buildGraph();
@@ -105,8 +113,8 @@ export const lintPass: SleepPass = {
             evidence: { lastAccessDays: Math.round(ageDays) },
           });
           findingsCreated++;
-        } catch {
-          errors++;
+        } catch (err) {
+          errors.record(note.id, `orphan-check: ${reasonOf(err)}`);
         }
       }
 
@@ -128,8 +136,8 @@ export const lintPass: SleepPass = {
             set.add(note.id);
             linkTargets.set(link, set);
           }
-        } catch {
-          errors++;
+        } catch (err) {
+          errors.record(note.id, `missing-link-check (read): ${reasonOf(err)}`);
         }
       }
 
@@ -149,8 +157,12 @@ export const lintPass: SleepPass = {
             },
           });
           findingsCreated++;
-        } catch {
-          errors++;
+        } catch (err) {
+          // Keyed on the first referencing note — the finding spans several.
+          errors.record(
+            sortedSources[0] ?? "",
+            `missing-link-check (write) for [[${target}]] in ${sortedSources.length} notes: ${reasonOf(err)}`,
+          );
         }
       }
 
@@ -177,8 +189,8 @@ export const lintPass: SleepPass = {
             evidence: { errors: result.errors.slice(0, 5) },
           });
           findingsCreated++;
-        } catch {
-          errors++;
+        } catch (err) {
+          errors.record(note.id, `schema-drift-check: ${reasonOf(err)}`);
         }
       }
 
@@ -210,8 +222,10 @@ export const lintPass: SleepPass = {
             findingsCreated++;
           }
           processed++;
-        } catch {
-          errors++;
+        } catch (err) {
+          // Tier-2 is the usual suspect here (Ollama down → relatedNotes
+          // throws) — the reason distinguishes that from a write failure.
+          errors.record(note.id, `duplicate-check: ${reasonOf(err)}`);
         }
       }
 
@@ -228,8 +242,11 @@ export const lintPass: SleepPass = {
         lintProvider = router.getProvider("lint");
       } catch (err) {
         if (!(err instanceof LlmUnavailable)) {
-          // Unexpected error — count it but don't abort the pass.
-          errors++;
+          // Unexpected error — count it but don't abort the pass. Pass-wide:
+          // no note caused it, the lint role simply couldn't be resolved.
+          errors.recordPassScoped(
+            `contradiction-check: lint provider unresolvable: ${reasonOf(err)}`,
+          );
         }
         // LlmUnavailable for role=lint is expected — the four pure-code
         // checks above already ran. Skip the contradiction phase silently.
@@ -303,26 +320,31 @@ export const lintPass: SleepPass = {
               });
               findingsCreated++;
             }
-          } catch {
-            errors++;
+          } catch (err) {
+            const [a] = pairStr.split("|");
+            errors.record(
+              a ?? "",
+              `contradiction-check on pair ${pairStr}: ${reasonOf(err)}`,
+            );
           }
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `${findingsCreated} findings (orphans + missing-links + schema + dupes + contradictions)`,
-      };
+        `${findingsCreated} findings (orphans + missing-links + schema + dupes + contradictions)`,
+      );
     } catch (e) {
-      return {
-        processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(e).slice(0, 200)}`,
-      };
+      errors.recordPassScoped(e);
+      return errors.result(processed, `pass-error: ${String(e).slice(0, 200)}`);
     }
   },
 };
+
+/** Short reason text for an arbitrary throw value — see #58. */
+function reasonOf(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /**
  * Has the lint pass already emitted a still-open finding for this exact

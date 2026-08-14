@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
-import { Check, X, Loader2, ChevronDown, ChevronRight } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, X, Loader2, ChevronDown, ChevronRight, Download } from "lucide-react";
 import { C, FONT } from "./theme.js";
 import {
   api,
   type LlmRole,
   type MigrationProgress,
+  type OllamaModelStatus,
+  type OllamaPullProgress,
   type PrivacyTier,
   type ProviderConfig,
   type LlmRoutingConfig,
@@ -80,6 +82,84 @@ const KNOWN_MODELS: Record<string, string[]> = {
 };
 
 const LOCAL_BGE_RERANK = "bge-reranker-v2-m3";
+
+// ─────────────── Ollama local-model helpers (issue #46) ───────────────
+// Mirror packages/core/src/llm/ollamaModels.ts. Duplicated (not imported)
+// because @lokyy/core carries node-only deps and is banned from the PWA bundle —
+// same reason the LLM types are inlined at the top of api.ts. Keep in sync.
+
+const OLLAMA_DEFAULT_CHAT_MODEL = "llama3.1:8b";
+const OLLAMA_DEFAULT_EMBED_MODEL = "nomic-embed-text";
+
+/** Approx download sizes for the models we offer to install. */
+const OLLAMA_MODEL_SIZES: Record<string, string> = {
+  "llama3.1:8b": "~4.9 GB",
+  "nomic-embed-text": "~274 MB",
+  "qwen2.5:7b": "~4.7 GB",
+  "mistral:7b": "~4.1 GB",
+  "llama3.2:3b": "~2.0 GB",
+};
+
+interface ConfiguredOllamaModel {
+  model: string;
+  roles: LlmRole[];
+  kind: "chat" | "embedding";
+}
+
+/** Distinct Ollama models the current (in-memory) routing points at. */
+function configuredOllamaModels(routing: LlmRoutingConfig): ConfiguredOllamaModel[] {
+  const byModel = new Map<string, { roles: LlmRole[]; hasEmbedding: boolean }>();
+  for (const [role, assignment] of Object.entries(routing.roles ?? {}) as [
+    LlmRole,
+    { provider: string; model?: string } | undefined,
+  ][]) {
+    if (!assignment || assignment.provider !== "ollama") continue;
+    const isEmbedding = role === "embedding";
+    const model =
+      (assignment.model ?? "").trim() ||
+      (isEmbedding ? OLLAMA_DEFAULT_EMBED_MODEL : OLLAMA_DEFAULT_CHAT_MODEL);
+    const entry = byModel.get(model) ?? { roles: [], hasEmbedding: false };
+    entry.roles.push(role);
+    if (isEmbedding) entry.hasEmbedding = true;
+    byModel.set(model, entry);
+  }
+  return Array.from(byModel.entries()).map(([model, { roles, hasEmbedding }]) => ({
+    model,
+    roles,
+    kind: hasEmbedding ? "embedding" : "chat",
+  }));
+}
+
+/** Does `wanted` appear in the installed list (tag-aware)? */
+function isModelInstalled(installed: string[], wanted: string): boolean {
+  const w = wanted.trim();
+  if (!w) return false;
+  return installed.some((name) => {
+    if (name === w) return true;
+    if (!w.includes(":") && name.startsWith(`${w}:`)) return true;
+    if (w.endsWith(":latest") && name === w.slice(0, -":latest".length)) return true;
+    if (name.endsWith(":latest") && name.slice(0, -":latest".length) === w) return true;
+    return false;
+  });
+}
+
+function ollamaModelSize(model: string): string | undefined {
+  return OLLAMA_MODEL_SIZES[model] ?? OLLAMA_MODEL_SIZES[model.split(":")[0]];
+}
+
+/** Per-model pull UI state. */
+interface PullEntry {
+  running: boolean;
+  progress?: OllamaPullProgress;
+  done?: boolean;
+  error?: string;
+}
+
+function pullPercent(p: OllamaPullProgress | undefined): number | null {
+  if (!p || typeof p.total !== "number" || p.total <= 0) return null;
+  const completed = typeof p.completed === "number" ? p.completed : 0;
+  return Math.min(100, Math.round((completed / p.total) * 100));
+}
 
 // ───────────────────────── Profile presets ─────────────────────────
 
@@ -224,6 +304,12 @@ export function AiProviderSettings({
   const [migError, setMigError] = useState<string | undefined>();
   const [migAbort, setMigAbort] = useState<(() => void) | null>(null);
 
+  /** Ollama local-model presence + pull state (issue #46). */
+  const [modelStatus, setModelStatus] = useState<OllamaModelStatus | null>(null);
+  const [pullState, setPullState] = useState<Record<string, PullEntry>>({});
+  /** Live abort handles for in-flight pulls — cleaned up on unmount. */
+  const pullAborts = useRef<Record<string, () => void>>({});
+
   // ── Initial load ──
   useEffect(() => {
     let cancelled = false;
@@ -252,6 +338,57 @@ export function AiProviderSettings({
       cancelled = true;
     };
   }, []);
+
+  // ── Ollama model presence: load the live installed-list on mount ──
+  // `installed` + `ollamaReachable` are authoritative (a real /api/tags hit);
+  // the per-model presence we render is computed against the CURRENT in-memory
+  // routing so an unsaved profile switch reflects immediately.
+  const reloadModelStatus = useCallback(async () => {
+    try {
+      setModelStatus(await api.getOllamaModelStatus());
+    } catch {
+      setModelStatus(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reloadModelStatus();
+  }, [reloadModelStatus]);
+
+  // Abort any in-flight pulls when the panel unmounts.
+  useEffect(() => {
+    const aborts = pullAborts.current;
+    return () => {
+      for (const abort of Object.values(aborts)) abort();
+    };
+  }, []);
+
+  function installModel(model: string) {
+    if (pullAborts.current[model]) return; // already pulling
+    setPullState((s) => ({ ...s, [model]: { running: true } }));
+    const abort = api.streamOllamaPull(
+      model,
+      (progress) =>
+        setPullState((s) => ({
+          ...s,
+          [model]: { ...s[model], running: true, progress },
+        })),
+      (result) => {
+        delete pullAborts.current[model];
+        setPullState((s) => ({
+          ...s,
+          [model]: {
+            running: false,
+            progress: s[model]?.progress,
+            done: result.ok,
+            error: result.ok ? undefined : (result.error ?? "Pull fehlgeschlagen"),
+          },
+        }));
+        if (result.ok) void reloadModelStatus();
+      },
+    );
+    pullAborts.current[model] = abort;
+  }
 
   // ── Derived: which providers are usable (enabled & key set) ──
   const enabledProviderNames = useMemo(() => {
@@ -325,7 +462,24 @@ export function AiProviderSettings({
     setTestResults((prev) => ({ ...prev, [key]: { state: "running" } }));
     try {
       const result = await api.testLlmConnection(preset ? `${name}:${preset}` : name);
-      setTestResults((prev) => ({ ...prev, [key]: { state: "idle", result } }));
+      // For Ollama, reachability alone isn't enough (issue #46): verify the
+      // CONFIGURED models are actually present, not just that /api/tags answered.
+      let finalResult = result;
+      if (name === "ollama" && result.ok) {
+        const configured = configuredOllamaModels(routing);
+        const available = result.modelsAvailable ?? [];
+        const missing = configured
+          .map((m) => m.model)
+          .filter((m) => !isModelInstalled(available, m));
+        if (configured.length > 0 && missing.length > 0) {
+          finalResult = {
+            ok: false,
+            latencyMs: result.latencyMs,
+            error: `Modell fehlt: ${missing.join(", ")}`,
+          };
+        }
+      }
+      setTestResults((prev) => ({ ...prev, [key]: { state: "idle", result: finalResult } }));
     } catch (err) {
       setTestResults((prev) => ({
         ...prev,
@@ -754,6 +908,145 @@ export function AiProviderSettings({
           );
         })}
       </div>
+
+      {/* ───── Lokale Modelle (Ollama) ───── */}
+      {(() => {
+        const ollamaModels = configuredOllamaModels(routing);
+        if (ollamaModels.length === 0) return null;
+        const installed = modelStatus?.installed ?? [];
+        const reachable = modelStatus?.ollamaReachable ?? false;
+        const present = (model: string) => reachable && isModelInstalled(installed, model);
+        const missingChat = ollamaModels.filter(
+          (m) => m.kind === "chat" && !present(m.model),
+        );
+
+        return (
+          <>
+            <div style={subhead}>Lokale Modelle (Ollama)</div>
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: C.textDim, marginBottom: 8 }}>
+                Lokal geroutete Rollen brauchen das jeweilige Modell in Ollama
+                {modelStatus?.host ? ` (@ ${modelStatus.host})` : ""}. Das Chat-Modell
+                wird NICHT automatisch geladen — hier siehst du, was fehlt, und
+                installierst es mit einem Klick.
+              </div>
+
+              {modelStatus && !reachable && (
+                <div
+                  style={{
+                    padding: 10,
+                    background: C.elevated,
+                    border: `1px solid ${C.err}`,
+                    borderRadius: 6,
+                    color: C.err,
+                    fontSize: 12,
+                    marginBottom: 10,
+                  }}
+                >
+                  Ollama nicht erreichbar{modelStatus.host ? ` @ ${modelStatus.host}` : ""}
+                  {modelStatus.error ? ` — ${modelStatus.error}` : ""}. Modell-Präsenz nicht
+                  prüfbar.
+                </div>
+              )}
+
+              {reachable && missingChat.length > 0 && (
+                <div
+                  style={{
+                    padding: 10,
+                    background: C.elevated,
+                    border: `1px solid ${C.gold}`,
+                    borderRadius: 6,
+                    color: C.text,
+                    fontSize: 12,
+                    marginBottom: 10,
+                  }}
+                >
+                  <strong style={{ color: C.gold }}>Lokales Chat-Modell fehlt.</strong>{" "}
+                  Privacy-Max / lokales Routing läuft sonst still ins Leere — die
+                  Tasks werden nicht ausgeführt. Fehlend:{" "}
+                  {missingChat.map((m) => m.model).join(", ")}. Unten installieren.
+                </div>
+              )}
+
+              {ollamaModels.map((m) => {
+                const isPresent = present(m.model);
+                const pull = pullState[m.model];
+                const pct = pullPercent(pull?.progress);
+                const size = ollamaModelSize(m.model);
+                return (
+                  <div key={m.model} style={modelRow}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+                      <span style={{ fontFamily: FONT.mono, fontSize: 12, color: C.text }}>
+                        {m.model}
+                      </span>
+                      <span style={{ fontSize: 10, color: C.textFaint, fontFamily: FONT.mono }}>
+                        {m.kind} · {m.roles.join(", ")}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      {isPresent ? (
+                        <span style={{ color: C.ok, fontSize: 11, fontFamily: FONT.mono }}>
+                          <Check size={12} /> installiert
+                        </span>
+                      ) : !reachable ? (
+                        <span style={{ color: C.textFaint, fontSize: 11, fontFamily: FONT.mono }}>
+                          Ollama offline
+                        </span>
+                      ) : pull?.running ? (
+                        <span style={{ color: C.accent, fontSize: 11, fontFamily: FONT.mono }}>
+                          <Loader2 size={11} className="sw-spin" />{" "}
+                          {pull.progress?.status ?? "startet…"}
+                          {pct !== null ? ` ${pct}%` : ""}
+                        </span>
+                      ) : pull?.done ? (
+                        <span style={{ color: C.ok, fontSize: 11, fontFamily: FONT.mono }}>
+                          <Check size={12} /> installiert
+                        </span>
+                      ) : (
+                        <>
+                          <span style={{ color: C.err, fontSize: 11, fontFamily: FONT.mono }}>
+                            <X size={11} /> fehlt
+                          </span>
+                          <button onClick={() => installModel(m.model)} style={smallBtn}>
+                            <Download size={11} /> Modell installieren
+                            {size ? ` (${size})` : ""}
+                          </button>
+                        </>
+                      )}
+                    </div>
+
+                    {pull?.running && pct !== null && (
+                      <div style={{ ...progressBar, gridColumn: "1 / -1" }}>
+                        <div
+                          style={{
+                            width: `${pct}%`,
+                            height: "100%",
+                            background: C.accent,
+                            transition: "width 200ms ease",
+                          }}
+                        />
+                      </div>
+                    )}
+                    {pull?.error && (
+                      <div
+                        style={{
+                          gridColumn: "1 / -1",
+                          color: C.err,
+                          fontSize: 11,
+                          marginTop: 2,
+                        }}
+                      >
+                        Installation fehlgeschlagen: {pull.error}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        );
+      })()}
 
       {/* ───── Embedding Migration ───── */}
       <div style={subhead}>Embedding-Migration</div>
@@ -1335,6 +1628,18 @@ const chipX: React.CSSProperties = {
 
 const budgetRow: React.CSSProperties = {
   marginBottom: 10,
+};
+
+const modelRow: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr auto",
+  gap: 8,
+  alignItems: "center",
+  padding: "8px 10px",
+  marginBottom: 6,
+  background: C.elevated,
+  border: `1px solid ${C.border}`,
+  borderRadius: 6,
 };
 
 const progressBar: React.CSSProperties = {

@@ -10,9 +10,13 @@ import {
 /**
  * Phase A Wave A1 / Story 1 — per-note importance + recency scores.
  *
- * Sidecar to the on-disk vault. Keyed by the note's ULID (frontmatter `id`,
- * NOT the path id used in the HTTP layer — paths move, ULIDs don't). The
- * sleep-agent NREM phase recomputes scores nightly via `recomputeAll`.
+ * Sidecar to the on-disk vault. Keyed by the note's PATH id (`50_decisions/
+ * foo` — the id `listNotes()` returns and the HTTP layer speaks), like every
+ * other derived store. This comment used to claim the frontmatter ULID; that
+ * was true of one writer only, and issue #61 is the bug that claim produced —
+ * the reader looks up by path id, so the nightly scores were never found.
+ * Move-stability is handled by the `onNoteMoved` sink (#55), not by the key.
+ * The sleep-agent NREM phase recomputes scores nightly via `recomputeAll`.
  *
  * `last_accessed` is the "touch" timestamp — reset on note-open / note-edit
  * / new incoming wikilink, then read as `MAX(updated, last_accessed)` as
@@ -21,7 +25,7 @@ import {
 export const noteScoring = pgTable(
   "note_scoring",
   {
-    /** Note's ULID (26 chars, Crockford base32). */
+    /** Vault path id, without the `.md` suffix — see module jsdoc (#61). */
     noteId: text("note_id").primaryKey(),
     /** Composite [0..1] importance score — see scoring/importance.ts. */
     importanceScore: doublePrecision("importance_score").notNull().default(0),

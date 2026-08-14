@@ -9,6 +9,7 @@ import {
 import { DOC_TYPES } from "../../frontmatter/types.js";
 import { resolveVaultProfile } from "../../frontmatter/profiles.js";
 import { isRawImmutable, isHandsOffZone } from "../rawGuard.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
 /**
@@ -100,8 +101,10 @@ export const ulidBackfillPass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
     let backfilled = 0;
+    // #58 — the interesting failure here is a pre-commit-hook rejection: the
+    // reason carries the hook's message, which names the offending field.
+    const errors = createPassErrorLog();
 
     // Story S4 — RAW-Immutabilität. Resolve the active profile once. Under
     // `karpathy` every RAW note is the verbatim Single Source of Truth and
@@ -137,7 +140,7 @@ export const ulidBackfillPass: SleepPass = {
       }
 
       if (candidates.length === 0) {
-        return { processed: 0, errors: 0, notes: "all notes have ULIDs" };
+        return errors.result(0, "all notes have ULIDs");
       }
 
       // Pass 2: backfill. saveNote does its own validation; per-note errors
@@ -201,7 +204,7 @@ export const ulidBackfillPass: SleepPass = {
           backfilled++;
           processed++;
         } catch (err) {
-          errors++;
+          errors.record(c.noteId, err);
           console.warn(
             `[sleep-agent] ulid-backfill failed for "${c.noteId}": ${
               err instanceof Error ? err.message : String(err)
@@ -210,17 +213,13 @@ export const ulidBackfillPass: SleepPass = {
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `backfilled ${backfilled} legacy notes with ULID + type + updated`,
-      };
+        `backfilled ${backfilled} legacy notes with ULID + type + updated`,
+      );
     } catch (err) {
-      return {
-        processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(err).slice(0, 200)}`,
-      };
+      errors.recordPassScoped(err);
+      return errors.result(processed, `pass-error: ${String(err).slice(0, 200)}`);
     }
   },
 };

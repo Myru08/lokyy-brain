@@ -19,13 +19,18 @@ import {
  * a pre-walked signal list rather than walking the vault itself — that
  * keeps the scoring module decoupled from `notesService` / `graphService`.
  *
- * `noteId` here is the note's ULID (frontmatter `id`), not the path id.
+ * `noteId` is the vault PATH id (`50_decisions/foo`) on EVERY route here,
+ * including the `notes[].noteId` entries of recompute-all — issue #61. It
+ * used to be the frontmatter ULID for recompute-all only, which meant the
+ * scores that endpoint wrote landed in a key space no reader ever queried.
+ * The routes pass the id straight through, so a caller sending ULIDs still
+ * gets rows written — just orphaned ones nothing will read.
  */
 export const scoringRoutes = new Hono();
 
-// noteId can contain "/" only if a caller passes the path id by mistake —
-// we accept it as a wildcard so the route still binds, but the scoring
-// layer keys on the ULID and will simply return null for path-shaped ids.
+// noteId contains "/" in the normal case — path ids are hierarchical — so the
+// wildcard is what makes the route usable, not a concession to callers who
+// pass the wrong thing.
 scoringRoutes.get("/:noteId{.+}", async (c) => {
   const noteId = c.req.param("noteId");
   const row = await getScoring(noteId);

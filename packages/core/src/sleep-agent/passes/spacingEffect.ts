@@ -1,4 +1,5 @@
 import { getSurfaceRecommendations } from "../../scoring/workingMemory.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepPassResult } from "../types.js";
 
 /**
@@ -27,21 +28,29 @@ import type { SleepPass, SleepPassResult } from "../types.js";
  * Errors inside `getSurfaceRecommendations` already log + swallow per-hot
  * iteration; this pass adds an outer try/catch so a catastrophic failure
  * (e.g. DB down) just records `errors: 1` instead of aborting the run.
+ *
+ * #58 note: this pass has exactly one failure mode and it is pass-wide by
+ * construction — the per-hot-note failures never surface here (the callee
+ * swallows them), so there is no note id to attribute. Hence the sole sample
+ * is pass-scoped. Making the per-hot failures visible means changing
+ * `getSurfaceRecommendations`, which is out of this pass's reach.
  */
 export const spacingEffectPass: SleepPass = {
   name: "spacing-effect-surfacing",
   phases: ["nrem", "rem"],
   async run(): Promise<SleepPassResult> {
+    const errors = createPassErrorLog();
     try {
       const recs = await getSurfaceRecommendations(7, 30, 25);
-      return { processed: recs.length, errors: 0 };
+      return errors.result(recs.length);
     } catch (err) {
       console.warn(
         `[sleep-agent] spacing-effect-surfacing failed: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      return { processed: 0, errors: 1 };
+      errors.recordPassScoped(err);
+      return errors.result(0);
     }
   },
 };

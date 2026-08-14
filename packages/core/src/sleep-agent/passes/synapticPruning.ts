@@ -5,6 +5,7 @@ import { edgeWeights } from "../../db/schema/edgeWeights.js";
 import { buildGraph } from "../../graph/graphService.js";
 import { coRetrievalPairs } from "../../scoring/retrievalLog.js";
 import { getScoring } from "../../scoring/store.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepRun, SleepPassResult } from "../types.js";
 
 /**
@@ -87,8 +88,11 @@ export const synapticPruningPass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
     let demoted = 0;
+    // #58 — this pass walks the whole graph, so it is the one most likely to
+    // hit the sample cap. That is by design: `errors` keeps the true total and
+    // twenty edges are enough to see whether one note or the whole DB broke.
+    const errors = createPassErrorLog();
     let pruned = 0;
     let strengthened = 0;
 
@@ -252,7 +256,12 @@ export const synapticPruningPass: SleepPass = {
           else demoted++;
           processed++;
         } catch (err) {
-          errors++;
+          // Keyed on the edge's SOURCE note — that's the file an operator can
+          // open; the target is named in the reason.
+          errors.record(
+            edge.source,
+            `edge → ${edge.target}: ${err instanceof Error ? err.message : String(err)}`,
+          );
           console.warn(
             `[sleep-agent] synaptic-pruning edge ${edge.source}→${edge.target} failed: ${
               err instanceof Error ? err.message : String(err)
@@ -261,17 +270,16 @@ export const synapticPruningPass: SleepPass = {
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `${demoted} demoted, ${pruned} pruned to graveyard, ${strengthened} recovered from graveyard`,
-      };
+        `${demoted} demoted, ${pruned} pruned to graveyard, ${strengthened} recovered from graveyard`,
+      );
     } catch (err) {
-      return {
+      errors.recordPassScoped(err);
+      return errors.result(
         processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`,
-      };
+        `pass-error: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`,
+      );
     }
   },
 };

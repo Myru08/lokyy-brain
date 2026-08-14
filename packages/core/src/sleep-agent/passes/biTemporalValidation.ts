@@ -3,6 +3,7 @@ import { and, asc, isNull, lt } from "drizzle-orm";
 import { database } from "../../db/index.js";
 import { temporalEdges } from "../../db/schema/temporalEdges.js";
 import { markEdgeStale } from "../../graph/temporalEdges.js";
+import { createPassErrorLog } from "../errorSamples.js";
 import type { SleepPass, SleepPassResult } from "../types.js";
 
 /**
@@ -48,8 +49,12 @@ export const biTemporalValidationPass: SleepPass = {
 
   async run(): Promise<SleepPassResult> {
     let processed = 0;
-    let errors = 0;
     let flagged = 0;
+    // #58 — an edge is not a note, so the sample is keyed on the edge's SOURCE
+    // note (the file an operator would open to look at it) and names the edge
+    // id in the reason. Keying on the edge id alone would produce a sample
+    // nobody can navigate to.
+    const errors = createPassErrorLog();
 
     try {
       const cutoff = new Date(Date.now() - STALE_AFTER_DAYS * 86_400_000);
@@ -85,22 +90,20 @@ export const biTemporalValidationPass: SleepPass = {
             `t_valid ${ageDays}d ago — older than ${STALE_AFTER_DAYS}d threshold; no recent reinforcement`,
           );
           flagged++;
-        } catch {
-          errors++;
+        } catch (err) {
+          errors.record(row.fromNoteId, `edge ${row.id} → ${row.toNoteId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`);
         }
       }
 
-      return {
+      return errors.result(
         processed,
-        errors,
-        notes: `${flagged} edges flagged stale (>${STALE_AFTER_DAYS}d t_valid, max ${MAX_PER_RUN}/run)`,
-      };
+        `${flagged} edges flagged stale (>${STALE_AFTER_DAYS}d t_valid, max ${MAX_PER_RUN}/run)`,
+      );
     } catch (e) {
-      return {
-        processed,
-        errors: errors + 1,
-        notes: `pass-error: ${String(e).slice(0, 200)}`,
-      };
+      errors.recordPassScoped(e);
+      return errors.result(processed, `pass-error: ${String(e).slice(0, 200)}`);
     }
   },
 };

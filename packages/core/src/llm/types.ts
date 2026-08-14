@@ -110,7 +110,11 @@ export interface ProviderConfig {
   defaultModel?: string;
   enabled: boolean;
   monthlyBudgetUsd?: number;
-  /** Request-Timeout in ms. Lokale CPU-Modelle brauchen deutlich mehr als die 60s Default. */
+  /**
+   * Per-request timeout in ms. Nur die lokalen Provider (`ollama`,
+   * `local-reranker`) werten ihn aus; ohne Wert greift dort
+   * `LOKYY_OLLAMA_TIMEOUT_MS` bzw. der Provider-Default (issue #54).
+   */
   timeoutMs?: number;
 }
 

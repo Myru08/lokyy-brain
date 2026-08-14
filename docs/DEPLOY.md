@@ -142,7 +142,18 @@ Optional:
   funktioniert weiterhin per Bearer-Token). Willst du den claude.ai-Connector
   nutzen, setze beide — für das Signing-Secret ein eigenes `openssl rand -hex 32`.
 - `OLLAMA_PULL_CHAT=true` to pre-pull `llama3.1:8b` (~5 GB; only if you want
-  fully local LLM and have the RAM).
+  fully local LLM and have the RAM). This is the model the **Privacy-Max**
+  profile (all 10 roles local, zero cloud) routes every chat/classify/rewrite
+  role at. If you leave `OLLAMA_PULL_CHAT=false`, the chat model is NOT pulled
+  and Privacy-Max would silently no-op — but you don't have to redeploy: the
+  **Einstellungen → AI-Provider → Lokale Modelle (Ollama)** panel shows any
+  configured-but-missing model and installs it with one click (progress bar
+  included). `GET /api/diagnostics` reports the same gap as an actionable
+  finding. Plan for ~5 GB disk + ~8 GB RAM for `llama3.1:8b`.
+- `LOKYY_OLLAMA_TIMEOUT_MS` — Timeout pro Ollama-Request in Millisekunden
+  (Default 300000 = 5 min). Nur nötig, wenn lokale LLM-Rollen mit
+  `This operation was aborted` abbrechen; siehe
+  [Lokale Inferenz ist langsam](#lokale-inferenz-ist-langsam--timeout-und-ram-privacy-max).
 - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `COHERE_API_KEY` — can also be added
   later via the Settings UI; the DB row wins over the env var.
 
@@ -286,6 +297,49 @@ Alternatively rely on local Ollama if `OLLAMA_PULL_CHAT=true` was set.
 The Settings UI calls `PUT /api/llm/config` which persists keys to
 `llm_providers` table and re-initializes the runtime registry.
 
+### Lokale Inferenz ist langsam — Timeout und RAM (Privacy Max)
+
+Lokale und Cloud-Inferenz liegen eine Größenordnung auseinander. Ein
+Cloud-Modell antwortet in ein bis drei Sekunden; dasselbe `llama3.1:8b` auf
+einer CPU rechnet jedes Token selbst — ohne GPU-Durchreichung sind **60 bis
+120 Sekunden pro Aufruf normal**, nicht kaputt. Gemessen auf einer
+Beta-Installation (Docker Desktop, Apple Silicon, keine GPU im Container):
+**76,6 s für einen einzigen Aufruf.**
+
+Deshalb hat der Ollama-Provider einen eigenen Default von **300 000 ms
+(5 Minuten)** statt der 60 s, die für Cloud-Provider passen.
+
+**Wann anheben:** wenn im Brain-Log Zeilen wie
+
+```
+[sleep-agent] topic-synthesis cluster "…" failed: This operation was aborted
+```
+
+stehen — das ist ein abgelaufener Timeout, kein Modellfehler. Dann
+
+```
+LOKYY_OLLAMA_TIMEOUT_MS=600000
+```
+
+setzen (Wert in Millisekunden) und den Brain-Container neu starten. Die
+Variable gilt für alle Ollama-Aufrufe inklusive des lokalen Rerankers. Ein
+ungültiger Wert (leer, nicht-numerisch, ≤ 0) wird ignoriert, der Default
+greift, der Start bricht **nicht** ab.
+
+**RAM ist die eigentliche Ursache.** `llama3.1:8b` belegt allein ~4,9 GB.
+Wer Docker Desktop bei den Standardeinstellungen lässt (oft 7–8 GB für die
+gesamte VM), betreibt zusätzlich Postgres, Forgejo und Brain im selben
+Speicher — das Modell wird dann teilweise ausgelagert und jeder Aufruf
+dauert ein Vielfaches. Für **Privacy Max** (alle LLM-Rollen lokal):
+
+- **Docker Desktop → Settings → Resources → Memory: mindestens 12 GB**
+  (16 GB empfohlen), CPUs so hoch wie die Maschine hergibt.
+- ~5 GB freier Plattenplatz allein für das Chat-Modell.
+- Alternativ ein kleineres Modell wählen (`llama3.2:3b`, ~2 GB) — spürbar
+  schneller, aber schwächer bei Topic-Synthese.
+- Wer eine NVIDIA-GPU durchreichen kann, löst das Zeitproblem vollständig;
+  am RAM-Bedarf des Modells ändert das nichts.
+
 ---
 
 ## 11. Connect AI clients
@@ -342,6 +396,13 @@ die Domain muss direkt auf `lokyy-brain:8787` zeigen.
 **`pg_search` extension missing** — you're not on the ParadeDB image. Confirm
 `postgres.image = paradedb/paradedb:latest-pg17`. The first migration that needs
 it is `0004_pg_search`.
+
+**`This operation was aborted` in den Sleep-Agent-Logs** — der Ollama-Timeout
+ist abgelaufen, das Modell rechnet schlicht länger als erlaubt. Typisch auf
+CPU-only-Installationen mit knappem Docker-Speicher.
+`LOKYY_OLLAMA_TIMEOUT_MS` anheben und Docker mehr RAM geben — Herleitung und
+Richtwerte in
+[Lokale Inferenz ist langsam](#lokale-inferenz-ist-langsam--timeout-und-ram-privacy-max).
 
 **Ollama init never finishes** — first model pull is ~270 MB
 (`nomic-embed-text`) and can take several minutes on slow uplinks. Re-run

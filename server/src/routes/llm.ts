@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { streamSSE } from "hono/streaming";
 import {
   getLlmProviders,
   setLlmProviders,
@@ -8,9 +9,12 @@ import {
   initLlmFromConfig,
   llmRegistry,
   budgetTracker,
+  getOllamaModelStatus,
+  pullOllamaModel,
   OPENAI_COMPAT_PRESETS,
   type ProviderConfig,
   type LlmRoutingConfig,
+  type OllamaPullProgress,
 } from "@lokyy/core";
 
 /**
@@ -133,4 +137,75 @@ llmRoutes.post("/test-connection", async (c) => {
 
 llmRoutes.get("/presets/openai-compat", (c) => {
   return c.json({ presets: Object.values(OPENAI_COMPAT_PRESETS) });
+});
+
+/* ──── Ollama local-model presence + pull (issue #46) ──── */
+
+/**
+ * GET /api/llm/models/status — which of the CONFIGURED Ollama models (chat +
+ * embedding, per the routing config) are actually installed in Ollama. This is
+ * the check Privacy-Max needs: it routes chat roles at `llama3.1:8b`, a model
+ * that is never auto-pulled, so its absence used to be invisible.
+ */
+llmRoutes.get("/models/status", async (c) => {
+  const status = await getOllamaModelStatus({ envHost: process.env.OLLAMA_HOST });
+  return c.json(status);
+});
+
+/**
+ * GET /api/llm/models/pull?model=<name> — pull one model into the configured
+ * Ollama host, streaming progress via SSE. Ollama's `/api/pull` itself streams
+ * NDJSON; we relay the latest snapshot ~every 400ms (same cadence style as the
+ * embedding-migration stream) plus a terminal `done`/`error` event.
+ *
+ * GET (not POST) so the browser `EventSource` can consume it; the model name
+ * rides in the query string. The pull is aborted if the client disconnects.
+ */
+llmRoutes.get("/models/pull", (c) => {
+  const model = c.req.query("model");
+  if (!model || model.trim().length === 0) {
+    return c.json({ error: "model-required" }, 400);
+  }
+  const envHost = process.env.OLLAMA_HOST;
+
+  return streamSSE(c, async (stream) => {
+    let latest: OllamaPullProgress | null = null;
+    let done = false;
+    let outcome: { ok: true } | { ok: false; error: string } = {
+      ok: false,
+      error: "stream ended before completion",
+    };
+    const ac = new AbortController();
+    stream.onAbort(() => ac.abort());
+
+    const pull = pullOllamaModel(model, (p) => {
+      latest = p;
+    }, { envHost, signal: ac.signal })
+      .then(() => {
+        outcome = { ok: true };
+        done = true;
+      })
+      .catch((err: unknown) => {
+        outcome = { ok: false, error: err instanceof Error ? err.message : String(err) };
+        done = true;
+      });
+
+    // Relay snapshots until the pull settles.
+    while (!done) {
+      if (latest) {
+        await stream.writeSSE({ event: "progress", data: JSON.stringify(latest) });
+      }
+      await stream.sleep(400);
+    }
+    // Final snapshot + terminal event.
+    if (latest) {
+      await stream.writeSSE({ event: "progress", data: JSON.stringify(latest) });
+    }
+    if (outcome.ok) {
+      await stream.writeSSE({ event: "done", data: JSON.stringify({ model, status: "success" }) });
+    } else {
+      await stream.writeSSE({ event: "error", data: JSON.stringify({ error: outcome.error }) });
+    }
+    await pull;
+  });
 });

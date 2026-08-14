@@ -267,6 +267,25 @@ export class Tier2Provider implements MemoryProvider {
   }
 
   /**
+   * Bulk-Gegenstück zu {@link removeNote} (Issue #56, AC#6). Ein gelöschter
+   * Ordner bringt N Notizen auf einmal mit; N Einzel-DELETEs wären genau der
+   * Schreib-Sturm, der am 2026-05-28 den Pool leergefahren hat. Eine Query pro
+   * Chunk hält die Query-Zahl unabhängig von der Ordnergröße.
+   *
+   * Die IDs gehen als EIN gebundener `text[]`-Parameter rein (`sql.param`) —
+   * ein blankes `${array}` würde drizzle 0.36.4 zu einer Placeholder-Liste
+   * expandieren (und für `[]` zu `()`, was Postgres mit 42601 ablehnt).
+   */
+  async removeNotes(noteIds: string[]): Promise<void> {
+    if (noteIds.length === 0) return;
+    await database().execute(sql`
+      DELETE FROM note_embeddings
+       WHERE vault_id = ${this.vaultId}
+         AND note_id = ANY(${sql.param(noteIds)}::text[])
+    `);
+  }
+
+  /**
    * Search across all chunks in the active generation. The DB returns up
    * to `limit * 4` rows (because multiple chunks can share a note_id),
    * then we dedupe in TS keeping the max-score chunk per note.
