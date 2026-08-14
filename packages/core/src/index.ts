@@ -561,6 +561,7 @@ export {
   type SleepRun,
   type SleepPass,
   type SleepPassResult,
+  type PassErrorSample,
 } from "./sleep-agent/index.js";
 
 // ─── ULID-Backfill (Phase D Wave D1 / Story 1) ──────────────────────────

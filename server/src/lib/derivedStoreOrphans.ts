@@ -22,23 +22,26 @@ import postgres from "postgres";
  *      nicht Teil hiervon. Kein hier erzeugtes Statement schreibt.
  *
  * WARUM ZWEI ID-RÄUME IN DER BEKANNT-LISTE (der nicht offensichtliche Teil):
- * Die Stores sind sich über den ID-Raum NICHT einig, und `note_scoring` ist
- * sogar in sich uneinheitlich:
+ * Die Stores sind sich über den ID-Raum nicht durchgängig einig gewesen, und
+ * `note_scoring` war sogar in sich uneinheitlich:
  *
  *   - `importanceRecompute` (der Haupt-Schreiber, läuft über den ganzen Vault)
- *     schreibt die Frontmatter-ULID
- *     (`packages/core/src/sleep-agent/passes/importanceRecompute.ts:58`).
+ *     schrieb die Frontmatter-ULID — bis #61. Seither gibt der Pass
+ *     `summary.id`, also die Pfad-ID, weiter; die ULID-Zeilen von vorher
+ *     stehen aber noch in der Tabelle.
  *   - `logRetrieval` → `touchView` schreibt in dieselbe Tabelle die Pfad-ID
  *     (`packages/core/src/scoring/retrievalLog.ts:122`, gespeist aus
  *     `server/src/routes/notes.ts:247`).
  *
- * Wer nur gegen die Pfad-IDs prüft, meldet nach dem ersten vollständigen
- * Nachtlauf JEDE `note_scoring`-Zeile als verwaist — ein Instrument, das
- * 100 % Fehlalarm liefert, ist schlimmer als keines. Die Bekannt-Liste enthält
- * deshalb BEIDE Räume, und eine Referenz gilt als bekannt, wenn sie in
- * IRGENDEINEM davon vorkommt. Diese Unschärfe geht ausschließlich in die
- * sichere Richtung: sie kann Verwaisungen übersehen, aber nie eine existierende
- * Notiz fälschlich anklagen.
+ * Vor #61 hätte eine reine Pfad-Prüfung nach dem ersten vollständigen
+ * Nachtlauf JEDE `note_scoring`-Zeile als verwaist gemeldet — ein Instrument,
+ * das 100 % Fehlalarm liefert, ist schlimmer als keines. Heute wäre es der
+ * umgekehrte Fehler: die Alt-Zeilen unter ULIDs SIND verwaist, aber solange
+ * beide Räume in der Bekannt-Liste stehen, bleiben sie unentdeckt. Aufgeräumt
+ * werden sie in #57; bis dahin bleibt die Zwei-Raum-Prüfung stehen, weil ihre
+ * Unschärfe ausschließlich in die sichere Richtung geht: sie kann
+ * Verwaisungen übersehen, aber nie eine existierende Notiz fälschlich
+ * anklagen.
  */
 
 /** Ein abgeleiteter Store und die Spalten, die eine echte Notiz-Referenz halten. */
@@ -68,8 +71,16 @@ export const DERIVED_STORES: DerivedStore[] = [
   {
     table: "note_scoring",
     label: "Wichtigkeits-/Recency-Scores",
-    // Gemischter ID-Raum (ULID vom Sleep-Pass, Pfad-ID von touchView) — siehe
-    // Modul-Kopf. Genau deshalb prüfen wir gegen beide Räume.
+    // ÜBERGANGSZUSTAND, nicht Dauerzustand (#61): seit dem Fix schreiben ALLE
+    // Schreibstellen die Pfad-ID — `importanceRecompute` gibt jetzt
+    // `summary.id` statt der Frontmatter-ULID weiter. Die ULID-Zeilen aus der
+    // Zeit davor liegen aber noch in der Tabelle und sind genau das, was
+    // dieser Check sichtbar machen soll; aufgeräumt werden sie in #57.
+    // Die Prüfung gegen BEIDE Räume (siehe Modul-Kopf) bleibt deshalb
+    // vorerst richtig. Wenn #57 durch ist und keine ULID-Zeile mehr existiert,
+    // kann `note_scoring` auf die reine Pfad-Prüfung zurückfallen — dann wird
+    // die Zwei-Raum-Logik nur noch von der Vorsicht getragen, nicht mehr von
+    // einer echten Schreibstelle.
     columns: ["note_id"],
   },
   {
