@@ -20,7 +20,7 @@ aktuelle Version steht immer ganz oben.
 
 ### Behoben
 - **Gelöschte und verschobene Notizen hinterlassen keine Reste mehr in der semantischen Suche.** Bisher wurde nur der Volltext-Index aufgeräumt — beim Verschieben und im Papierkorb genauso. Falsche Treffer gab es nicht, aber der Ballast wuchs mit jeder Löschung.
-- **Fehlende semantische Einträge lassen sich endlich nachziehen.** War der Embedding-Dienst beim Speichern nicht erreichbar, blieb die Notiz dauerhaft ohne Eintrag — es half nur erneutes Speichern, Notiz für Notiz. Jetzt holt der Nachtlauf das nach, und du kannst es selbst anstossen.
+- **Fehlende semantische Einträge lassen sich endlich nachziehen.** War der Embedding-Dienst beim Speichern nicht erreichbar, blieb die Notiz dauerhaft ohne Eintrag — es half nur erneutes Speichern, Notiz für Notiz. Jetzt holt der Nachtlauf das nach, und du kannst es selbst anstoßen.
 - **Die Diagnose zeigt jetzt, ob die semantische Suche überhaupt befüllt ist.** Unter *Einstellungen → Diagnose* steht neu „note_embeddings befüllt“. Der Check sagt ausdrücklich dazu, dass „Suchindex neu aufbauen“ hier nicht hilft — das baut nur den Volltext-Index.
 - **Der Nachtlauf verschweigt keine Fehler mehr.** Die Entitäten-Erkennung brach bei längeren Notizen mitten in der Antwort ab und zählte das stumm mit. Jetzt reicht der Platz, und wenn doch etwas abbricht, stehen Grund und Notiz im Protokoll.
 - **Lokale KI-Modelle bekommen mehr Zeit.** Ohne Grafikkarte dauert ein Modellaufruf oft länger als die bisherige feste 60-Sekunden-Grenze — der Nachtlauf-Schritt konnte also nie fertig werden. Jetzt sind es fünf Minuten, einstellbar über `LOKYY_OLLAMA_TIMEOUT_MS`.
@@ -43,7 +43,7 @@ Alle fünf Punkte gehen auf einen ausführlichen Testbericht aus der Community z
 ### Behoben
 - **Sehr lange Dokumente landen jetzt vollständig in der intelligenten Suche.** Große Notizen waren zu groß fürs Suchmodell und wurden dabei komplett übersprungen — Ursache war eine zu optimistische Größen-Schätzung (deutsche/technische Texte zählen anders als englische Prosa). Lokyy rechnet jetzt konservativ und zerlegt lange Notizen sauber; nichts fällt mehr raus.
 - **Bei mehr als einem Vault war unklar, welcher gesucht wurde.** Eine Zweitregistrierung konnte still einen zweiten Datenspeicher anlegen, danach zeigten Suche und Ablage evtl. auf verschiedene. Jetzt wählt Lokyy immer eindeutig denselben Vault für beides; bei mehreren weist die Oberfläche darauf hin.
-- **Über die App-/Weboberfläche wurden bisher gar keine semantischen Einträge gespeichert** (ein interner Verknüpfungsfehler mit dem gewählten Vault) — mitbehoben. Die semantische Suche funktioniert damit auf allen Wegen, nicht nur über die KI. *(Korrektur, nachgetragen mit v1.17: Für ältere betroffene Notizen gab es damals noch keinen Nachzieh-Weg — die Zusage an dieser Stelle war falsch. Seit v1.17 holt der Nachtlauf-Schritt „embedding-backfill“ das tatsächlich nach, und du kannst es auch selbst anstossen.)*
+- **Über die App-/Weboberfläche wurden bisher gar keine semantischen Einträge gespeichert** (ein interner Verknüpfungsfehler mit dem gewählten Vault) — mitbehoben. Die semantische Suche funktioniert damit auf allen Wegen, nicht nur über die KI. *(Korrektur, nachgetragen mit v1.17: Für ältere betroffene Notizen gab es damals noch keinen Nachzieh-Weg — die Zusage an dieser Stelle war falsch. Seit v1.17 holt der Nachtlauf-Schritt „embedding-backfill“ das tatsächlich nach, und du kannst es auch selbst anstoßen.)*
 
 ---
 
