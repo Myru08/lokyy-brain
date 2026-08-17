@@ -70,8 +70,12 @@ function note(opts: {
   body?: string;
   aliases?: string[];
   forgotten?: boolean;
+  /** Eigene ULID — nötig, sobald ein Test per `[[ULID]]` verlinkt. */
+  ulid?: string;
+  /** Notiz ohne H1: der Titel lebt dann NUR im Frontmatter. */
+  noH1?: boolean;
 }): string {
-  const ulid = "01JXYZABCDEFGHJKMNPQRSTVWX";
+  const ulid = opts.ulid ?? "01JXYZABCDEFGHJKMNPQRSTVWX";
   const lines = [
     "---",
     `id: ${ulid}`,
@@ -82,7 +86,9 @@ function note(opts: {
   ];
   if (opts.aliases?.length) lines.push(`aliases: [${opts.aliases.join(", ")}]`);
   if (opts.forgotten) lines.push("forgotten: true");
-  lines.push("---", "", `# ${opts.title}`, "", opts.body ?? "");
+  lines.push("---", "");
+  if (!opts.noH1) lines.push(`# ${opts.title}`, "");
+  lines.push(opts.body ?? "");
   return lines.join("\n");
 }
 
@@ -211,5 +217,149 @@ describe("graphService.findBrokenLinks (Story 10.16)", () => {
     const hit = broken.find((b) => b.sourceId === "aliased-dead");
     expect(hit).toBeDefined();
     expect(hit!.linkText).toBe("nope-target");
+  });
+});
+
+/**
+ * Regression: der Resolver kannte weniger Identitäten einer Notiz, als das
+ * System vergibt. Die Topic-Synthese verlinkt ihre Quellen per ULID, und
+ * Notizen ohne H1 tragen ihren Titel nur im Frontmatter — beides galt als
+ * „defekter Link", obwohl das Ziel existiert.
+ */
+describe("graphService.findBrokenLinks — ULID + Frontmatter-Titel", () => {
+  const TARGET_ULID = "01KZ8XK3H739ZXDAB4DXJ6FGFB";
+
+  it("does NOT report a wikilink that names the target's ULID", async () => {
+    await save(
+      "ulid-target.md",
+      note({ id: "ulid-target", title: "Ulid Target", ulid: TARGET_ULID }),
+      "seed ulid-target",
+    );
+    await save(
+      "links-by-ulid.md",
+      note({
+        id: "links-by-ulid",
+        title: "Links By Ulid",
+        ulid: "01KZ4GZ38BBTT07VXD69TK54SX",
+        body: `Source, as topic-synthesis writes it: [[${TARGET_ULID}]].`,
+      }),
+      "seed by-ulid",
+    );
+
+    const broken = await findBrokenLinks();
+    expect(broken.some((b) => b.sourceId === "links-by-ulid")).toBe(false);
+  });
+
+  it("does NOT report a wikilink that names the frontmatter title of an H1-less note", async () => {
+    await save(
+      "50_decisions/adr-042-some-slug.md",
+      note({
+        id: "50_decisions/adr-042-some-slug",
+        title: "ADR-042 — Ein Titel nur im Frontmatter",
+        ulid: "01KZW0FQQP2Z40TPZ9C5CK0R2J",
+        noH1: true,
+      }),
+      "seed adr",
+    );
+    await save(
+      "links-by-fm-title.md",
+      note({
+        id: "links-by-fm-title",
+        title: "Links By FM Title",
+        ulid: "01KZVNX10AMRTJ83AHRH6DKNFX",
+        body: "Siehe [[ADR-042 — Ein Titel nur im Frontmatter]].",
+      }),
+      "seed by-fm-title",
+    );
+
+    const broken = await findBrokenLinks();
+    expect(broken.some((b) => b.sourceId === "links-by-fm-title")).toBe(false);
+  });
+
+  it("still reports a ULID that belongs to no note", async () => {
+    await save(
+      "links-to-unknown-ulid.md",
+      note({
+        id: "links-to-unknown-ulid",
+        title: "Links To Unknown Ulid",
+        ulid: "01KZFNGMEK5G27Z4MXXSY28GJ1",
+        body: "Dangling: [[01KZZZZZZZZZZZZZZZZZZZZZZZ]].",
+      }),
+      "seed unknown-ulid",
+    );
+
+    const broken = await findBrokenLinks();
+    const hit = broken.find((b) => b.sourceId === "links-to-unknown-ulid");
+    expect(hit).toBeDefined();
+    expect(hit!.linkText).toBe("01KZZZZZZZZZZZZZZZZZZZZZZZ");
+  });
+
+  it("keeps forget() semantics — a forgotten note stays unreachable by ULID", async () => {
+    const GHOST_ULID = "01KZGH0ST7Z39ZXDAB4DXJ6FGF";
+    await save(
+      "ghost-ulid.md",
+      note({
+        id: "ghost-ulid",
+        title: "Ghost With Ulid",
+        ulid: GHOST_ULID,
+        forgotten: true,
+      }),
+      "seed ghost-ulid",
+    );
+    await save(
+      "links-to-ghost-ulid.md",
+      note({
+        id: "links-to-ghost-ulid",
+        title: "Links To Ghost Ulid",
+        ulid: "01KZWHDX2WV89AYSH9JQJKBW5E",
+        body: `Points at a forgotten note by id: [[${GHOST_ULID}]].`,
+      }),
+      "seed to-ghost-ulid",
+    );
+
+    const broken = await findBrokenLinks();
+    const hit = broken.find(
+      (b) => b.sourceId === "links-to-ghost-ulid" && b.linkText === GHOST_ULID,
+    );
+    expect(hit).toBeDefined();
+  });
+});
+
+/**
+ * Vorlagen tragen absichtliche Platzhalter (`[[Wikilink]]`, `[[ ]]`). Sie sind
+ * keine Notizen und werden als Link-QUELLE nicht geprüft — als Ziel bleiben
+ * sie auflösbar.
+ */
+describe("graphService.findBrokenLinks — Vorlagen", () => {
+  it("does NOT report placeholder links inside 00_meta/templates/", async () => {
+    await save(
+      "00_meta/templates/note.md",
+      note({
+        id: "00_meta/templates/note",
+        title: "Note Template",
+        ulid: "01KZTEMP7ATE39ZXDAB4DXJ6FG",
+        body: "Verwandt: [[Wikilink]]\n- [[ ]]",
+      }),
+      "seed template",
+    );
+
+    const broken = await findBrokenLinks();
+    expect(broken.some((b) => b.sourceId.startsWith("00_meta/templates/"))).toBe(false);
+  });
+
+  it("still resolves links that POINT AT a template", async () => {
+    await save(
+      "links-to-template.md",
+      note({
+        id: "links-to-template",
+        title: "Links To Template",
+        ulid: "01KZ2NK5T0TP79ZXDAB4DXJ6FG",
+        body: "Die Vorlage: [[Note Template]].",
+      }),
+      "seed to-template",
+    );
+
+    const broken = await findBrokenLinks();
+    expect(broken.some((b) => b.sourceId === "links-to-template")).toBe(false);
   });
 });

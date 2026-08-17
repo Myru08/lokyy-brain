@@ -113,7 +113,10 @@ Given these N related notes, write a concise (200-400 word) Markdown summary tha
 1. Names the topic in the title (H1)
 2. Identifies the central concepts shared across the notes
 3. Highlights any contradictions or open questions
-4. Lists each source note with a Wikilink-reference: [[noteId]]
+4. Lists each source note with a Wikilink-reference. Each note below starts
+   with its identifier in square brackets — use EXACTLY that string:
+   a note shown as "[20_notes/my-note] My Note" is linked as [[20_notes/my-note]].
+   Never invent an identifier and never use one taken from the note text.
 5. Is written in the SAME LANGUAGE as the source notes (German notes produce a German summary). Never translate.
 
 DO NOT invent facts. DO NOT add speculation. Stay grounded in the provided notes.`;
@@ -197,9 +200,26 @@ export const topicSynthesisPass: SleepPass = {
               // it IS the topic's summary. Feeding it back produces a summary
               // of a summary (and a note that wikilinks itself).
               if (isOwnTopicNote(n.body ?? "")) return null;
+              // Frontmatter gehört NICHT in den Prompt. Zwei Gründe:
+              //   1. Es frisst das knappe MAX_BODY_CHARS-Budget — bei einer
+              //      typischen Notiz sind die ersten ~250 Zeichen reines YAML,
+              //      der eigentliche Inhalt wird abgeschnitten.
+              //   2. Es enthält `id: <ULID>`. Nach einer "noteId" für die
+              //      Quellen-Wikilinks gefragt, greift das Modell genau dieses
+              //      Feld auf und schreibt `[[01KZ8X…]]` — eine Form, die der
+              //      Graph-Resolver früher nicht auflöste. Ergebnis waren
+              //      selbst erzeugte Links, die der Health-Check anschließend
+              //      als „defekt" meldete.
+              // Die kanonische ID steht ohnehin als `[${nid}]` vor dem Block.
+              let content = n.body ?? "";
+              try {
+                content = parseFrontmatter(content).body;
+              } catch {
+                // Malformed YAML — lieber der Rohtext als gar kein Kontext.
+              }
               return {
                 id: nid,
-                block: `[${nid}] ${n.title}\n${(n.body ?? "").slice(0, MAX_BODY_CHARS)}`,
+                block: `[${nid}] ${n.title}\n${content.trimStart().slice(0, MAX_BODY_CHARS)}`,
               };
             }),
           );

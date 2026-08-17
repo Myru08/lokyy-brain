@@ -5,6 +5,11 @@ import { coreConfig } from "../util/coreConfig.js";
 import { pull } from "../git/gitService.js";
 import { parseFrontmatter } from "../frontmatter/index.js";
 import { isForgotten } from "../frontmatter/types.js";
+import {
+  buildResolutionIndex,
+  resolveWikilink,
+  type ResolvableNote,
+} from "./linkResolution.js";
 
 /** Re-exports — used by backlinks() below to traverse the vault. */
 
@@ -110,17 +115,7 @@ export async function buildGraph(): Promise<GraphData> {
   const files = await walk(c.vaultDir);
 
   const nodes: GraphNode[] = [];
-  const byTitle = new Map<string, string>();
-  // Alias lookup. First-write-wins so a deterministic note owns the alias
-  // if two notes accidentally declare the same one. Title-collisions take
-  // precedence over aliases by virtue of the resolution order below.
-  const byAlias = new Map<string, string>();
-  // Basename lookup. Lets `[[my-note]]` resolve when there's a single
-  // `*/my-note.md` somewhere in the vault — the natural Obsidian/Roam
-  // writing style. First-write-wins on conflicts; we log a warning so
-  // the author can disambiguate (full-path id or unique title).
-  const byBasename = new Map<string, string>();
-  const byId = new Set<string>();
+  const resolvable: ResolvableNote[] = [];
   // links = wikilink-targets (titles or ids); mdLinks = relative .md paths
   const raw: { id: string; folder: string; links: string[]; mdLinks: string[] }[] = [];
 
@@ -133,9 +128,11 @@ export async function buildGraph(): Promise<GraphData> {
     // Cognee `forget()` — skip forgotten notes before they touch any lookup
     // map. Errors during frontmatter parse fall through as "not forgotten"
     // so a malformed file never silently disappears from the graph.
+    let data: Record<string, unknown> = {};
     let forgotten = false;
     try {
-      forgotten = isForgotten(parseFrontmatter(body).data);
+      data = parseFrontmatter(body).data;
+      forgotten = isForgotten(data);
     } catch {
       forgotten = false;
     }
@@ -143,23 +140,24 @@ export async function buildGraph(): Promise<GraphData> {
 
     const title = parseTitle(body, relPath);
     nodes.push({ id, title, tags: parseTags(body) });
-    byTitle.set(title.toLowerCase(), id);
-    for (const alias of parseAliases(body)) {
-      const key = alias.toLowerCase();
-      if (!byAlias.has(key)) byAlias.set(key, id);
-    }
-    const basename = (id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id).toLowerCase();
-    const existingBase = byBasename.get(basename);
-    if (existingBase === undefined) {
-      byBasename.set(basename, id);
-    } else if (existingBase !== id) {
-      console.warn(
-        `[graphService] basename conflict for "${basename}": keeping "${existingBase}", ignoring "${id}"`,
-      );
-    }
-    byId.add(id);
+    resolvable.push({
+      id,
+      title,
+      aliases: parseAliases(body),
+      frontmatterTitle: typeof data.title === "string" ? data.title : undefined,
+      ulid: typeof data.id === "string" ? data.id : undefined,
+    });
     raw.push({ id, folder, links: parseLinks(body), mdLinks: parseMdLinks(body) });
   }
+
+  // Basename-Konflikte werden geloggt, damit der Autor disambiguieren kann
+  // (voller Pfad oder eindeutiger Titel).
+  const index = buildResolutionIndex(resolvable, (basename, kept, ignored) => {
+    console.warn(
+      `[graphService] basename conflict for "${basename}": keeping "${kept}", ignoring "${ignored}"`,
+    );
+  });
+  const { byBasename, byId } = index;
 
   const edges: GraphEdge[] = [];
   const seen = new Set<string>();
@@ -172,15 +170,13 @@ export async function buildGraph(): Promise<GraphData> {
   }
 
   for (const { id, folder, links, mdLinks } of raw) {
-    // Wikilinks resolve in priority order: title > alias > basename > full-id.
-    // Mirrors `resolveWikilinkTarget()` in the PWA so preview + server graph agree.
+    // Wikilinks resolve via the shared index (title > alias > basename >
+    // full-id > frontmatter-title > ULID). Die PWA spiegelt die ersten vier
+    // Wege in `resolveWikilinkTarget()`; ihr fehlen mangels ULID/Frontmatter-
+    // Titel im Notes-Cache noch die beiden neuen — Vorschau kann also weniger
+    // auflösen als der Server, nie mehr.
     for (const link of links) {
-      const lc = link.toLowerCase();
-      const target =
-        byTitle.get(lc) ??
-        byAlias.get(lc) ??
-        byBasename.get(lc) ??
-        (byId.has(link) ? link : null);
+      const target = resolveWikilink(index, link);
       if (target) addEdge(id, target);
     }
     // Markdown-Links: resolve relative path → note id, with basename
@@ -342,33 +338,46 @@ export interface BrokenLink {
 }
 
 /**
+ * Ordner, deren Dateien KEINE echten Notizen sind und deren ausgehende Links
+ * daher nicht geprüft werden.
+ *
+ * `00_meta/templates/` enthält Vorlagen mit ABSICHTLICHEN Platzhaltern
+ * (`[[Wikilink]]`, `[[ ]]`) — sie zeigen dem Autor, wo ein Link hingehört.
+ * Als Link-ZIEL bleiben Vorlagen auflösbar (sie stehen weiter im Index);
+ * ausgenommen ist nur ihre Rolle als Quelle.
+ */
+const LINK_AUDIT_EXEMPT_PREFIXES = ["00_meta/templates/"] as const;
+
+/** Ist diese Notiz-ID von der Link-Prüfung als QUELLE ausgenommen? */
+function isLinkAuditExempt(id: string): boolean {
+  return LINK_AUDIT_EXEMPT_PREFIXES.some((prefix) => id.startsWith(prefix));
+}
+
+/**
  * Vault-weiter Scan: liefert jeden Wikilink, dessen Ziel ins Leere zeigt.
  *
- * Die Auflösung ist 1:1 dieselbe wie in {@link buildGraph}: ein `[[ziel]]`
- * gilt als auflösbar, wenn es per **Titel → Alias → Basename → voller id**
- * (case-insensitiv für die ersten drei, exakt für die id) eine existierende
- * Notiz trifft. Ein Link ist genau dann „kaputt“, wenn KEINER dieser vier
- * Wege greift — d.h. Links, die per Titel/Alias/Basename/id auflösen, werden
- * niemals gemeldet.
+ * Die Auflösung ist 1:1 dieselbe wie in {@link buildGraph} — beide teilen sich
+ * dafür {@link buildResolutionIndex} / {@link resolveWikilink}, damit die
+ * Regel nicht in zwei Kopien auseinanderlaufen kann. Ein Link ist genau dann
+ * „kaputt“, wenn KEINER der Wege (Titel → Alias → Basename → id →
+ * Frontmatter-`title:` → ULID) greift.
  *
  * `forgotten`-Notizen (Cognee `forget()`) sind weder Quelle (ihre Links
- * werden nicht geprüft) noch gültiges Ziel (sie stehen in keiner der
- * Lookup-Maps) — exakt wie der Graph sie behandelt. Markdown-`.md`-Links
- * sind nicht Teil dieses Checks; geprüft werden ausschließlich Wikilinks
- * (`[[ ]]`), wie in den Acceptance Criteria gefordert.
+ * werden nicht geprüft) noch gültiges Ziel (sie kommen gar nicht erst in den
+ * Index) — exakt wie der Graph sie behandelt. Vorlagen unter
+ * `00_meta/templates/` sind als Quelle ausgenommen (s. o.). Markdown-`.md`-
+ * Links sind nicht Teil dieses Checks; geprüft werden ausschließlich
+ * Wikilinks (`[[ ]]`), wie in den Acceptance Criteria gefordert.
  */
 export async function findBrokenLinks(): Promise<BrokenLink[]> {
   await pull();
   const c = coreConfig();
   const files = await walk(c.vaultDir);
 
-  // ── Pass 1: build the same resolution maps buildGraph uses ──────────────
-  // Title > alias > basename > full-id. forgotten notes never enter a map,
-  // so a link pointing at one is (correctly) reported as broken.
-  const byTitle = new Map<string, string>(); // lc title -> id
-  const byAlias = new Map<string, string>(); // lc alias -> id (first-write-wins)
-  const byBasename = new Map<string, string>(); // lc basename -> id (first-write-wins)
-  const byId = new Set<string>();
+  // ── Pass 1: derselbe Index, den auch buildGraph benutzt ─────────────────
+  // forgotten notes never enter the index, so a link pointing at one is
+  // (correctly) reported as broken.
+  const resolvable: ResolvableNote[] = [];
   // Sources we still need to scan: id, title, and its wikilink targets.
   const sources: { id: string; title: string; links: string[] }[] = [];
 
@@ -377,37 +386,36 @@ export async function findBrokenLinks(): Promise<BrokenLink[]> {
     const id = relPath.replace(/\.md$/, "");
     const body = await readFile(abs, "utf8");
 
+    let data: Record<string, unknown> = {};
     let forgotten = false;
     try {
-      forgotten = isForgotten(parseFrontmatter(body).data);
+      data = parseFrontmatter(body).data;
+      forgotten = isForgotten(data);
     } catch {
       forgotten = false;
     }
     if (forgotten) continue;
 
     const title = parseTitle(body, relPath);
-    byTitle.set(title.toLowerCase(), id);
-    for (const alias of parseAliases(body)) {
-      const key = alias.toLowerCase();
-      if (!byAlias.has(key)) byAlias.set(key, id);
-    }
-    const basename = (id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id).toLowerCase();
-    if (!byBasename.has(basename)) byBasename.set(basename, id);
-    byId.add(id);
+    resolvable.push({
+      id,
+      title,
+      aliases: parseAliases(body),
+      frontmatterTitle: typeof data.title === "string" ? data.title : undefined,
+      ulid: typeof data.id === "string" ? data.id : undefined,
+    });
+    // Vorlagen zählen als Ziel, aber nicht als Quelle.
+    if (isLinkAuditExempt(id)) continue;
     sources.push({ id, title, links: parseLinks(body) });
   }
+
+  const index = buildResolutionIndex(resolvable);
 
   // ── Pass 2: every wikilink target that resolves to nothing is broken ────
   const out: BrokenLink[] = [];
   for (const { id, title, links } of sources) {
     for (const link of links) {
-      const lc = link.toLowerCase();
-      const resolved =
-        byTitle.get(lc) ??
-        byAlias.get(lc) ??
-        byBasename.get(lc) ??
-        (byId.has(link) ? link : null);
-      if (resolved) continue; // resolvable by title/alias/basename/id → not broken
+      if (resolveWikilink(index, link)) continue; // auflösbar → nicht kaputt
       out.push({ sourceId: id, sourceTitle: title, linkText: link });
     }
   }
