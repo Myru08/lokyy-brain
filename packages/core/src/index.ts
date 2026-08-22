@@ -176,6 +176,9 @@ export {
   createFolder,
   moveEntry,
   deleteEntry,
+  // Nachindizierung für Schreibpfade, die den Markdown selbst bauen und über
+  // `gitService.save()` committen (Pipes). Ohne sie fehlt die Notiz in Tier 1.
+  indexWrittenNote,
   // Story 10.10 — bulk-ops: atomic (on validation) create/update of many
   // notes in one call. Consumed by the MCP create_notes / update_notes tools.
   createNotes,
@@ -193,6 +196,17 @@ export {
   type BulkItemError,
   type BulkResult,
 } from "./notes/notesService.js";
+
+// ─── Referenz-Nachzug für Moves (#57/#59) ───────────────────────────────
+// Gegenstück zur read-only Verwaisungs-Messung in
+// `server/src/lib/derivedStoreOrphans.ts`: hier werden die Pfad-IDs in den
+// abgeleiteten Stores einem Move mitgenommen, statt sie liegen zu lassen.
+export {
+  renameNoteReferences,
+  RENAMED_NOTE_REF_COLUMNS,
+  type NoteIdRename,
+  type RenameNoteReferencesResult,
+} from "./notes/renameNoteReferences.js";
 
 // ─── Canonical type→folder map (Story 10.2) ─────────────────────────────
 // Single source of truth coupling a doc type to its vault folder. Used by

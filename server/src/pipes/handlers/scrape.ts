@@ -66,17 +66,23 @@ function noteFrom(
   const noteUlid = ulid();
   // SPEC-valid frontmatter: id+type+title+created+updated MUSS gesetzt sein,
   // sonst greift NoteHeader-ULID-Badge nicht + resolve_by_id MCP-Tool findet nix.
+  //
+  // `source` ist in capture.json ein ENUM (youtube|url|voice|pdf) — für beide
+  // Scrape-Modi also `url`. Die feinere Herkunft (website / crawl) trägt
+  // `source_type`, das ist Freitext. Zeitstempel quotiert, sonst liest YAML
+  // sie als Date und das Schema verlangt `type: string`. Gleiche zwei Fallen
+  // wie im youtube-Handler.
   const body = [
     "---",
     `id: ${noteUlid}`,
     `type: capture`,
     `title: "${title.replace(/"/g, "'")}"`,
-    `source: ${url}`,
+    `source: url`,
     `source_type: ${extraTag}`,
     `source_url: ${url}`,
-    `captured_at: ${now}`,
-    `created: ${now}`,
-    `updated: ${now}`,
+    `captured_at: "${now}"`,
+    `created: "${now}"`,
+    `updated: "${now}"`,
     `tags: [inbox, ${extraTag}]`,
     "---",
     "",

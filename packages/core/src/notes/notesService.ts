@@ -45,6 +45,10 @@ import {
 } from "../memory/index.js";
 import { syncWikilinksToTemporalEdges } from "../graph/temporalEdges.js";
 import { invalidateUlidCache } from "./findByUlid.js";
+import {
+  renameNoteReferences,
+  type NoteIdRename,
+} from "./renameNoteReferences.js";
 
 /**
  * Story 5.8 — both search tiers are refreshed after every write, scoped to the
@@ -283,6 +287,43 @@ export async function saveNote(id: string, body: string): Promise<Note> {
   //    git commit already succeeded, this is derived index maintenance.
   queueTemporalEdgeSync(saved.id, saved.links, new Date(saved.updatedAt));
   return saved;
+}
+
+/**
+ * Eine BEREITS geschriebene Vault-Datei in die abgeleiteten Indizes aufnehmen.
+ *
+ * Für Schreibpfade, die den Markdown selbst bauen und über `gitService.save()`
+ * committen, statt durch `saveNote()`/`createNote()` zu gehen — konkret die
+ * Pipes (`pipeQueue`). Die haben ihre Notizen bisher NUR ins Git geschrieben:
+ * kein Tier-1-Eintrag, keine bi-temporalen Kanten. Aufgefallen ist es nicht,
+ * weil der nächtliche `embedding-backfill` Tier 2 nachzieht — für BM25 gibt es
+ * kein Gegenstück, also blieben Pipe-Notizen dauerhaft aus der Stichwortsuche
+ * heraus (im Produktivvault: sechs YouTube-Transkripte, unauffindbar).
+ *
+ * Bewusst OHNE Frontmatter-Validierung: die Datei ist zu diesem Zeitpunkt schon
+ * committet, ein Wurf hier würde nur den Index verweigern und trotzdem eine
+ * Notiz im Vault zurücklassen. Wer validieren will, muss das VOR dem Schreiben
+ * tun (siehe Nachtrag zur Rückmeldung: der pre-commit-Hook verlässt sich
+ * ausdrücklich darauf, dass `validateFrontmatter` vor jedem Git-Schreiben
+ * läuft — für den Pipe-Pfad stimmte das nicht).
+ *
+ * Wirft, wenn die Datei nicht lesbar ist; die Index-Aufrufe selbst sind
+ * fire-and-forget wie überall sonst.
+ */
+export async function indexWrittenNote(noteId: string): Promise<void> {
+  const c = coreConfig();
+  const abs = join(c.vaultDir, ...noteId.split("/")) + ".md";
+  const note = await readNoteFile(abs);
+  let forgotten = false;
+  try {
+    forgotten = isForgotten(parseFrontmatter(note.body).data);
+  } catch {
+    forgotten = false;
+  }
+  // Wie im Save-Pfad: die frisch geschriebene ULID muss sofort auflösen.
+  invalidateUlidCache();
+  queueBothSearchTiers(note.id, note.title, note.body, note.tags, forgotten);
+  queueTemporalEdgeSync(note.id, note.links, new Date(note.updatedAt));
 }
 
 /* ------------------------------------------------------------------ *
@@ -922,6 +963,36 @@ export async function moveEntry(
       };
     });
     queueBulkTierRefresh(vaultId, items);
+  }
+
+  // Ursachen-Hälfte zu #57/#59 — die abgeleiteten Stores halten dieselbe
+  // Pfad-ID und wussten bisher nichts von Moves. Ohne diesen Nachzug erzeugt
+  // JEDER Move frische Verwaisungen, die ein Aufräumlauf nur hinterherräumt.
+  //
+  // Bewusst AWAITED, anders als die Tier-Refreshes: es sind ein Dutzend kurze
+  // UPDATEs, unabhängig davon wie viele Notizen der Move umfasst (die
+  // Zuordnung reist als Paartabelle mit) — und ein Diagnoselauf direkt nach
+  // dem Move soll den Vault bereits sauber sehen.
+  const fromPrefixForRefs = from.replace(/\/+$/, "");
+  const toPrefixForRefs = to.replace(/\/+$/, "");
+  const renames: NoteIdRename[] =
+    kind === "note"
+      ? [{ from, to }]
+      : movedNoteIds.map((oldId) => ({
+          from: oldId,
+          to: toPrefixForRefs + oldId.slice(fromPrefixForRefs.length),
+        }));
+  try {
+    await renameNoteReferences(renames);
+  } catch (err) {
+    // Der Git-Commit ist die Wahrheit, die Sidecars sind abgeleitet — ein
+    // Fehler hier darf den Move nicht zurückdrehen. Er bleibt sichtbar: der
+    // Verwaisungs-Check meldet die liegengebliebenen Zeilen beim nächsten Lauf.
+    console.warn(
+      `[notesService] Referenz-Nachzug für "${from}" -> "${to}" fehlgeschlagen: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
   }
 }
 

@@ -6,6 +6,7 @@ import type {
   SharePayload,
 } from "@lokyy/shared";
 import { save } from "../git/gitService.js";
+import { indexWrittenNote } from "../notes/notesService.js";
 
 /**
  * Pipes. Eine schlanke, in-process Job-Queue mit getypten Handlern.
@@ -87,7 +88,23 @@ async function drain(): Promise<void> {
           result.body,
           `pipe(${job.type}): ${result.path}`,
         );
-        job.resultNoteId = result.path.replace(/\.md$/, "");
+        const noteId = result.path.replace(/\.md$/, "");
+        // Der Commit allein macht eine Notiz noch nicht auffindbar: `save()`
+        // schreibt nur ins Git, die Indizes hängen an `saveNote()`/`createNote()`
+        // — und da kommt der Pipe-Pfad nie vorbei. Ergebnis vor diesem Aufruf:
+        // Pipe-Notizen fehlten dauerhaft im BM25-Index (Tier 2 kaschierte es,
+        // weil der Nacht-Backfill dort nachzieht). Nachindizieren, aber den Job
+        // nicht daran scheitern lassen — die Notiz IST bereits sicher im Vault.
+        try {
+          await indexWrittenNote(noteId);
+        } catch (err) {
+          console.warn(
+            `[pipes] Nachindizierung von "${noteId}" fehlgeschlagen: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+        job.resultNoteId = noteId;
         job.status = "done";
       } catch (err) {
         job.status = "error";

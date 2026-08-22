@@ -123,17 +123,26 @@ export async function youtubeHandler(
   const noteUlid = ulid();
   // SPEC-valid frontmatter MUSS id+type+title+created+updated enthalten —
   // sonst kein ULID-Resolve, kein NoteHeader-Badge, kein AI-Prompt-Button.
+  //
+  // Zwei Fallen, die capture.json hier stellt (beide waren im Produktivvault
+  // aktiv und haben ALLE YouTube-Captures schema-invalide gemacht):
+  //   1. `source` ist ein ENUM (youtube|url|voice|pdf), kein Freitext. Der
+  //      URL gehört nach `source_url` — steht eine Zeile tiefer ohnehin da.
+  //   2. Zeitstempel MÜSSEN quotiert werden. Unquotiert liest YAML sie als
+  //      Date-Objekt, das Schema verlangt aber `type: string` — der Handler
+  //      baut den Markdown von Hand, es gibt also kein serializeFrontmatter,
+  //      das die Quotes nachträglich setzt.
   const body = [
     "---",
     `id: ${noteUlid}`,
     `type: capture`,
     `title: "${title.replace(/"/g, "'")}"`,
-    `source: ${url}`,
+    `source: youtube`,
     `source_type: youtube`,
     `source_url: ${url}`,
-    `captured_at: ${now}`,
-    `created: ${now}`,
-    `updated: ${now}`,
+    `captured_at: "${now}"`,
+    `created: "${now}"`,
+    `updated: "${now}"`,
     "tags: [inbox, youtube]",
     "---",
     "",
