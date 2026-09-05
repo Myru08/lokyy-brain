@@ -269,6 +269,23 @@ export {
   type PipeHandler,
 } from "./pipes/pipeQueue.js";
 
+// ─── Datei-/Ordner-Import (Issue #63) ───────────────────────────────────
+// Pfad-Sicherheit, Typ-Erkennung und PDF-Textextraktion. Die Route
+// `POST /api/pipes/files` und die Import-Handler bauen darauf auf.
+export {
+  sanitizeRelativePath,
+  sanitizeFileName,
+  resolveInsideVault,
+  type RelativePathCheck,
+} from "./pipes/importPaths.js";
+export {
+  classifyImportFile,
+  unsupportedReason,
+  fileExtension,
+  type ImportFileKind,
+} from "./pipes/importTypes.js";
+export { extractPdfText, type PdfExtraction } from "./pipes/pdfText.js";
+
 // ─── frontmatter / vault compliance (Story 1.5) ─────────────────────────
 export {
   generateUlid,

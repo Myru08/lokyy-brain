@@ -26,6 +26,10 @@ import {
 import { youtubeHandler } from "./pipes/handlers/youtube.js";
 import { crawlHandler, scrapeHandler } from "./pipes/handlers/scrape.js";
 import { voiceHandler } from "./pipes/handlers/voiceHandler.js";
+import {
+  pdfImportHandler,
+  textImportHandler,
+} from "./pipes/handlers/fileImport.js";
 
 /**
  * lokyy-brain Server. Hält die einzige echte Git-Working-Copy des Vaults
@@ -43,6 +47,8 @@ registerHandler("youtube", youtubeHandler);
 registerHandler("url", scrapeHandler); // einzelne Seite
 registerHandler("crawl", crawlHandler); // ganze Website
 registerHandler("voice", voiceHandler); // OpenAI Whisper (cloud)
+registerHandler("text", textImportHandler); // Datei-Import: Text/Markdown
+registerHandler("pdf", pdfImportHandler); // Datei-Import: PDF (Text-Extraktion)
 
 async function main() {
   // Story 5.8 AC#2: hand core the REAL vaults-table id so both search tiers

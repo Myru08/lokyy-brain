@@ -6,6 +6,7 @@ import type {
   SharePayload,
 } from "@lokyy/shared";
 import { save } from "../git/gitService.js";
+import { classifyImportFile } from "./importTypes.js";
 
 /**
  * Pipes. Eine schlanke, in-process Job-Queue mit getypten Handlern.
@@ -33,11 +34,22 @@ export function registerHandler(type: PipeType, handler: PipeHandler): void {
   handlers.set(type, handler);
 }
 
-/** Aus dem Share-Payload den Pipe-Typ ableiten. */
+/**
+ * Aus dem Share-Payload den Pipe-Typ ableiten.
+ *
+ * Reihenfolge: erst die URL-Signale (YouTube), dann die Datei. Bei der Datei
+ * gewinnt Audio (Voice-Pipe), danach entscheidet `classifyImportFile` anhand
+ * von **Endung UND MIME** — Browser liefern für `.md` regelmäßig
+ * `application/octet-stream`, MIME allein reicht nicht (Issue #63).
+ */
 export function detectType(payload: SharePayload): PipeType {
   const text = `${payload.url ?? ""} ${payload.text ?? ""}`;
   if (/youtube\.com|youtu\.be/.test(text)) return "youtube";
-  if (payload.file?.mime.startsWith("audio/")) return "voice";
+  if (payload.file) {
+    if (payload.file.mime.startsWith("audio/")) return "voice";
+    const kind = classifyImportFile(payload.file.name, payload.file.mime);
+    if (kind) return kind;
+  }
   if (/^https?:\/\//.test(text.trim())) return "url";
   return "unknown";
 }
@@ -65,9 +77,26 @@ export function enqueue(
   return job;
 }
 
-/** Aktuelle Queue (für GET /api/pipes). */
+/**
+ * Aktuelle Queue (für GET /api/pipes).
+ *
+ * Die Datei-Bytes (`payload.file.dataBase64`) werden dabei **entfernt**.
+ * Grund: `GET /api/pipes` wird von der PWA gepollt — ohne die Redaktion
+ * ginge bei einem Ordner-Import mit N Dateien deren kompletter Inhalt bei
+ * JEDEM Poll erneut über die Leitung. Name und MIME bleiben stehen, sie sind
+ * das, was die Job-Liste anzeigt.
+ */
 export function listJobs(): PipeJob[] {
-  return jobs.slice().reverse();
+  return jobs
+    .map((job) => {
+      if (!job.payload.file) return job;
+      const { dataBase64: _omitted, ...fileMeta } = job.payload.file;
+      return {
+        ...job,
+        payload: { ...job.payload, file: { ...fileMeta, dataBase64: "" } },
+      };
+    })
+    .reverse();
 }
 
 /** Sequentiell alle offenen Jobs abarbeiten. */
@@ -88,10 +117,19 @@ async function drain(): Promise<void> {
           `pipe(${job.type}): ${result.path}`,
         );
         job.resultNoteId = result.path.replace(/\.md$/, "");
+        // Erfolgreich, aber erklärungsbedürftig — z.B. ein PDF ohne
+        // Textebene, das eine leere Notiz erzeugt (Issue #63).
+        if (result.notice) job.notice = result.notice;
         job.status = "done";
       } catch (err) {
         job.status = "error";
         job.error = err instanceof Error ? err.message : String(err);
+      } finally {
+        // Die Bytes werden nach dem Lauf nie wieder gebraucht, der Job bleibt
+        // aber für immer in `jobs` stehen. Ohne dieses Freigeben hielte ein
+        // Ordner-Import mit hundert Dateien deren Inhalt bis zum Neustart im
+        // Speicher fest.
+        if (job.payload.file?.dataBase64) job.payload.file.dataBase64 = "";
       }
     }
   } finally {

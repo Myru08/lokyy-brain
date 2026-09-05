@@ -97,9 +97,32 @@ export interface SharePayload {
    * "en"). Fehlt das Feld, lässt Whisper die Sprache automatisch erkennen.
    */
   language?: string;
+  /**
+   * Datei-/Ordner-Import (Issue #63). Der vom Client gemeldete Pfad der
+   * Datei RELATIV zum gewählten Ordner (`webkitRelativePath`), bereits
+   * saniert — nur zur Herkunfts-Dokumentation im Frontmatter.
+   *
+   * Das Ziel im Vault steckt NICHT hier, sondern in `targetFolder`: die
+   * Route baut `targetFolder = <Zielordner>/<sanierte Unterordner>` zusammen,
+   * damit die Handler weiterhin nur ein Feld lesen müssen.
+   */
+  relativePath?: string;
 }
 
-export type PipeType = "youtube" | "voice" | "url" | "crawl" | "unknown";
+/**
+ * Pipe-Typen. `text` und `pdf` (Issue #63) kommen aus dem Datei-/Ordner-Import
+ * — sie sind die einzigen Typen, deren Quelle eine hochgeladene Datei statt
+ * einer URL ist. Bilder/sonstige Binaerdateien haben bewusst KEINEN Typ: sie
+ * passen nicht in den Markdown-Contract und bekommen einen eigenen Upload-Weg.
+ */
+export type PipeType =
+  | "youtube"
+  | "voice"
+  | "url"
+  | "crawl"
+  | "text"
+  | "pdf"
+  | "unknown";
 
 export type PipeStatus = "queued" | "processing" | "done" | "error";
 
@@ -116,6 +139,36 @@ export interface ImportRequest {
   url: string;
   type?: PipeType;
   targetFolder?: string;
+}
+
+/**
+ * Eine benannt abgewiesene Datei aus `POST /api/pipes/files` (Issue #63).
+ *
+ * Anti-Regel der Story: kein Dateityp wird still verschluckt. Alles, was
+ * nicht importiert wurde, steht mit Grund in dieser Liste — es gibt keinen
+ * stillen Zähler und keine verschluckte Datei.
+ */
+export interface FileImportRejection {
+  /** Dateiname wie vom Client gemeldet (bzw. `relativePath`, wenn vorhanden). */
+  name: string;
+  /** Klartext-Grund, direkt anzeigbar. */
+  reason: string;
+}
+
+/**
+ * Antwort von `POST /api/pipes/files` (Issue #63).
+ *
+ * 202 mit mindestens einem Job, wenn etwas akzeptiert wurde; 400 mit
+ * `error` + derselben `rejected`-Liste, wenn gar keine verwertbare Datei
+ * dabei war (die Gründe bleiben also auch im Fehlerfall sichtbar).
+ */
+export interface FileImportResponse {
+  jobs: PipeJob[];
+  rejected: FileImportRejection[];
+  /** nur im 400-Fall gesetzt */
+  error?: string;
+  /** nur im 400-Fall gesetzt: menschenlesbare Begründung */
+  message?: string;
 }
 
 /**
@@ -139,6 +192,13 @@ export interface PipeJob {
   /** id der erzeugten Notiz, sobald fertig */
   resultNoteId?: string;
   error?: string;
+  /**
+   * Hinweis zu einem ERFOLGREICHEN Job (Issue #63). Der Job ist `done`, die
+   * Notiz liegt im Vault — aber es gibt etwas zu sagen, das kein Fehler ist.
+   * Aktueller Fall: ein PDF ohne Textebene (Scan) erzeugt eine leere Notiz;
+   * ohne diesen Hinweis stünde der Nutzer vor einer leeren Datei ohne Grund.
+   */
+  notice?: string;
   createdAt: string;
 }
 
@@ -151,4 +211,10 @@ export interface PipeResult {
   path: string;
   /** vollständiger Markdown-Inhalt inkl. Frontmatter */
   body: string;
+  /**
+   * Optionaler Hinweis, der den Job zwar erfolgreich abschließt, aber
+   * erklärungsbedürftig macht (siehe `PipeJob.notice`). Die Queue reicht ihn
+   * unverändert an den Job durch.
+   */
+  notice?: string;
 }

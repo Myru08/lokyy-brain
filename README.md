@@ -62,6 +62,7 @@ Community — dort steht das Wissen, das nicht in eine README passt.
 - [MCP-Integration — KI-Agenten anbinden](#mcp-integration--ki-agenten-anbinden)
 - [Vault-Contract (SPEC)](#vault-contract-spec)
 - [Remote-Deployment](#remote-deployment)
+- [Dateien und Ordner importieren](#dateien-und-ordner-importieren)
 - [Projekt-Status](#projekt-status)
 - [Zugriff & Mitwirken](#zugriff--mitwirken)
 - [Lizenz](#lizenz)
@@ -562,6 +563,48 @@ Wichtig für die Fehlersuche: Notizen, bei denen nach dem Indexieren *keine*
 Vektoren in der Datenbank stehen, zählen als `failed` — nicht als Erfolg. Läuft
 der Embedding-Dienst gar nicht, bricht der Lauf nach fünf solchen Notizen ab und
 sagt das in `lastError`, statt sinnlos den ganzen Vault durchzugehen.
+
+## Dateien und Ordner importieren
+
+Im Import-Panel lassen sich Dateien vom Rechner auswählen oder ins Panel
+ziehen; auf dem Desktop zusätzlich ein ganzer Ordner. Jede Datei wird ein
+eigener Job in der Queue, der Ordnerbaum bleibt unter dem Zielordner erhalten.
+
+**Was geht:** Text (`.txt`), Markdown (`.md`, `.markdown`) und PDF. Der Typ
+wird an Dateiendung **und** MIME erkannt — Browser melden für `.md` je nach
+System `application/octet-stream`, MIME allein reicht nicht.
+
+- **Markdown mit Frontmatter** wird respektiert; ergänzt wird nur, was fehlt
+  (`id`, `type`, `title`, `created`, `updated`). Eine mitgebrachte ULID wird
+  übernommen, solange sie im Vault noch frei ist — liegt sie schon auf einer
+  anderen Notiz, bekommt der Import eine frische ID und die alte bleibt als
+  `original_id` erhalten.
+- **PDFs** werden nach Text durchsucht und als Notiz abgelegt. Ein
+  eingescanntes PDF **ohne Textebene** ergibt eine leere Notiz, die genau das
+  sagt — der Job meldet es ebenfalls. Eine Texterkennung (OCR) findet nicht
+  statt.
+- **Bilder und andere Binärdateien** werden nicht importiert. Sie passen nicht
+  in den Markdown-Contract des Vaults und bekommen später einen eigenen Weg.
+- Eine bestehende Notiz wird nie überschrieben: gibt es den Namen schon, legt
+  der Import `name-2.md` daneben.
+
+**Was abgelehnt wird, wird benannt abgelehnt.** Nicht unterstützte Typen,
+leere und zu große Dateien erscheinen mit Grund in der Antwort — es gibt
+keinen stillen Zähler und keine verschluckte Datei.
+
+**Obergrenzen** (Bytes, per Env konfigurierbar, siehe `.env.example`):
+
+| Variable | Default | Wirkung |
+|----------|---------|---------|
+| `IMPORT_MAX_FILE_BYTES` | 10 MiB | pro einzelner Datei |
+| `IMPORT_MAX_REQUEST_BYTES` | 50 MiB | pro Anfrage (ganzer Ordner) |
+
+Größere Ordner importiert man in mehreren Portionen. Die Anfrage wird zum
+Verarbeiten komplett im Speicher gehalten — deshalb die zweite Grenze.
+
+> Ordner-Auswahl gibt es nur auf dem **Desktop** (`webkitdirectory`). Weder
+> iOS Safari noch Android-Browser können ein Verzeichnis auswählen; mehrere
+> Dateien gleichzeitig gehen überall.
 
 ## Projekt-Status
 
