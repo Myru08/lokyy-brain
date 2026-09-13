@@ -137,6 +137,33 @@ describe("topic-synthesis", () => {
     expect(res.notes).toContain("curated");
   });
 
+  it("überspringt ein Cluster, dessen Zusammenfassung noch unreviewt in 70_pai/topics liegt", async () => {
+    // Nacht 1 hat die Zusammenfassung geschrieben, der Nutzer hat sie noch
+    // nicht angenommen. Nacht 2 darf denselben Cluster nicht erneut
+    // zusammenfassen — sonst liegt pro Nacht ein weiteres Duplikat in der
+    // Review-Queue, und ein Sammel-Accept schiebt alle nach 20_notes/topics.
+    vault.set(`70_pai/topics/auto-${SYNTH_SLUG}`, topicNote(SYNTH_TITLE, "c1", "agent"));
+
+    const res = await topicSynthesisPass.run(RUN);
+
+    expect(created).toHaveLength(0);
+    expect(prompts).toHaveLength(0);
+    expect(res.processed).toBe(0);
+    expect(res.notes).toContain("awaiting review");
+  });
+
+  it("überspringt bei gedrifteter community-id, wenn der Slug schon als pending auto-Notiz belegt ist", async () => {
+    // Anderer Cluster, gleicher Titel → Accept würde beide auf denselben
+    // Dateinamen unter 20_notes/topics schieben.
+    vault.set(`70_pai/topics/auto-${SYNTH_SLUG}`, topicNote(SYNTH_TITLE, "c-alt", "agent"));
+
+    const res = await topicSynthesisPass.run(RUN);
+
+    expect(prompts).toHaveLength(1);
+    expect(created).toHaveLength(0);
+    expect(res.processed).toBe(0);
+  });
+
   it("überspringt auch bei gedrifteter community-id, wenn der Slug schon belegt ist", async () => {
     // Anderes Cluster (c2), gleicher Titel → gleicher Dateiname. Genau die
     // Datei, auf die das spätere `git mv` laufen würde.

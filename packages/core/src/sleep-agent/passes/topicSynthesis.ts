@@ -59,32 +59,54 @@ const MAX_BODY_CHARS = 500;
  */
 const ACCEPTED_TOPIC_DIR = "20_notes/topics";
 
+/**
+ * Where this pass files its own output while it awaits review. A pending
+ * summary counts as "known" just like an accepted one: until the user has
+ * reviewed it, the cluster must not be summarized again. Otherwise every
+ * nightly run adds one more `auto-*` note for the same cluster (observed in
+ * production: three summaries of one cluster on three consecutive nights,
+ * all accepted in one sitting, all now sitting side by side as duplicates).
+ */
+const PENDING_TOPIC_DIR = "70_pai/topics";
+const PENDING_TOPIC_PREFIX = `${PENDING_TOPIC_DIR}/auto-`;
+
 /** Frontmatter marker every note this pass writes carries. */
 const TOPIC_NOTE_KIND = "topic_note";
 
-interface AcceptedTopicIndex {
-  /** `community_id` values that already produced a curated topic note. */
+interface KnownTopicIndex {
+  /** `community_id` values that already have a curated OR pending topic note. */
   communityIds: Set<string>;
-  /** Slugs (filename stems) present in {@link ACCEPTED_TOPIC_DIR}. */
+  /**
+   * Slugs (filename stems) already taken — in {@link ACCEPTED_TOPIC_DIR} as-is,
+   * in {@link PENDING_TOPIC_DIR} minus the `auto-` prefix, because that is the
+   * name accept would `git mv` the note to.
+   */
   slugs: Set<string>;
 }
 
 /**
- * Index the already-accepted topic notes. Cheap: the folder holds one note per
- * curated topic, and only those get their body read.
+ * Index the topic notes this pass must not produce again: the accepted ones
+ * and the ones still awaiting review. Cheap: both folders hold one note per
+ * topic, and only those get their body read.
  *
  * A read failure degrades to an empty index rather than aborting the pass —
  * losing the skip means a redundant summary, losing the pass means no
  * summaries at all.
  */
-async function loadAcceptedTopicIndex(): Promise<AcceptedTopicIndex> {
+async function loadKnownTopicIndex(): Promise<KnownTopicIndex> {
   const communityIds = new Set<string>();
   const slugs = new Set<string>();
   try {
     const all = await listNotes();
-    const accepted = all.filter((n) => n.id.startsWith(`${ACCEPTED_TOPIC_DIR}/`));
-    for (const summary of accepted) {
-      slugs.add(summary.id.slice(ACCEPTED_TOPIC_DIR.length + 1));
+    for (const summary of all) {
+      let slug: string | null = null;
+      if (summary.id.startsWith(`${ACCEPTED_TOPIC_DIR}/`)) {
+        slug = summary.id.slice(ACCEPTED_TOPIC_DIR.length + 1);
+      } else if (summary.id.startsWith(PENDING_TOPIC_PREFIX)) {
+        slug = summary.id.slice(PENDING_TOPIC_PREFIX.length);
+      }
+      if (slug === null) continue;
+      slugs.add(slug);
       const note = await getNote(summary.id).catch(() => null);
       if (!note) continue;
       const communityId = parseFrontmatter(note.body).data.community_id;
@@ -127,8 +149,9 @@ export const topicSynthesisPass: SleepPass = {
 
   async run(_run: SleepRun): Promise<SleepPassResult> {
     let processed = 0;
-    // Clusters whose summary the user already curated. Neither an error nor
-    // work done — a third counter, surfaced in `notes` only.
+    // Clusters whose summary already exists — curated or still awaiting
+    // review. Neither an error nor work done — a third counter, surfaced in
+    // `notes` only.
     let skipped = 0;
     // #58 — the unit of work is a CLUSTER, not a note. Samples are keyed on
     // the cluster's first member (the note an operator can actually open) and
@@ -145,16 +168,16 @@ export const topicSynthesisPass: SleepPass = {
 
       // 2. Filter to communities of at least MIN_CLUSTER_SIZE, then take the
       //    top MAX_CLUSTERS_PER_RUN by size. Largest first = highest signal.
-      //    Communities the user already curated drop out BEFORE the slice, so
+      //    Communities with a curated or pending summary drop out BEFORE the slice, so
       //    they don't push fresh clusters out of the per-run budget, and
       //    before the LLM call, so a skip costs nothing.
-      const acceptedTopics = await loadAcceptedTopicIndex();
+      const knownTopics = await loadKnownTopicIndex();
       const allEligible = [...result.communities.entries()]
         .filter(([, members]) => members.length >= MIN_CLUSTER_SIZE)
         .sort((a, b) => b[1].length - a[1].length);
       const eligibleCommunities = allEligible
         .filter(([communityId]) => {
-          if (!acceptedTopics.communityIds.has(communityId)) return true;
+          if (!knownTopics.communityIds.has(communityId)) return true;
           skipped++;
           return false;
         })
@@ -164,7 +187,7 @@ export const topicSynthesisPass: SleepPass = {
         return errors.result(
           0,
           skipped > 0
-            ? `no new clusters — ${skipped} already curated (modularity=${result.modularity.toFixed(3)})`
+            ? `no new clusters — ${skipped} already curated or awaiting review (modularity=${result.modularity.toFixed(3)})`
             : `no eligible clusters (modularity=${result.modularity.toFixed(3)})`,
         );
       }
@@ -257,13 +280,13 @@ export const topicSynthesisPass: SleepPass = {
           const titleMatch = synth.text.match(/^#\s+(.+)$/m);
           const title = titleMatch?.[1].trim() ?? `Topic Cluster ${communityId.slice(0, 8)}`;
           const slug = slugify(title);
-          const path = `70_pai/topics/auto-${slug}`;
+          const path = `${PENDING_TOPIC_PREFIX}${slug}`;
 
           // Second guard, by filename. The community-id check above misses the
           // case where a cluster drifted (new id) but the LLM landed on the
           // same title — and that title is exactly what accept would `git mv`
           // onto the existing file.
-          if (acceptedTopics.slugs.has(slug)) {
+          if (knownTopics.slugs.has(slug)) {
             skipped++;
             continue;
           }
@@ -299,7 +322,7 @@ export const topicSynthesisPass: SleepPass = {
       return errors.result(
         processed,
         `synthesized ${processed} topic notes from ${eligibleCommunities.length} clusters${
-          skipped > 0 ? `, skipped ${skipped} already curated` : ""
+          skipped > 0 ? `, skipped ${skipped} already curated or awaiting review` : ""
         } (modularity=${result.modularity.toFixed(3)})`,
       );
     } catch (err) {
