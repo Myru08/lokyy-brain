@@ -397,6 +397,7 @@ describe("get_health payload (Story 10.8)", () => {
 const trashEntryMock = vi.fn();
 const deleteEntryMock = vi.fn();
 const getNoteMock = vi.fn();
+const logRetrievalMock = vi.fn(async () => {});
 // Wave-3 (Story 10.9/10.10/10.11/10.14) core-call mocks.
 const moveEntryMock = vi.fn();
 const backlinksMock = vi.fn(async () => [] as unknown[]);
@@ -485,6 +486,7 @@ vi.mock("@lokyy/core", async (importActual) => {
     ensureRepo: vi.fn(async () => {}),
     getMemoryProvider: vi.fn(() => ({ search: async () => [] })),
     getNote: (...a: unknown[]) => getNoteMock(...a),
+    logRetrieval: (...a: unknown[]) => logRetrievalMock(...a),
     trashEntry: (...a: unknown[]) => trashEntryMock(...a),
     deleteEntry: (...a: unknown[]) => deleteEntryMock(...a),
     moveEntry: (...a: unknown[]) => moveEntryMock(...a),
@@ -1039,6 +1041,31 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     const out = payload(res);
     expect(getNoteMock).toHaveBeenCalledWith("20_notes/topic");
     expect(out.valid).toBe(true);
+  });
+
+  it("read_note writes a retrieval trace with source=mcp (agent reads count as usage)", async () => {
+    logRetrievalMock.mockClear();
+    getNoteMock.mockResolvedValueOnce({ id: "20_notes/read-me", body: "# x" });
+    const res = await client.callTool({
+      name: "read_note",
+      arguments: { path: "20_notes/read-me" },
+    });
+    expect(payload(res).id).toBe("20_notes/read-me");
+    expect(logRetrievalMock).toHaveBeenCalledTimes(1);
+    expect(logRetrievalMock).toHaveBeenCalledWith({
+      noteId: "20_notes/read-me",
+      source: "mcp",
+      context: { agentId: "test-agent" },
+    });
+    // Stateless transport → no session to group under (see traceRead).
+    expect(logRetrievalMock.mock.calls[0][0]).not.toHaveProperty("sessionId");
+  });
+
+  it("read_note on a missing note writes NO trace", async () => {
+    logRetrievalMock.mockClear();
+    getNoteMock.mockResolvedValueOnce(null);
+    await client.callTool({ name: "read_note", arguments: { path: "20_notes/gone" } });
+    expect(logRetrievalMock).not.toHaveBeenCalled();
   });
 
   it("validate_note (path) on a missing note → structured not-found", async () => {

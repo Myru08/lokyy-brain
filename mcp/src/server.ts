@@ -10,6 +10,7 @@ import {
   ensureRepo,
   findByUlid,
   getNote,
+  logRetrieval,
   getTree,
   createNote,
   isUlid,
@@ -168,6 +169,12 @@ Advanced / occasional (skip unless asked): history/diff, get_tags, find_broken_l
  * `initServerDeps`; read by the handlers built in `createServer`.
  */
 let activeVaultId = "";
+/**
+ * Module-level agent-id, same lifecycle as `activeVaultId`. Only read by the
+ * retrieval-trace side-channel (`traceRead`), where it is diagnostic context,
+ * not an authorization input — scopes are loaded separately in `initServerDeps`.
+ */
+let activeAgentId = "";
 
 /**
  * The singleton/personal vault id captured at boot by `initServerDeps`. The
@@ -230,6 +237,7 @@ export async function initServerDeps(
   await ensureRepo();
   await loadScopes(coreConfig.vaultDir, agentId);
   activeVaultId = vaultId;
+  activeAgentId = agentId;
   activeVaultDir = coreConfig.vaultDir;
 
   // Story S7 (demo subset) — resolve the active SPEC-profile for THIS vault,
@@ -276,6 +284,7 @@ export function createServer(): Server {
   // boot singleton. createServer runs inside the request's withMcpSession wrap
   // (see httpServer), so a customer session captures ITS vault here.
   const vaultId = currentMcpSession()?.vaultId ?? activeVaultId;
+  const agentId = currentMcpSession()?.agentId ?? activeAgentId;
 
   // Story 10.13/10.8 — multi-vault detection for get_health.vault_warning.
   // Resolved ONCE at boot inside `initServerDeps` (async path) and cached in the
@@ -864,6 +873,7 @@ export function createServer(): Server {
           if (!canRead(`${path}.md`)) throw new ScopeViolation("read", path);
           const note = await getNote(path);
           if (!note) return text({ error: "not-found", path });
+          traceRead(note.id ?? path, agentId);
           return text(note);
         }
         case "resolve_by_id": {
@@ -878,6 +888,7 @@ export function createServer(): Server {
           if (!canRead(`${resolved.path}.md`)) {
             throw new ScopeViolation("read", resolved.path);
           }
+          traceRead(resolved.path, agentId);
           return text(resolved);
         }
         case "search_vault": {
@@ -2121,6 +2132,30 @@ export {
   type ManagedCreateInput,
   type ManagedCreateInputError,
 } from "@lokyy/core";
+
+/**
+ * Record an MCP note read as a retrieval trace — the same fire-and-forget
+ * side-channel `GET /api/notes/:id` writes for the PWA.
+ *
+ * Without this, only clicks in the PWA counted as "usage": every note an agent
+ * pulled over MCP looked untouched to the sleep-agent, so importance, the
+ * spacing-effect surfacing and synaptic pruning never saw the vault's main
+ * reader. Source is `mcp`, the agent id travels in `context` for diagnostics.
+ *
+ * No `sessionId`: the HTTP transport is stateless (one Server per request,
+ * no `Mcp-Session-Id`), so there is no honest session to group reads under —
+ * and the agent id would be wrong here, because co-retrieval pairs are joined
+ * on `session_id` and would then count every two notes the agent ever read as
+ * co-retrieved. `logRetrieval` swallows its own errors; the `void` makes the
+ * non-await explicit so a slow DB never stalls the tool response.
+ */
+function traceRead(noteId: string, agentId: string): void {
+  void logRetrieval({
+    noteId,
+    source: "mcp",
+    context: { agentId },
+  });
+}
 
 /**
  * Wrap a tool payload in the MCP `CallToolResult` envelope.
