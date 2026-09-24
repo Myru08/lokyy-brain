@@ -113,7 +113,7 @@ services:
   forgejo:
     # v15 = aktuelle LTS-Linie (v15.0.6, 2026-07-30); erhält Security-Fixes für
     # 15 Monate. v16 wäre latest-stable, LTS ist für fremde Vault-Daten sicherer.
-    image: codeberg.org/forgejo/forgejo:15
+    image: codeberg.org/forgejo/forgejo:16
     restart: unless-stopped
     environment:
       - SERVICE_FQDN_FORGEJO_3000
