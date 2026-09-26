@@ -16,6 +16,20 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.19.0 — 2026-09-26
+
+### Neu
+- **Dateien vom Rechner importieren.** Im Import-Panel gibt es den Reiter „Dateien": auswählen oder einfach ins Fenster ziehen. Text, Markdown und PDF werden zu Notizen — bei PDFs wird der Text herausgezogen. Mehrere Dateien gleichzeitig gehen auf jedem Gerät, auch am Handy.
+- **Ganze Ordner importieren.** Am Rechner lässt sich ein kompletter Ordner wählen; die Unterordner bleiben erhalten. Am Handy geht das nicht — kein Browser kann dort Ordner auswählen, deshalb erscheint der Knopf nur, wo er auch funktioniert.
+- **Nichts verschwindet stillschweigend.** Bilder, zu große oder leere Dateien werden nicht einfach übergangen: sie stehen mit Begründung in der Liste. Bilder und andere Binärdateien kommen später über einen eigenen Weg.
+
+### Gut zu wissen
+- Ein eingescanntes PDF ohne Textebene ergibt eine leere Notiz, die genau das sagt. Eine automatische Texterkennung gibt es (noch) nicht.
+- Vorhandene Notizen werden nie überschrieben — bei Namensgleichheit legt der Import eine zweite Datei daneben.
+- Obergrenzen: 10 MB pro Datei, 50 MB pro Vorgang. Größere Ordner in Portionen importieren; die Werte lassen sich anpassen.
+
+---
+
 ## v1.18.0 — 2026-08-14
 
 ### Behoben
