@@ -372,6 +372,17 @@ interface ImportPanelProps {
   onClose: () => void;
   /** wird mit der Notiz-id aufgerufen, wenn ein Import fertig ist */
   onImported: (noteId: string) => void;
+  /**
+   * Öffnet die Approval-Karte der Ingest-Time-Synthese (#67).
+   *
+   * OPTIONAL, und das ist Absicht: fehlt die Prop, fragt das Panel Vorschläge
+   * gar nicht ab. Die Synthese-Stufe ist abschaltbar (AC 5) und entsteht
+   * parallel — der Import darf davon in keinem Zustand abhängen (AC 12).
+   * Ist sie gesetzt, erscheint an der Job-Zeile ein Hinweis, sobald es zu
+   * diesem Lauf etwas zu entscheiden gibt; bei null Vorschlägen erscheint
+   * nichts.
+   */
+  onOpenProposals?: () => void;
 }
 
 const TYPES: {
@@ -395,7 +406,12 @@ const STATUS: Record<
   error: { label: "Fehler", color: C.err, icon: AlertTriangle },
 };
 
-export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
+export function ImportPanel({
+  open,
+  onClose,
+  onImported,
+  onOpenProposals,
+}: ImportPanelProps) {
   // Phase D Wave D1 — Slide-over goes full-width on phones; the type-grid
   // and folder browser inside the panel become unusable below ~340px wide.
   const isMobile = useIsMobile();
@@ -453,6 +469,45 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
       window.clearInterval(iv);
     };
   }, [open]);
+
+  /**
+   * Offene Synthese-Vorschläge zählen — je Import-Lauf (#67).
+   *
+   * Eigener, langsamerer Takt als die Job-Queue: die Vorschläge ändern sich
+   * nur, wenn ein Import fertig wird oder jemand entscheidet. Jeder Fehler
+   * wird geschluckt und der Zähler bleibt leer — die Stufe kann abgeschaltet
+   * sein, dann antwortet die Route mit 404, und das ist kein Grund, im
+   * Import-Panel einen Fehler zu zeigen.
+   */
+  const [proposalsPerJob, setProposalsPerJob] = useState<
+    Record<string, number>
+  >({});
+
+  useEffect(() => {
+    if (!open || !onOpenProposals) return;
+    let alive = true;
+    const tick = () => {
+      api
+        .listIngestProposals("pending")
+        .then((rows) => {
+          if (!alive) return;
+          const counts: Record<string, number> = {};
+          for (const p of rows) {
+            counts[p.jobId] = (counts[p.jobId] ?? 0) + 1;
+          }
+          setProposalsPerJob(counts);
+        })
+        .catch(() => {
+          if (alive) setProposalsPerJob({});
+        });
+    };
+    tick();
+    const iv = window.setInterval(tick, 4000);
+    return () => {
+      alive = false;
+      window.clearInterval(iv);
+    };
+  }, [open, onOpenProposals]);
 
   /**
    * Defaults + Ordnerliste laden, wenn das Panel öffnet. Beides bewusst
@@ -1540,6 +1595,32 @@ export function ImportPanel({ open, onClose, onImported }: ImportPanelProps) {
                   >
                     {job.error}
                   </div>
+                )}
+                {/* Brücke zur Approval-Karte (#67). Nur wenn es zu DIESEM Lauf
+                    etwas zu entscheiden gibt — null Vorschläge ist der
+                    Normalfall und darf nichts hinterlassen. */}
+                {onOpenProposals && (proposalsPerJob[job.id] ?? 0) > 0 && (
+                  <button
+                    data-testid={`job-proposals-${job.id}`}
+                    onClick={onOpenProposals}
+                    style={{
+                      marginTop: 6,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4,
+                      background: "transparent",
+                      border: "none",
+                      color: C.gold,
+                      fontSize: 11.5,
+                      fontFamily: FONT.ui,
+                      cursor: "pointer",
+                      padding: 0,
+                      textAlign: "left",
+                    }}
+                  >
+                    <Sparkles size={12} />
+                    {proposalsPerJob[job.id]} Vorschläge · ansehen
+                  </button>
                 )}
                 {/* Hinweis zu einem GELUNGENEN Job — z.B. ein PDF ohne
                     Textebene (Scan): die Notiz liegt im Vault, ist aber leer.

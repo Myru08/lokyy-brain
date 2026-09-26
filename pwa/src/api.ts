@@ -4,6 +4,9 @@ import type {
   GraphData,
   ImportDefaults,
   ImportRequest,
+  IngestApplyResponse,
+  IngestProposal,
+  IngestProposalStatus,
   Note,
   NoteSummary,
   PipeJob,
@@ -267,6 +270,32 @@ export interface TopicNoteItem {
   generatedAt: string | null;
   communityId: string | null;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Ingest-Time-Synthese (#67) — Vorschläge, die beim Import entstehen.
+ *
+ * Der Vertrag liegt in `@lokyy/shared` und wird hier nur weitergereicht, damit
+ * die Oberfläche weiter aus `./api.js` importieren kann. Ein Feld-für-Feld-
+ * Vergleich beim Zusammenführen ergab volle Deckung; abweichend war allein der
+ * NAME des Apply-Ergebnisses (`IngestApplyResponse` serverseitig), deshalb hier
+ * ein Alias statt einer zweiten Definition.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export type {
+  IngestProposal,
+  IngestProposalAction,
+  IngestProposalStatus,
+} from "@lokyy/shared";
+
+/**
+ * Ergebnis einer Sammel-Entscheidung — Alias auf den Vertrag.
+ *
+ * `skipped` ist der wichtige Teil: ein freigegebener Vorschlag, der nicht
+ * angewandt werden konnte (Zielnotiz weg, Konflikt, Schreibfehler). Er MUSS
+ * mit Grund in der Oberfläche landen — sonst hätte der Nutzer freigegeben und
+ * nichts wäre passiert, ohne dass er es erfährt.
+ */
+export type IngestProposalsApplyResult = IngestApplyResponse;
 
 export interface AgentReviewQueue {
   mem0: Mem0ReviewItem[];
@@ -1712,6 +1741,44 @@ export const api = {
       throw new ApiError(res.status, err.error ?? "reject failed");
     }
   },
+
+  /* ──── Ingest-Time-Synthese (#67) ──── */
+
+  /**
+   * Offene Vorschläge aus den Import-Läufen.
+   *
+   * Bewusst NICHT nach Job gefiltert: Vorschläge überleben den Import und
+   * dürfen später entschieden werden. Die Zuordnung zu einem Lauf steckt in
+   * `jobId` und wird erst in der Oberfläche verwendet.
+   */
+  listIngestProposals: (
+    status: IngestProposalStatus = "pending",
+  ): Promise<IngestProposal[]> =>
+    fetch(
+      `${BASE}/ingest/proposals?status=${encodeURIComponent(status)}`,
+      { credentials: "include" },
+    )
+      .then(json<{ proposals?: IngestProposal[] }>)
+      .then((d) => d.proposals ?? []),
+
+  /**
+   * Eine Sammel-Entscheidung abschicken.
+   *
+   * Freigegeben und abgelehnt gehen getrennt, weil beides eine Entscheidung
+   * ist: Abgelehntes bleibt serverseitig mit Status im Protokoll. Was in
+   * keiner der beiden Listen steht, bleibt `pending` — unentschieden ist
+   * nicht abgelehnt.
+   */
+  applyIngestProposals: (body: {
+    approved: string[];
+    rejected: string[];
+  }): Promise<IngestProposalsApplyResult> =>
+    fetch(`${BASE}/ingest/proposals/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    }).then(json<IngestProposalsApplyResult>),
 
   /** Move a lint finding from `open` → `acknowledged`. */
   acknowledgeLintFinding: async (id: string): Promise<void> => {
