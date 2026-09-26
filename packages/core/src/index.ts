@@ -869,3 +869,44 @@ export {
   type UpdateCheckTimerHandle,
   type UpdateCheckTimerOptions,
 } from "./version/index.js";
+
+// ─── Ingest-Time-Synthese (Issue #67) ──────────────────────────────────
+// Die Stufe selbst hängt in `pipeQueue` und braucht keinen Export; nach außen
+// gehen nur die Konfiguration (Diagnose), der Store (Routen) und `apply`.
+export {
+  ingestSynthesisConfig,
+  DEFAULT_INGEST_BUDGET_MS,
+  DEFAULT_INGEST_MAX_JUDGE,
+  type IngestSynthesisConfig,
+  type IngestSynthesisMode,
+} from "./ingest/config.js";
+export {
+  runIngestSynthesis,
+  defaultSynthesisDeps,
+  type IngestSynthesisInput,
+  type IngestSynthesisOutcome,
+  type IngestSynthesisDeps,
+} from "./ingest/synthesis.js";
+export {
+  insertIngestProposals,
+  listIngestProposals,
+  loadIngestProposals,
+  setIngestProposalStatus,
+  rowToProposal as ingestProposalRowToJson,
+  type NewIngestProposal,
+} from "./ingest/proposalStore.js";
+export {
+  applyIngestProposals,
+  defaultApplyDeps as defaultIngestApplyDeps,
+  type ApplyDeps as IngestApplyDeps,
+} from "./ingest/apply.js";
+export {
+  prefilter as ingestPrefilter,
+  contrastSignals,
+  CONTRAST_PATTERNS,
+  MIN_SHARED_TAGS,
+  MAX_LINK_PROPOSALS,
+  type CandidateNote as IngestCandidateNote,
+  type PrefilterHit as IngestPrefilterHit,
+  type PrefilterResult as IngestPrefilterResult,
+} from "./ingest/prefilter.js";

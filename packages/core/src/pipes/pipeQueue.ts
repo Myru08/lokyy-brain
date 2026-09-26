@@ -6,6 +6,7 @@ import type {
   SharePayload,
 } from "@lokyy/shared";
 import { save } from "../git/gitService.js";
+import { runIngestSynthesis } from "../ingest/synthesis.js";
 import { classifyImportFile } from "./importTypes.js";
 
 /**
@@ -120,6 +121,10 @@ async function drain(): Promise<void> {
         // Erfolgreich, aber erklärungsbedürftig — z.B. ein PDF ohne
         // Textebene, das eine leere Notiz erzeugt (Issue #63).
         if (result.notice) job.notice = result.notice;
+        const synthesis = await synthesize(job, result.body);
+        if (synthesis) {
+          job.notice = job.notice ? `${job.notice} | ${synthesis}` : synthesis;
+        }
         job.status = "done";
       } catch (err) {
         job.status = "error";
@@ -134,5 +139,49 @@ async function drain(): Promise<void> {
     }
   } finally {
     working = false;
+  }
+}
+
+/**
+ * Ingest-Time-Synthese (Issue #67).
+ *
+ * Läuft NACH dem Handler und NACH `save()`: der Capture-Commit ist zu diesem
+ * Zeitpunkt durch, die Notiz liegt im Vault. Genau darum steht die Stufe hier
+ * und nicht vor `save()` — so kann sie den Commit weder verzögern noch
+ * verhindern, und ihre Vorschläge zeigen auf eine Notiz, die es wirklich gibt.
+ *
+ * Sie läuft im Import-Pfad, also unter Zeitbudget (siehe `ingest/config.ts`).
+ * `runIngestSynthesis` wirft per Vertrag nicht; dieses `try/catch` ist der
+ * zweite Gurt: ein Fehler in der Synthese darf den Import NIE fehlschlagen
+ * lassen — der Capture ist wichtiger als die Synthese.
+ *
+ * Rückgabe: eine kurze Zeile für `job.notice`, oder `null`. Verschluckt wird
+ * nichts: Abbrüche und Judge-Fehler kommen als `alerts` mit, der vollständige
+ * Verlauf steht über `console.warn` im Log.
+ */
+async function synthesize(
+  job: PipeJob,
+  body: string,
+): Promise<string | null> {
+  try {
+    const outcome = await runIngestSynthesis({
+      jobId: job.id,
+      noteId: job.resultNoteId ?? "",
+      body,
+    });
+    const parts: string[] = [];
+    if (outcome.proposals.length > 0) {
+      parts.push(
+        `Synthese: ${outcome.proposals.length} Vorschlag/Vorschläge zur Freigabe`,
+      );
+    }
+    parts.push(...outcome.alerts);
+    return parts.length > 0 ? parts.join(" | ") : null;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn(
+      `[ingest-synthesis] job=${job.id} — Stufe ausgefallen, Import bleibt erfolgreich: ${reason}`,
+    );
+    return `Synthese ausgefallen: ${reason}`;
   }
 }

@@ -218,3 +218,89 @@ export interface PipeResult {
    */
   notice?: string;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Ingest-Time-Synthese (Issue #67)
+ *
+ * Ein Import legte bisher eine isolierte Notiz an; der Abgleich mit dem
+ * bestehenden Wissen passierte erst im Nachtlauf. Die Synthese-Stufe läuft
+ * direkt im Import-Pfad und legt VORSCHLÄGE ab — geschrieben wird erst nach
+ * Freigabe. Die erfasste Notiz selbst wird unverändert sofort committet: ein
+ * Handy-Share soll nicht in der Queue hängen, bis jemand die App öffnet.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Was ein Vorschlag tun würde.
+ *
+ * `flag_contradiction` MELDET nur, es wertet nichts ab — konsistent zum
+ * Nachtlauf (Entscheidung Oliver, 2026-09-26). `create_note` meint eine
+ * ZUSÄTZLICH vorgeschlagene Notiz, nie die importierte Quelle.
+ */
+export const INGEST_PROPOSAL_ACTIONS = [
+  "create_note",
+  "append_to_note",
+  "link",
+  "flag_contradiction",
+  "merge",
+  "skip",
+] as const;
+export type IngestProposalAction = (typeof INGEST_PROPOSAL_ACTIONS)[number];
+
+/**
+ * Lebenslauf eines Vorschlags. Append-only Log: die Zeile wird nie gelöscht,
+ * nur ihr Status wandert weiter (`pending` → `approved`/`rejected` →
+ * `applied`/`failed`).
+ */
+export const INGEST_PROPOSAL_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+  "applied",
+  "failed",
+] as const;
+export type IngestProposalStatus = (typeof INGEST_PROPOSAL_STATUSES)[number];
+
+/** Ein einzelner Synthese-Vorschlag, wie ihn API und PWA sehen. */
+export interface IngestProposal {
+  id: string;
+  /** #66 — von Anfang an mitgeschrieben, damit die Tabelle nicht vault-blind wächst. */
+  vaultId: string;
+  /** Welcher Import-Lauf den Vorschlag erzeugt hat. */
+  jobId: string;
+  action: IngestProposalAction;
+  /** Die neu importierte Notiz (path-id, ohne ".md"). */
+  sourceNoteId: string;
+  /** Die betroffene bestehende Notiz — `null`, wenn keine. */
+  targetNoteId: string | null;
+  /** Warum. Anzeigbar, in der Sprache des Nutzers. */
+  rationale: string;
+  status: IngestProposalStatus;
+  /** Vorfilter-Treffer, Judge-Antwort, Fehlergrund beim Anwenden. */
+  evidence: unknown;
+  /** ISO-Timestamps. */
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+/** Antwort von `GET /api/ingest/proposals?status=pending`. */
+export interface IngestProposalsResponse {
+  proposals: IngestProposal[];
+}
+
+/** Body von `POST /api/ingest/proposals/apply` — Proposal-IDs. */
+export interface IngestApplyRequest {
+  approved: string[];
+  rejected: string[];
+}
+
+/**
+ * Antwort von `POST /api/ingest/proposals/apply`.
+ *
+ * `skipped` ist Pflichtteil des Vertrags: eine unbekannte ID, ein bereits
+ * entschiedener Vorschlag oder eine nicht anwendbare Aktion landen dort MIT
+ * Grund — nie als stiller Zähler.
+ */
+export interface IngestApplyResponse {
+  applied: IngestProposal[];
+  skipped: Array<{ id: string; reason: string }>;
+}

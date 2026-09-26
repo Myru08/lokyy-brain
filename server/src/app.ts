@@ -29,6 +29,7 @@ import { selfRagRoutes } from "./routes/self-rag.js";
 import { tracesRoutes } from "./routes/traces.js";
 import { sleepAgentRoutes } from "./routes/sleep-agent.js";
 import { mem0ReviewRoutes } from "./routes/mem0-review.js";
+import { ingestRoutes } from "./routes/ingest.js";
 import { pprRoutes } from "./routes/ppr.js";
 import { rerankRoutes } from "./routes/rerank.js";
 import { surfaceRoutes, workingMemoryRoutes } from "./routes/surface.js";
@@ -227,6 +228,11 @@ export function createApp(): Hono {
   // `mem0-classifier` REM-sleep pass. Vault mutations only happen on accept,
   // never inside the classifier itself.
   app.route("/api/mem0/review", mem0ReviewRoutes);
+
+  // Issue #67 — Ingest-Time-Synthese: die Vorschläge, die eine Import-Pipe
+  // beim Erfassen erzeugt hat, plus deren gesammelte Freigabe. Geschrieben
+  // wird ausschließlich hier, nie in der Stufe selbst.
+  app.route("/api/ingest", ingestRoutes);
 
   // Phase B Wave B1 / Story 1 — Personalized PageRank (HippoRAG-style)
   // über den Wikilink-Graph. Seeds aus RRF-Top-N → spreading activation.

@@ -22,6 +22,7 @@ import { migration0014NoteSearchForgotten } from "./0014_note_search_forgotten.j
 import { migration0015ForgejoOauthTokens } from "./0015_forgejo_oauth_tokens.js";
 import { migration0016ForgejoOauthTokensEncrypt } from "./0016_forgejo_oauth_tokens_encrypt.js";
 import { migration0017McpTokens } from "./0017_mcp_tokens.js";
+import { migration0018IngestProposals } from "./0018_ingest_proposals.js";
 
 export interface Migration {
   name: string;
@@ -50,4 +51,5 @@ export const MIGRATIONS: Migration[] = [
     sql: migration0016ForgejoOauthTokensEncrypt,
   },
   { name: "0017_mcp_tokens", sql: migration0017McpTokens },
+  { name: "0018_ingest_proposals", sql: migration0018IngestProposals },
 ];

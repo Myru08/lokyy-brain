@@ -62,6 +62,7 @@ Community — dort steht das Wissen, das nicht in eine README passt.
 - [MCP-Integration — KI-Agenten anbinden](#mcp-integration--ki-agenten-anbinden)
 - [Vault-Contract (SPEC)](#vault-contract-spec)
 - [Remote-Deployment](#remote-deployment)
+- [Synthese beim Import (Ingest-Time-Synthese)](#synthese-beim-import-ingest-time-synthese)
 - [Dateien und Ordner importieren](#dateien-und-ordner-importieren)
 - [Projekt-Status](#projekt-status)
 - [Zugriff & Mitwirken](#zugriff--mitwirken)
@@ -563,6 +564,45 @@ Wichtig für die Fehlersuche: Notizen, bei denen nach dem Indexieren *keine*
 Vektoren in der Datenbank stehen, zählen als `failed` — nicht als Erfolg. Läuft
 der Embedding-Dienst gar nicht, bricht der Lauf nach fünf solchen Notizen ab und
 sagt das in `lastError`, statt sinnlos den ganzen Vault durchzugehen.
+
+## Synthese beim Import (Ingest-Time-Synthese)
+
+Ein Import legte früher eine isolierte Notiz an; der Abgleich mit dem
+bestehenden Wissen passierte erst im Nachtlauf, bis zu 24 h später. Seit
+v1.20 läuft direkt nach dem Erfassen eine **Synthese-Stufe**: sie liest
+den Text der neuen Notiz und legt **Vorschläge** ab — einen fehlenden
+Rückverweis, einen möglichen Widerspruch zu einer bestehenden Notiz.
+
+**Die erfasste Notiz wartet auf nichts.** Sie wird wie immer sofort
+committet; nur die Vorschläge warten auf Freigabe. Geschrieben wird
+ausschließlich, was freigegeben wurde:
+
+- `GET /api/ingest/proposals?status=pending` — offene Vorschläge
+- `POST /api/ingest/proposals/apply` mit `{ approved: [...], rejected: [...] }`
+  — Abgelehntes bleibt mit Grund im Log stehen und berührt den Vault nicht.
+
+Widerspruchs-Funde landen im **bestehenden** Lint-Format (`/api/lint`) — es
+gibt kein zweites Review-System für dasselbe Problem. Sie **melden** nur; sie
+werten keine Notiz ab.
+
+**Die Stufe blockiert nie.** Sie läuft unter einem Zeitbudget; ist es
+aufgebraucht, endet sie ohne Vorschläge und der Import läuft normal weiter.
+Ein Fehler in der Stufe lässt den Import nie fehlschlagen — der Capture ist
+wichtiger als die Synthese. Was ausfällt, wird benannt: am Job (Hinweis-Zeile)
+und im Log.
+
+**Abschaltbar per Env** (siehe `.env.example`):
+
+| Variable | Default | Wirkung |
+|----------|---------|---------|
+| `LOKYY_INGEST_SYNTHESIS` | `full` | `full` = Vorfilter + LLM-Prüfung, `prefilter` = nur Vorfilter (kein einziger LLM-Aufruf), `off` = Stufe aus |
+| `LOKYY_INGEST_SYNTHESIS_BUDGET_MS` | `5000` | Zeitbudget der Stufe pro Import |
+| `LOKYY_INGEST_SYNTHESIS_MAX_JUDGE` | `3` | Obergrenze der LLM-Aufrufe pro Import |
+
+> **Auf Installationen ohne GPU `prefilter` setzen.** Ein lokaler
+> `llama3.1:8b`-Aufruf braucht dort gemessene ~77 s — die Stufe
+> würde also in jedes Zeitbudget laufen. `prefilter` liefert weiterhin die
+> Rückverweis-Vorschläge, nur ohne LLM-Prüfung.
 
 ## Dateien und Ordner importieren
 
