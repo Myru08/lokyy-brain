@@ -209,6 +209,99 @@ export class OllamaProvider implements LlmProvider {
     return (await res.json()) as T;
   }
 
+  /**
+   * Fork: POST mit NDJSON-Stream (`stream: true`) und Zusammensetzen der
+   * Teilantworten zu einer `OllamaChatResponse`. Gleicher Timeout- und
+   * Fehler-Umschlag wie `request()`; der Abort gilt für den gesamten Stream.
+   */
+  private async requestChatStream(
+    path: string,
+    init: RequestInit,
+  ): Promise<OllamaChatResponse> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      let res: Response;
+      try {
+        res = await fetch(`${this.baseUrl}${path}`, {
+          ...init,
+          signal: controller.signal,
+          headers: {
+            "Content-Type": "application/json",
+            ...(init.headers ?? {}),
+          },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new LlmUnavailable("ollama", msg);
+      }
+      if (!res.ok) {
+        let detail = "";
+        try {
+          detail = await res.text();
+        } catch {
+          // ignore body-read failure; status alone is enough
+        }
+        throw new LlmError(
+          "PROVIDER_ERROR",
+          `Ollama HTTP ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`,
+          "ollama",
+        );
+      }
+
+      const merged: OllamaChatResponse = { message: { role: "assistant", content: "" } };
+      const toolCalls: NonNullable<NonNullable<OllamaChatResponse["message"]>["tool_calls"]> = [];
+      const apply = (line: string): void => {
+        if (!line.trim()) return;
+        const chunk = JSON.parse(line) as OllamaChatResponse & { error?: string };
+        if (chunk.error) {
+          throw new LlmError("PROVIDER_ERROR", `Ollama: ${chunk.error.slice(0, 500)}`, "ollama");
+        }
+        if (chunk.model) merged.model = chunk.model;
+        if (chunk.message?.content) merged.message!.content += chunk.message.content;
+        if (chunk.message?.tool_calls) toolCalls.push(...chunk.message.tool_calls);
+        if (chunk.done) {
+          merged.done = true;
+          merged.done_reason = chunk.done_reason;
+          merged.prompt_eval_count = chunk.prompt_eval_count;
+          merged.eval_count = chunk.eval_count;
+        }
+      };
+
+      try {
+        if (!res.body) {
+          // Kein Stream-Body (z. B. Test-Doubles): als ganze NDJSON lesen.
+          for (const line of (await res.text()).split("\n")) apply(line);
+        } else {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let nl: number;
+            while ((nl = buffer.indexOf("\n")) >= 0) {
+              apply(buffer.slice(0, nl));
+              buffer = buffer.slice(nl + 1);
+            }
+          }
+          buffer += decoder.decode();
+          apply(buffer);
+        }
+      } catch (err) {
+        if (err instanceof LlmError) throw err;
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new LlmUnavailable("ollama", msg);
+      }
+
+      if (toolCalls.length > 0) merged.message!.tool_calls = toolCalls;
+      return merged;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async chat(messages: ChatMessage[], opts: ChatOpts = {}): Promise<ChatResult> {
     const model = opts.model ?? this.defaultChatModel;
 
@@ -224,7 +317,12 @@ export class OllamaProvider implements LlmProvider {
     const body: Record<string, unknown> = {
       model,
       messages: finalMessages.map((m) => ({ role: m.role, content: m.content })),
-      stream: false,
+      // Fork: streamen statt `stream: false`. Ohne Streaming schickt Ollama die
+      // Header erst mit der fertigen Antwort, und Nodes fetch (undici) bricht
+      // nach seinem festen headersTimeout von 300 s ab ("fetch failed") —
+      // `LOKYY_OLLAMA_TIMEOUT_MS` über 300 s griff dadurch nie. Gestreamt kommen
+      // die Header mit dem ersten Token; die Gesamtgrenze bleibt timeoutMs.
+      stream: true,
     };
     if (Object.keys(ollamaOptions).length > 0) body.options = ollamaOptions;
 
@@ -242,7 +340,7 @@ export class OllamaProvider implements LlmProvider {
 
     if (opts.extra) Object.assign(body, opts.extra);
 
-    const data = await this.request<OllamaChatResponse>("/api/chat", {
+    const data = await this.requestChatStream("/api/chat", {
       method: "POST",
       body: JSON.stringify(body),
     });
