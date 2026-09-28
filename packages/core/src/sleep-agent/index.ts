@@ -72,6 +72,32 @@ const ALL_PASSES: SleepPass[] = [
   // Future: multiChunkReEmbedPass, multiTraceConsolidationPass, …
 ];
 
+/** Fork: wöchentlicher Lint-Slot, Sonntag 04:30 Container-Zeit (TZ leer = UTC, 06:30 MESZ). */
+const LINT_WEEKDAY = 0;
+const LINT_HOUR = 4;
+const LINT_MINUTE = 30;
+const LINT_RETRY_MS = 5 * 60_000;
+const LINT_RETRY_LIMIT = 24;
+
+/**
+ * Nächster Zeitpunkt `weekday` (0 = Sonntag) um `hour:minute` Ortszeit,
+ * strikt nach `now`. Wie `scheduleNightly` immer frisch an der Wanduhr
+ * verankert, damit Zeitumstellungen nicht driften.
+ */
+export function nextWeeklySlot(
+  now: Date,
+  weekday: number,
+  hour: number,
+  minute: number,
+): Date {
+  const next = new Date(now);
+  next.setHours(hour, minute, 0, 0);
+  const days = (weekday - next.getDay() + 7) % 7;
+  next.setDate(next.getDate() + days);
+  if (next <= now) next.setDate(next.getDate() + 7);
+  return next;
+}
+
 const TERMINAL_STATUSES: ReadonlySet<SleepStatus> = new Set([
   "completed",
   "failed",
@@ -126,6 +152,7 @@ export class SleepAgent {
   private currentRunId: string | null = null;
   private idleTimer: ReturnType<typeof setInterval> | null = null;
   private nightlyTimer: ReturnType<typeof setTimeout> | null = null;
+  private lintTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Run all passes registered for `phase`. Idempotent: throws if another
@@ -219,12 +246,21 @@ export class SleepAgent {
    * = a self-rescheduling `setTimeout` that targets the next `nightlyHour`
    * local time (default 03:00) and re-arms itself for the following day.
    */
-  startScheduler(opts: { idleMinutes?: number; nightlyHour?: number } = {}): void {
+  startScheduler(
+    opts: {
+      idleMinutes?: number;
+      nightlyHour?: number;
+      lintWeekday?: number;
+      lintHour?: number;
+      lintMinute?: number;
+    } = {},
+  ): void {
     const idleMin = opts.idleMinutes ?? 30;
     const nightlyHour = opts.nightlyHour ?? 3;
 
     if (this.idleTimer) clearInterval(this.idleTimer);
     if (this.nightlyTimer) clearTimeout(this.nightlyTimer);
+    if (this.lintTimer) clearTimeout(this.lintTimer);
 
     this.idleTimer = setInterval(() => {
       if (this.running) return;
@@ -244,14 +280,68 @@ export class SleepAgent {
     }
 
     this.scheduleNightly(nightlyHour);
+    this.scheduleWeeklyLint(
+      opts.lintWeekday ?? LINT_WEEKDAY,
+      opts.lintHour ?? LINT_HOUR,
+      opts.lintMinute ?? LINT_MINUTE,
+    );
   }
 
-  /** Disarm both timers. Safe to call from any state. */
+  /** Disarm all timers. Safe to call from any state. */
   stopScheduler(): void {
     if (this.idleTimer) clearInterval(this.idleTimer);
     if (this.nightlyTimer) clearTimeout(this.nightlyTimer);
+    if (this.lintTimer) clearTimeout(this.lintTimer);
     this.idleTimer = null;
     this.nightlyTimer = null;
+    this.lintTimer = null;
+  }
+
+  /**
+   * Fork: die `lint`-Phase (Waisen, fehlende Links, Schema-Drift, Dubletten,
+   * Widersprüche) hatte keinen Zeitplan und lief nur per manuellem Trigger —
+   * `lint_findings` blieb dauerhaft leer. Einmal pro Woche reicht, weil die
+   * Widerspruchsprüfung auf CPU-Ollama teuer ist. Der Slot liegt nach dem
+   * REM-Lauf (03:00, bis ~50 min). Läuft gerade etwas (REM oder ein
+   * NREM-Idle-Lauf), wird alle 5 min erneut versucht statt die Woche
+   * auszulassen.
+   */
+  private scheduleWeeklyLint(weekday: number, hour: number, minute: number): void {
+    const next = nextWeeklySlot(new Date(), weekday, hour, minute);
+    this.armLintTimer(next.getTime() - Date.now(), () => {
+      this.tryLint(LINT_RETRY_LIMIT);
+      this.scheduleWeeklyLint(weekday, hour, minute);
+    });
+  }
+
+  private tryLint(retriesLeft: number): void {
+    if (!this.running) {
+      void this.runPhase("lint", "nightly").catch((err) => {
+        console.warn(
+          `[sleep-agent] weekly lint run failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      });
+      return;
+    }
+    if (retriesLeft <= 0) {
+      console.warn("[sleep-agent] weekly lint skipped — agent stayed busy");
+      return;
+    }
+    const t = setTimeout(
+      () => this.tryLint(retriesLeft - 1),
+      LINT_RETRY_MS,
+    ) as { unref?: () => void };
+    t.unref?.();
+  }
+
+  private armLintTimer(ms: number, fn: () => void): void {
+    this.lintTimer = setTimeout(fn, Math.max(0, ms));
+    if (typeof this.lintTimer === "object" && this.lintTimer !== null) {
+      const t = this.lintTimer as { unref?: () => void };
+      t.unref?.();
+    }
   }
 
   /**

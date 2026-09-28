@@ -175,7 +175,7 @@ async function main() {
   try {
     sleepAgent().startScheduler();
     console.log(
-      "[lokyy-brain] sleep-agent scheduler armed (idle=nrem/30min, nightly=rem/03:00)",
+      "[lokyy-brain] sleep-agent scheduler armed (idle=nrem/30min, nightly=rem/03:00, weekly=lint/So 04:30)",
     );
   } catch (err) {
     console.warn(
