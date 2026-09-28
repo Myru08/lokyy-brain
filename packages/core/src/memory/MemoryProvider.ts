@@ -20,6 +20,11 @@ export interface SearchOpts {
   tagFilter?: string[];
   folderPrefix?: string;
   wikilinkTarget?: string;
+  /**
+   * Fork: `99_archive/` (inkl. `_trash`) ist standardmäßig aus der Suche
+   * ausgenommen. `true` oder ein `folderPrefix` unter `99_archive/` holt es zurück.
+   */
+  includeArchive?: boolean;
 }
 
 export interface RelatedOpts {

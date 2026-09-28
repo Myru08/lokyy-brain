@@ -177,7 +177,7 @@ describe("search ladder e2e (AC#2/AC#3/AC#4/AC#5)", () => {
     expect(payload(res)).toEqual({
       results: [{ noteId: "20_notes/a", score: 1, snippet: "x" }],
     });
-    expect(searchMock).toHaveBeenCalledWith("lokyy", { limit: 10 });
+    expect(searchMock).toHaveBeenCalledWith("lokyy", { limit: 10, includeArchive: false });
     expect(buildSearchPipelineMock).not.toHaveBeenCalled();
   });
 

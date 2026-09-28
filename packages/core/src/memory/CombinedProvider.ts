@@ -43,6 +43,9 @@ import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./Memor
  */
 const TIER2_RESERVED_SHARE = 0.3;
 
+/** Fork: Archiv-Ordner, der standardmäßig nicht durchsucht wird. */
+const ARCHIVE_PREFIX = "99_archive/";
+
 export class CombinedProvider implements MemoryProvider {
   readonly t1: Tier1Provider;
   readonly t2: Tier2Provider;
@@ -60,6 +63,14 @@ export class CombinedProvider implements MemoryProvider {
 
   async search(query: string, opts: SearchOpts = {}): Promise<SearchHit[]> {
     const limit = opts.limit ?? 25;
+    // Fork: Archiv und Papierkorb aus der Standardsuche halten — beide Tiers
+    // werden VOR dem Mischen gefiltert, damit die Reserve-Logik unverändert
+    // bleibt. `includeArchive` oder ein Archiv-`folderPrefix` holt es zurück.
+    const wantsArchive =
+      opts.includeArchive === true ||
+      (opts.folderPrefix ?? "").startsWith(ARCHIVE_PREFIX);
+    const keep = (h: SearchHit): boolean =>
+      wantsArchive || !h.noteId.startsWith(ARCHIVE_PREFIX);
 
     // ── Tier-1 leg: indexed BM25 (fast) with a structural fallback ──────────
     //
@@ -85,7 +96,7 @@ export class CombinedProvider implements MemoryProvider {
           snippet: h.snippet,
           score: h.score,
           tier: "t1" as const,
-        }));
+        })).filter(keep);
       } else {
         // Empty BM25 result for a real query → the corpus may be
         // un-backfilled (note_search empty for legacy notes) or pg_search +
@@ -93,15 +104,15 @@ export class CombinedProvider implements MemoryProvider {
         // so quality never regresses to 0. This is the only path that can
         // still trigger the slower in-memory rebuild — and only when BM25
         // found nothing at all.
-        t1Hits = await this.t1.search(query, opts);
+        t1Hits = (await this.t1.search(query, opts)).filter(keep);
       }
     } else {
       // Structural filters or empty/filter-only query → structural index.
-      t1Hits = await this.t1.search(query, opts);
+      t1Hits = (await this.t1.search(query, opts)).filter(keep);
     }
 
     const seen = new Set(t1Hits.map((h) => h.noteId));
-    const t2Hits = await this.t2.search(query, opts);
+    const t2Hits = (await this.t2.search(query, opts)).filter(keep);
     const t2New = t2Hits.filter((h) => !seen.has(h.noteId));
     if (t2New.length === 0) return t1Hits.slice(0, limit);
 

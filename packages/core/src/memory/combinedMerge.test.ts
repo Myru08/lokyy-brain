@@ -122,3 +122,22 @@ describe("Story 5.8 AC#6 — CombinedProvider.search merge", () => {
     expect(hits.filter((h) => h.tier === "t1")).toHaveLength(24);
   });
 });
+
+describe("Fork — Archiv aus der Standardsuche", () => {
+  const archived = (id: string): BM25Hit => ({ noteId: id, title: id, snippet: "…", score: 50 });
+
+  it("lässt 99_archive/ weg und füllt trotzdem auf limit auf", async () => {
+    const provider = build({
+      bm25Hits: [archived("99_archive/_trash/alt"), bm25Hit(1), archived("99_archive/topics/x"), bm25Hit(2), bm25Hit(3)],
+      t2Hits: [],
+    });
+    const hits = await provider.search("q", { limit: 3 });
+    expect(hits.map((h) => h.noteId)).toEqual(["t1-1", "t1-2", "t1-3"]);
+  });
+
+  it("zeigt das Archiv mit includeArchive", async () => {
+    const provider = build({ bm25Hits: [archived("99_archive/topics/x"), bm25Hit(1)], t2Hits: [] });
+    const hits = await provider.search("q", { limit: 5, includeArchive: true });
+    expect(hits.map((h) => h.noteId)).toContain("99_archive/topics/x");
+  });
+});

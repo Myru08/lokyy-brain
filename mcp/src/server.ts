@@ -346,6 +346,12 @@ export function createServer(): Server {
           properties: {
             query: { type: "string" },
             limit: { type: "number", default: 10 },
+            include_archive: {
+              type: "boolean",
+              default: false,
+              description:
+                "Also search `99_archive/` (archived notes and _trash). Off by default — only set it when the user explicitly asks about archived material.",
+            },
             mode: {
               type: "string",
               enum: ["fast", "deep"],
@@ -952,7 +958,10 @@ export function createServer(): Server {
           }
 
           const provider = getMemoryProvider(vaultId);
-          const hits = await provider.search(query, { limit });
+          const hits = await provider.search(query, {
+            limit,
+            includeArchive: args.include_archive === true,
+          });
           const filtered = hits.filter((h) => canRead(`${h.noteId}.md`));
           // Self-explaining empty result: a small model must NOT read `[]` as a
           // tool failure (and must not reach for a shell). Tell it the search
