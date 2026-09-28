@@ -1,5 +1,6 @@
 import { listNotes, getNote } from "../notes/notesService.js";
 import { parseLinks, parseTags, parseTitle } from "../graph/graphService.js";
+import { isForgotten, parseFrontmatter } from "../frontmatter/index.js";
 import type { MemoryProvider, RelatedOpts, SearchHit, SearchOpts } from "./MemoryProvider.js";
 
 /**
@@ -31,6 +32,16 @@ async function rebuild(): Promise<void> {
   for (const s of summaries) {
     const note = await getNote(s.id);
     if (!note) continue;
+    // Fork: vergessene Notizen (`forgotten:` im Frontmatter) aus Tier 1
+    // heraushalten — Tier1BM25 und Tier 2 filtern sie bereits, der
+    // CombinedProvider mischte sie über diesen Pfad wieder in search_vault.
+    let forgotten = false;
+    try {
+      forgotten = isForgotten(parseFrontmatter(note.body).data);
+    } catch {
+      forgotten = false;
+    }
+    if (forgotten) continue;
     entries.push({
       noteId: s.id,
       title: note.title,
