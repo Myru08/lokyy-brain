@@ -137,6 +137,20 @@ describe("topic-synthesis", () => {
     expect(res.notes).toContain("curated");
   });
 
+  it("überspringt ein Cluster, das über merged_community_ids einer zusammengeführten Topic-Note bekannt ist", async () => {
+    const merged = topicNote("Sammel-Topic", "c9", "curated").replace(
+      "community_id: c9",
+      "community_id: c9\nmerged_community_ids:\n  - c1",
+    );
+    vault.set("20_notes/topics/sammel-topic", merged);
+
+    const res = await topicSynthesisPass.run(RUN);
+
+    expect(created).toHaveLength(0);
+    expect(prompts).toHaveLength(0);
+    expect(res.processed).toBe(0);
+  });
+
   it("überspringt ein Cluster, dessen Zusammenfassung noch unreviewt in 70_pai/topics liegt", async () => {
     // Nacht 1 hat die Zusammenfassung geschrieben, der Nutzer hat sie noch
     // nicht angenommen. Nacht 2 darf denselben Cluster nicht erneut

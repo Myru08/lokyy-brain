@@ -109,9 +109,20 @@ async function loadKnownTopicIndex(): Promise<KnownTopicIndex> {
       slugs.add(slug);
       const note = await getNote(summary.id).catch(() => null);
       if (!note) continue;
-      const communityId = parseFrontmatter(note.body).data.community_id;
+      const data = parseFrontmatter(note.body).data;
+      const communityId = data.community_id;
       if (typeof communityId === "string" && communityId.length > 0) {
         communityIds.add(communityId);
+      }
+      // Fork: Beim Zusammenführen doppelter Topics trägt die behaltene Notiz
+      // die Cluster-Kennungen der archivierten Dubletten mit. Ohne das fielen
+      // deren Cluster aus dem Index und würden in der nächsten Nacht erneut
+      // als `auto-*` erzeugt.
+      const merged = data.merged_community_ids;
+      if (Array.isArray(merged)) {
+        for (const id of merged) {
+          if (typeof id === "string" && id.length > 0) communityIds.add(id);
+        }
       }
     }
   } catch {
