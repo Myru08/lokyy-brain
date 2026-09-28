@@ -497,7 +497,7 @@ export async function checkEmbeddingIndexFill(): Promise<DiagnosticCheck> {
 // verbraucht Platz und verfälscht Aggregate. Read-only — Aufräumen ist #57.
 
 /** Quelle der Frontmatter-ULIDs. Injizierbar, damit der Test ohne Vault läuft. */
-export type UlidReader = (pathIds: string[]) => Promise<Set<string>>;
+export type UlidReader = () => Promise<Set<string>>;
 
 /** Kurzer Zusatz zu den bewusst ungeprüften Spalten eines Stores. */
 function exclusionNote(store: DerivedStore): string {
@@ -507,7 +507,7 @@ function exclusionNote(store: DerivedStore): string {
 }
 
 export async function checkDerivedStoreOrphans(
-  readUlids: UlidReader = (ids) => collectVaultUlids(ids, config.vaultDir),
+  readUlids: UlidReader = () => collectVaultUlids(),
 ): Promise<DiagnosticCheck[]> {
   const started = Date.now();
 
@@ -541,7 +541,10 @@ export async function checkDerivedStoreOrphans(
     // Beide ID-Räume, siehe Modulkopf von derivedStoreOrphans.ts: `note_scoring`
     // wird von zwei Pfaden mit unterschiedlichen IDs beschrieben. Nur gegen die
     // Pfad-IDs geprüft, wäre nach dem ersten Nachtlauf jede Zeile „verwaist".
-    const ulids = await readUlids(pathIds);
+    // Seit #62 liest die Quelle den Vault selbst (`listNoteIdentities`) und
+    // braucht die Pfad-Liste nicht mehr als Eingabe — sie läuft über denselben
+    // Walk, ohne den Pull zu wiederholen.
+    const ulids = await readUlids();
     const knownIds = [...new Set([...pathIds, ...ulids])];
 
     const results = await collectDerivedStoreOrphans(config.databaseUrl, knownIds);

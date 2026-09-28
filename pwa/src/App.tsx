@@ -1,9 +1,10 @@
 import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Note, TreeNode } from "@lokyy/shared";
-import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot, AlertTriangle, Menu as MenuIcon, X as XIcon } from "lucide-react";
+import { ArrowUpRight, Settings as SettingsIcon, Search as SearchIcon, Network as NetworkIcon, Bot, AlertTriangle, Sparkles, Menu as MenuIcon, X as XIcon } from "lucide-react";
 import { useIsMobile, TOUCH_TARGET_MIN } from "./responsive.js";
 import { AgentReviewPanel } from "./AgentReviewPanel.js";
 import { LintFindingsPanel } from "./LintFindingsPanel.js";
+import { IngestProposalsPanel } from "./IngestProposalsPanel.js";
 import { Settings } from "./Settings.js";
 import { CommandPalette } from "./CommandPalette.js";
 import { BacklinksPanel } from "./BacklinksPanel.js";
@@ -375,6 +376,13 @@ export function App() {
   // Lint-Routen noch nicht im zentralen `api.ts`-Client liegen.
   const [lintPanelOpen, setLintPanelOpen] = useState(false);
   const [openLintCount, setOpenLintCount] = useState<number>(0);
+  // #67 — Ingest-Time-Synthese. Gleiche Mechanik wie der Lint-Badge: das Panel
+  // besitzt den Fetch (`/api/ingest/proposals`) und meldet die Anzahl offener
+  // Vorschläge über `onCountChange`. Der eigene Toolbar-Knopf ist nötig, weil
+  // die Vorschläge den Import überleben — die Route ist nicht nach Job
+  // gefiltert, also muss man sie auch Tage später ohne neuen Import erreichen.
+  const [proposalsOpen, setProposalsOpen] = useState(false);
+  const [openProposalCount, setOpenProposalCount] = useState<number>(0);
   // Story 7.12 — laufende Version + Update-Check. Der Hook stößt beim Laden
   // außerdem den Cache-Abgleich an (Bundle-Version ↔ `running`): weicht sie
   // ab, wird der Service Worker verworfen und genau EINMAL neu geladen. Das
@@ -2219,6 +2227,46 @@ export function App() {
               )}
             </button>
             <button
+              onClick={() => setProposalsOpen(true)}
+              title="Vorschläge aus dem Import"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                background: C.elevated,
+                border: `1px solid ${C.border}`,
+                borderRadius: 7,
+                padding: "5px 10px",
+                cursor: "pointer",
+                color: C.text,
+                fontSize: 13,
+                fontFamily: FONT.ui,
+                position: "relative",
+                minHeight: 36,
+              }}
+            >
+              <Sparkles size={18} style={{ color: C.accent }} />
+              Vorschläge
+              {openProposalCount > 0 && (
+                <span
+                  style={{
+                    background: C.accent,
+                    color: "#1a1110",
+                    borderRadius: 10,
+                    padding: "0 6px",
+                    fontSize: 10.5,
+                    fontWeight: 700,
+                    fontFamily: FONT.mono,
+                    minWidth: 16,
+                    textAlign: "center",
+                    lineHeight: 1.6,
+                  }}
+                >
+                  {openProposalCount > 99 ? "99+" : openProposalCount}
+                </span>
+              )}
+            </button>
+            <button
               onClick={() => setImportOpen(true)}
               style={{
                 display: "flex",
@@ -2752,6 +2800,7 @@ export function App() {
         onImported={(id) => {
           void refreshTree().then(() => open(id));
         }}
+        onOpenProposals={() => setProposalsOpen(true)}
       />
 
       {/* Agent-Review Panel (🤖 Review Toolbar-Button, Phase C Wave C3) */}
@@ -2776,6 +2825,20 @@ export function App() {
           void openNoteById(noteId);
         }}
         onCountChange={setOpenLintCount}
+      />
+
+      {/* Ingest-Time-Synthese (✨ Vorschläge Toolbar-Button, #67). Dieselbe
+          Slide-over-Mechanik wie Review- und Lint-Panel. Zwei Wege hinein:
+          der Toolbar-Knopf (weil Vorschläge den Import überleben) und die
+          Brücke aus der Job-Zeile im Import-Panel (onOpenProposals). */}
+      <IngestProposalsPanel
+        open={proposalsOpen}
+        onClose={() => setProposalsOpen(false)}
+        onOpenNote={(noteId) => {
+          setProposalsOpen(false);
+          void openNoteById(noteId);
+        }}
+        onCountChange={setOpenProposalCount}
       />
 
       {/* Workspace-Menü-Editor (Zahnrad in der Sidebar-Rail, Story 11.2).

@@ -16,6 +16,36 @@ aktuelle Version steht immer ganz oben.
 
 ---
 
+## v1.20.0 — 2026-09-26
+
+### Neu
+- **Lokyy denkt beim Import mit.** Bisher legte ein Import eine Notiz ab — ob sie zu etwas passt, fiel erst im Nachtlauf auf, bis zu 24 Stunden später. Jetzt schaut Lokyy sofort nach: fehlender Rückverweis, möglicher Widerspruch zu einer bestehenden Notiz.
+- **Nichts passiert ohne dein Ja.** Vorschläge landen in einem eigenen Bereich (Knopf „Vorschläge" in der Kopfzeile). Du hakst ab, was gelten soll. Schwere Eingriffe stehen getrennt oben und sind bewusst vom Sammel-Haken ausgenommen.
+- **Ablehnen löscht nichts.** Ein abgelehnter Vorschlag bleibt im Protokoll. Und was du gar nicht angesehen hast, gilt nicht als abgelehnt.
+- **Die importierte Notiz wartet auf nichts.** Sie liegt sofort im Vault, wie bisher. Die Freigabe betrifft nur die vorgeschlagenen Verknüpfungen.
+
+### Gut zu wissen
+- Meistens gibt es nichts vorzuschlagen — das ist der Normalfall, kein Fehler.
+- Lokyy fragt die KI nur, wenn der Text überhaupt Anzeichen eines Widerspruchs enthält. Ohne solche Anzeichen kostet die Prüfung nichts.
+- Auf Rechnern ohne Grafikkarte lässt sich die KI-Prüfung abschalten; die Rückverweis-Vorschläge kommen dann trotzdem.
+- Widersprüche erscheinen dort, wo sie immer erscheinen — unter „Widersprüche". Kein zweiter Ort für dasselbe.
+
+---
+
+## v1.19.0 — 2026-09-26
+
+### Neu
+- **Dateien vom Rechner importieren.** Im Import-Panel gibt es den Reiter „Dateien": auswählen oder einfach ins Fenster ziehen. Text, Markdown und PDF werden zu Notizen — bei PDFs wird der Text herausgezogen. Mehrere Dateien gleichzeitig gehen auf jedem Gerät, auch am Handy.
+- **Ganze Ordner importieren.** Am Rechner lässt sich ein kompletter Ordner wählen; die Unterordner bleiben erhalten. Am Handy geht das nicht — kein Browser kann dort Ordner auswählen, deshalb erscheint der Knopf nur, wo er auch funktioniert.
+- **Nichts verschwindet stillschweigend.** Bilder, zu große oder leere Dateien werden nicht einfach übergangen: sie stehen mit Begründung in der Liste. Bilder und andere Binärdateien kommen später über einen eigenen Weg.
+
+### Gut zu wissen
+- Ein eingescanntes PDF ohne Textebene ergibt eine leere Notiz, die genau das sagt. Eine automatische Texterkennung gibt es (noch) nicht.
+- Vorhandene Notizen werden nie überschrieben — bei Namensgleichheit legt der Import eine zweite Datei daneben.
+- Obergrenzen: 10 MB pro Datei, 50 MB pro Vorgang. Größere Ordner in Portionen importieren; die Werte lassen sich anpassen.
+
+---
+
 ## v1.18.0 — 2026-08-14
 
 ### Behoben

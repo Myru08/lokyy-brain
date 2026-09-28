@@ -208,6 +208,9 @@ services:
       # bis 49 s Kaltstart). 600000 lässt Luft und bleibt eine echte
       # Obergrenze, damit ein hängender Request keinen Pass endlos blockiert.
       - LOKYY_OLLAMA_TIMEOUT_MS=${LOKYY_OLLAMA_TIMEOUT_MS:-600000}
+      # Ingest-Synthese (v1.20): ohne GPU nur der Vorfilter, keine LLM-Prüfung
+      # beim Import. Rückverweis-Vorschläge kommen trotzdem.
+      - LOKYY_INGEST_SYNTHESIS=${LOKYY_INGEST_SYNTHESIS:-prefilter}
       - PORT=8787
       - NODE_ENV=production
     volumes:

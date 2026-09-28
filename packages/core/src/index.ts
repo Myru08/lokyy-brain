@@ -169,6 +169,11 @@ export {
 // the MCP-wiring agent imports them straight from `@lokyy/core`.
 export {
   listNotes,
+  // issue #62 — Pfad-ID + Frontmatter-ULID im Bulk, ein Pull für den ganzen
+  // Aufruf. Ersetzt den Eigenbau-Kopfscan im Verwaisungs-Check (#59).
+  listNoteIdentities,
+  type NoteIdentity,
+  type ListIdentitiesOpts,
   getNote,
   saveNote,
   getTree,
@@ -277,6 +282,23 @@ export {
   listJobs,
   type PipeHandler,
 } from "./pipes/pipeQueue.js";
+
+// ─── Datei-/Ordner-Import (Issue #63) ───────────────────────────────────
+// Pfad-Sicherheit, Typ-Erkennung und PDF-Textextraktion. Die Route
+// `POST /api/pipes/files` und die Import-Handler bauen darauf auf.
+export {
+  sanitizeRelativePath,
+  sanitizeFileName,
+  resolveInsideVault,
+  type RelativePathCheck,
+} from "./pipes/importPaths.js";
+export {
+  classifyImportFile,
+  unsupportedReason,
+  fileExtension,
+  type ImportFileKind,
+} from "./pipes/importTypes.js";
+export { extractPdfText, type PdfExtraction } from "./pipes/pdfText.js";
 
 // ─── frontmatter / vault compliance (Story 1.5) ─────────────────────────
 export {
@@ -861,3 +883,44 @@ export {
   type UpdateCheckTimerHandle,
   type UpdateCheckTimerOptions,
 } from "./version/index.js";
+
+// ─── Ingest-Time-Synthese (Issue #67) ──────────────────────────────────
+// Die Stufe selbst hängt in `pipeQueue` und braucht keinen Export; nach außen
+// gehen nur die Konfiguration (Diagnose), der Store (Routen) und `apply`.
+export {
+  ingestSynthesisConfig,
+  DEFAULT_INGEST_BUDGET_MS,
+  DEFAULT_INGEST_MAX_JUDGE,
+  type IngestSynthesisConfig,
+  type IngestSynthesisMode,
+} from "./ingest/config.js";
+export {
+  runIngestSynthesis,
+  defaultSynthesisDeps,
+  type IngestSynthesisInput,
+  type IngestSynthesisOutcome,
+  type IngestSynthesisDeps,
+} from "./ingest/synthesis.js";
+export {
+  insertIngestProposals,
+  listIngestProposals,
+  loadIngestProposals,
+  setIngestProposalStatus,
+  rowToProposal as ingestProposalRowToJson,
+  type NewIngestProposal,
+} from "./ingest/proposalStore.js";
+export {
+  applyIngestProposals,
+  defaultApplyDeps as defaultIngestApplyDeps,
+  type ApplyDeps as IngestApplyDeps,
+} from "./ingest/apply.js";
+export {
+  prefilter as ingestPrefilter,
+  contrastSignals,
+  CONTRAST_PATTERNS,
+  MIN_SHARED_TAGS,
+  MAX_LINK_PROPOSALS,
+  type CandidateNote as IngestCandidateNote,
+  type PrefilterHit as IngestPrefilterHit,
+  type PrefilterResult as IngestPrefilterResult,
+} from "./ingest/prefilter.js";

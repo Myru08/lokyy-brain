@@ -41,6 +41,7 @@ export const GUARDED_API_PREFIXES = [
   "/api/sleep-agent",
   "/api/backfill",
   "/api/mem0",
+  "/api/ingest",
   "/api/ppr",
   "/api/rerank",
   "/api/surface",

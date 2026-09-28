@@ -97,9 +97,32 @@ export interface SharePayload {
    * "en"). Fehlt das Feld, lässt Whisper die Sprache automatisch erkennen.
    */
   language?: string;
+  /**
+   * Datei-/Ordner-Import (Issue #63). Der vom Client gemeldete Pfad der
+   * Datei RELATIV zum gewählten Ordner (`webkitRelativePath`), bereits
+   * saniert — nur zur Herkunfts-Dokumentation im Frontmatter.
+   *
+   * Das Ziel im Vault steckt NICHT hier, sondern in `targetFolder`: die
+   * Route baut `targetFolder = <Zielordner>/<sanierte Unterordner>` zusammen,
+   * damit die Handler weiterhin nur ein Feld lesen müssen.
+   */
+  relativePath?: string;
 }
 
-export type PipeType = "youtube" | "voice" | "url" | "crawl" | "unknown";
+/**
+ * Pipe-Typen. `text` und `pdf` (Issue #63) kommen aus dem Datei-/Ordner-Import
+ * — sie sind die einzigen Typen, deren Quelle eine hochgeladene Datei statt
+ * einer URL ist. Bilder/sonstige Binaerdateien haben bewusst KEINEN Typ: sie
+ * passen nicht in den Markdown-Contract und bekommen einen eigenen Upload-Weg.
+ */
+export type PipeType =
+  | "youtube"
+  | "voice"
+  | "url"
+  | "crawl"
+  | "text"
+  | "pdf"
+  | "unknown";
 
 export type PipeStatus = "queued" | "processing" | "done" | "error";
 
@@ -116,6 +139,36 @@ export interface ImportRequest {
   url: string;
   type?: PipeType;
   targetFolder?: string;
+}
+
+/**
+ * Eine benannt abgewiesene Datei aus `POST /api/pipes/files` (Issue #63).
+ *
+ * Anti-Regel der Story: kein Dateityp wird still verschluckt. Alles, was
+ * nicht importiert wurde, steht mit Grund in dieser Liste — es gibt keinen
+ * stillen Zähler und keine verschluckte Datei.
+ */
+export interface FileImportRejection {
+  /** Dateiname wie vom Client gemeldet (bzw. `relativePath`, wenn vorhanden). */
+  name: string;
+  /** Klartext-Grund, direkt anzeigbar. */
+  reason: string;
+}
+
+/**
+ * Antwort von `POST /api/pipes/files` (Issue #63).
+ *
+ * 202 mit mindestens einem Job, wenn etwas akzeptiert wurde; 400 mit
+ * `error` + derselben `rejected`-Liste, wenn gar keine verwertbare Datei
+ * dabei war (die Gründe bleiben also auch im Fehlerfall sichtbar).
+ */
+export interface FileImportResponse {
+  jobs: PipeJob[];
+  rejected: FileImportRejection[];
+  /** nur im 400-Fall gesetzt */
+  error?: string;
+  /** nur im 400-Fall gesetzt: menschenlesbare Begründung */
+  message?: string;
 }
 
 /**
@@ -139,6 +192,13 @@ export interface PipeJob {
   /** id der erzeugten Notiz, sobald fertig */
   resultNoteId?: string;
   error?: string;
+  /**
+   * Hinweis zu einem ERFOLGREICHEN Job (Issue #63). Der Job ist `done`, die
+   * Notiz liegt im Vault — aber es gibt etwas zu sagen, das kein Fehler ist.
+   * Aktueller Fall: ein PDF ohne Textebene (Scan) erzeugt eine leere Notiz;
+   * ohne diesen Hinweis stünde der Nutzer vor einer leeren Datei ohne Grund.
+   */
+  notice?: string;
   createdAt: string;
 }
 
@@ -151,4 +211,96 @@ export interface PipeResult {
   path: string;
   /** vollständiger Markdown-Inhalt inkl. Frontmatter */
   body: string;
+  /**
+   * Optionaler Hinweis, der den Job zwar erfolgreich abschließt, aber
+   * erklärungsbedürftig macht (siehe `PipeJob.notice`). Die Queue reicht ihn
+   * unverändert an den Job durch.
+   */
+  notice?: string;
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Ingest-Time-Synthese (Issue #67)
+ *
+ * Ein Import legte bisher eine isolierte Notiz an; der Abgleich mit dem
+ * bestehenden Wissen passierte erst im Nachtlauf. Die Synthese-Stufe läuft
+ * direkt im Import-Pfad und legt VORSCHLÄGE ab — geschrieben wird erst nach
+ * Freigabe. Die erfasste Notiz selbst wird unverändert sofort committet: ein
+ * Handy-Share soll nicht in der Queue hängen, bis jemand die App öffnet.
+ * ────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Was ein Vorschlag tun würde.
+ *
+ * `flag_contradiction` MELDET nur, es wertet nichts ab — konsistent zum
+ * Nachtlauf (Entscheidung Oliver, 2026-09-26). `create_note` meint eine
+ * ZUSÄTZLICH vorgeschlagene Notiz, nie die importierte Quelle.
+ */
+export const INGEST_PROPOSAL_ACTIONS = [
+  "create_note",
+  "append_to_note",
+  "link",
+  "flag_contradiction",
+  "merge",
+  "skip",
+] as const;
+export type IngestProposalAction = (typeof INGEST_PROPOSAL_ACTIONS)[number];
+
+/**
+ * Lebenslauf eines Vorschlags. Append-only Log: die Zeile wird nie gelöscht,
+ * nur ihr Status wandert weiter (`pending` → `approved`/`rejected` →
+ * `applied`/`failed`).
+ */
+export const INGEST_PROPOSAL_STATUSES = [
+  "pending",
+  "approved",
+  "rejected",
+  "applied",
+  "failed",
+] as const;
+export type IngestProposalStatus = (typeof INGEST_PROPOSAL_STATUSES)[number];
+
+/** Ein einzelner Synthese-Vorschlag, wie ihn API und PWA sehen. */
+export interface IngestProposal {
+  id: string;
+  /** #66 — von Anfang an mitgeschrieben, damit die Tabelle nicht vault-blind wächst. */
+  vaultId: string;
+  /** Welcher Import-Lauf den Vorschlag erzeugt hat. */
+  jobId: string;
+  action: IngestProposalAction;
+  /** Die neu importierte Notiz (path-id, ohne ".md"). */
+  sourceNoteId: string;
+  /** Die betroffene bestehende Notiz — `null`, wenn keine. */
+  targetNoteId: string | null;
+  /** Warum. Anzeigbar, in der Sprache des Nutzers. */
+  rationale: string;
+  status: IngestProposalStatus;
+  /** Vorfilter-Treffer, Judge-Antwort, Fehlergrund beim Anwenden. */
+  evidence: unknown;
+  /** ISO-Timestamps. */
+  createdAt: string;
+  decidedAt: string | null;
+}
+
+/** Antwort von `GET /api/ingest/proposals?status=pending`. */
+export interface IngestProposalsResponse {
+  proposals: IngestProposal[];
+}
+
+/** Body von `POST /api/ingest/proposals/apply` — Proposal-IDs. */
+export interface IngestApplyRequest {
+  approved: string[];
+  rejected: string[];
+}
+
+/**
+ * Antwort von `POST /api/ingest/proposals/apply`.
+ *
+ * `skipped` ist Pflichtteil des Vertrags: eine unbekannte ID, ein bereits
+ * entschiedener Vorschlag oder eine nicht anwendbare Aktion landen dort MIT
+ * Grund — nie als stiller Zähler.
+ */
+export interface IngestApplyResponse {
+  applied: IngestProposal[];
+  skipped: Array<{ id: string; reason: string }>;
 }

@@ -1,5 +1,4 @@
-import { open } from "node:fs/promises";
-import { join } from "node:path";
+import { listNoteIdentities } from "@lokyy/core";
 import postgres from "postgres";
 
 /**
@@ -190,58 +189,36 @@ export interface StoreOrphanResult {
  */
 export const MAX_KNOWN_IDS = 50_000;
 
-/** Nur der Frontmatter-Kopf wird gelesen — die `id:`-Zeile steht ganz oben. */
-const FRONTMATTER_HEAD_BYTES = 4096;
-/** Gleichzeitig offene Datei-Handles beim ULID-Scan. */
-const READ_CONCURRENCY = 32;
-/** ULID: Crockford-base32, 26 Zeichen, ohne I/L/O/U. */
-const ULID_LINE_RE = /^id:\s*["']?([0-9A-HJKMNP-TV-Z]{26})["']?\s*$/m;
-
 /**
  * Frontmatter-ULIDs aller Notizen einsammeln.
  *
  * Warum nicht `getNote()` pro Notiz: `getNote` ruft intern `pull()` — das wäre
  * ein `git pull` PRO NOTIZ. Auf einem Vault mit 500 Notizen macht das aus einer
- * Diagnose-Anfrage 500 git-Operationen. Deshalb hier ein direkter, gedeckelter
- * Lesezugriff auf den Kopf jeder Datei. `listNotes()` (das der Aufrufer bereits
- * gerufen hat) hat den Pull genau einmal erledigt.
+ * Diagnose-Anfrage 500 git-Operationen. Der Grund gilt weiter; er steht jetzt an
+ * `listNoteIdentities` in `@lokyy/core`, wo auch der gedeckelte Kopf-Lesezugriff
+ * lebt (issue #62).
  *
- * Fehlerhafte / ULID-lose Notizen werden still übersprungen: eine fehlende ULID
- * macht keine Tabellenzeile verwaist, sie fehlt nur in der Bekannt-Liste — und
- * das geht wieder in die sichere Richtung.
+ * Bis #62 stand hier ein eigener Kopf-Scan mit eigenem `id:`-Regex — eine
+ * ZWEITE Wahrheit über das Frontmatter-Format, die bei jeder Formatänderung
+ * still veraltet wäre: der Check hätte dann keine Fehler gemeldet, sondern
+ * einfach weniger bekannte IDs gekannt und Verwaisungen übersehen. Jetzt kommt
+ * die ULID aus `parseFrontmatter`, also aus derselben Stelle, die auch schreibt.
+ *
+ * `{ pull: false }`, weil der Aufrufer (`checkDerivedStoreOrphans`) unmittelbar
+ * davor `listNotes()` ruft und damit bereits gepullt hat — sonst kostete eine
+ * Diagnose-Anfrage zwei git-Pulls statt einem.
+ *
+ * ULID-lose Notizen fehlen weiterhin schlicht in der Bekannt-Liste: eine
+ * fehlende ULID macht keine Tabellenzeile verwaist, und die Unschärfe geht
+ * wieder in die sichere Richtung (übersehen statt fälschlich anklagen).
  */
-export async function collectVaultUlids(
-  pathIds: string[],
-  vaultDir: string,
-): Promise<Set<string>> {
-  const ulids = new Set<string>();
-
-  for (let i = 0; i < pathIds.length; i += READ_CONCURRENCY) {
-    const batch = pathIds.slice(i, i + READ_CONCURRENCY);
-    await Promise.all(
-      batch.map(async (id) => {
-        const abs = join(vaultDir, ...id.split("/")) + ".md";
-        const head = await readHead(abs).catch(() => null);
-        if (!head) return;
-        const m = ULID_LINE_RE.exec(head);
-        if (m?.[1]) ulids.add(m[1]);
-      }),
-    );
-  }
-
-  return ulids;
-}
-
-/** Erste `FRONTMATTER_HEAD_BYTES` einer Datei — nie die ganze Notiz. */
-async function readHead(abs: string): Promise<string> {
-  const fh = await open(abs, "r");
-  try {
-    const buf = Buffer.alloc(FRONTMATTER_HEAD_BYTES);
-    const { bytesRead } = await fh.read(buf, 0, FRONTMATTER_HEAD_BYTES, 0);
-    return buf.subarray(0, bytesRead).toString("utf8");
-  } finally {
-    await fh.close();
-  }
+export async function collectVaultUlids(): Promise<Set<string>> {
+  const identities = await listNoteIdentities({ pull: false });
+  return new Set(
+    identities
+      .map((i) => i.ulid)
+      .filter((u): u is string => u !== null),
+  );
 }
 
 /**

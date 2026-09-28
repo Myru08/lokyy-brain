@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { open, readdir, readFile, stat } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { Note, NoteSummary, TreeNode } from "@lokyy/shared";
 import { coreConfig, indexVaultId } from "../util/coreConfig.js";
@@ -44,7 +44,7 @@ import {
   type BulkRefreshItem,
 } from "../memory/index.js";
 import { syncWikilinksToTemporalEdges } from "../graph/temporalEdges.js";
-import { invalidateUlidCache } from "./findByUlid.js";
+import { invalidateUlidCache, isUlid } from "./findByUlid.js";
 import {
   renameNoteReferences,
   type NoteIdRename,
@@ -182,6 +182,136 @@ export async function listNotes(): Promise<NoteSummary[]> {
   return notes
     .map(({ body, ...summary }) => summary)
     .sort((a, b) => a.title.localeCompare(b.title));
+}
+
+/**
+ * issue #62 — beide Identitäten einer Notiz nebeneinander.
+ *
+ * `pathId` ist der Pfad ohne ".md" (`10_projects/lokyy/readme`) — dieselbe ID,
+ * die `listNotes()` liefert und die die abgeleiteten Stores schreiben. `ulid`
+ * ist die stabile Frontmatter-ID, die einen Move überlebt.
+ */
+export interface NoteIdentity {
+  pathId: string;
+  /** `null`, wenn die Notiz keine (gültige) ULID im Frontmatter trägt. */
+  ulid: string | null;
+}
+
+/** Optionen für {@link listNoteIdentities}. */
+export interface ListIdentitiesOpts {
+  /**
+   * Vorher pullen? Standard `true`. Auf `false` nur, wenn der Aufrufer im
+   * selben Vorgang schon gepullt hat (z. B. direkt nach `listNotes()`) — sonst
+   * kostet ein Diagnose-Durchlauf zwei git-Pulls statt einem.
+   */
+  pull?: boolean;
+}
+
+/** Nur der Frontmatter-Kopf wird gelesen — die `id:`-Zeile steht ganz oben. */
+const IDENTITY_HEAD_BYTES = 4096;
+/** Gleichzeitig offene Datei-Handles beim Identitäts-Scan. */
+const IDENTITY_READ_CONCURRENCY = 32;
+
+/**
+ * Reicht der gelesene Kopf, um den Frontmatter-Block VOLLSTÄNDIG zu enthalten?
+ *
+ * Das ist bewusst KEIN Format-Parser — die einzige Wahrheit über das Format
+ * bleibt `parseFrontmatter`. Diese Probe entscheidet ausschließlich, WIE VIEL
+ * gelesen werden muss, nie WAS drinsteht. Sie irrt deshalb nur in die teure,
+ * nie in die falsche Richtung: hält sie einen vollständigen Block für
+ * unvollständig, wird die Datei ein zweites Mal gelesen — sonst nichts.
+ *
+ * Nötig ist sie, weil gray-matter (4.0.3) einen abgeschnittenen Block sehr wohl
+ * parst — nur eben den abgeschnittenen. Gemessen, nicht vermutet; alle drei
+ * Ausgänge sind stille Fehlbeträge:
+ *   A) Schnitt mitten im Wert → `id: 01ARZ3NDEK` wird brav geparst, `isUlid()`
+ *      weist die verstümmelte ULID ab → `null` aus etwas, das echt war.
+ *   B) `id` liegt hinter dem Schnitt → fehlt kommentarlos → `null`.
+ *   C) Schnitt in einem quotierten Skalar → js-yaml wirft; der `catch` unten
+ *      fängt das zu `null` ab.
+ * In allen drei Fällen hat die Notiz eine gültige ULID und wir melden keine.
+ * Deshalb: Korrektheit schlägt hier die eingesparte Leseoperation.
+ */
+function headHoldsWholeFrontmatter(head: string, truncated: boolean): boolean {
+  // Ganze Datei im Puffer: da kann nichts mehr fehlen.
+  if (!truncated) return true;
+  // Ohne öffnenden Zaun gibt es keinen Block — mehr Bytes ändern daran nichts.
+  if (!head.replace(/^\uFEFF/, "").startsWith("---")) return true;
+  // Sonst: der schließende Zaun muss im Kopf liegen.
+  const firstBreak = head.indexOf("\n");
+  if (firstBreak === -1) return false;
+  return /^---[ \t]*\r?$/m.test(head.slice(firstBreak + 1));
+}
+
+/** Kopf der Datei — und nur bei unvollständigem Block die ganze Notiz. */
+async function readForFrontmatter(abs: string): Promise<string> {
+  const fh = await open(abs, "r");
+  try {
+    const buf = Buffer.alloc(IDENTITY_HEAD_BYTES);
+    const { bytesRead } = await fh.read(buf, 0, IDENTITY_HEAD_BYTES, 0);
+    const head = buf.subarray(0, bytesRead).toString("utf8");
+    if (headHoldsWholeFrontmatter(head, bytesRead === IDENTITY_HEAD_BYTES)) {
+      return head;
+    }
+  } finally {
+    await fh.close();
+  }
+  return readFile(abs, "utf8");
+}
+
+/**
+ * Pfad-ID + Frontmatter-ULID für JEDE Notiz im Vault — ein Pull für den ganzen
+ * Aufruf.
+ *
+ * Warum es das gibt: `getNote()` ruft intern `pull()`, über alle Notizen
+ * gerufen wäre das ein `git pull` PRO NOTIZ (auf 500 Notizen: 500 git-
+ * Operationen für eine einzige Diagnose-Anfrage). `findByUlid()` durchläuft je
+ * Lookup den ganzen Vault, für N Lookups also quadratisch. `listNotes()` kennt
+ * die ULID gar nicht. Wer beide Räume abgleichen muss — der Verwaisungs-Check
+ * der abgeleiteten Stores, das Aufräumen (#57) — hatte deshalb keinen
+ * brauchbaren Weg und baute sich einen eigenen.
+ *
+ * Gelesen wird nur der Frontmatter-Kopf; erst wenn der Block nicht hineinpasst,
+ * wird die Datei vollständig nachgeladen (siehe {@link headHoldsWholeFrontmatter}).
+ * Die ULID kommt aus `parseFrontmatter` — es gibt genau eine Stelle im System,
+ * die das Frontmatter-Format kennt.
+ *
+ * Wirft nicht an einzelnen Notizen: eine unlesbare Datei oder kaputtes YAML
+ * liefert `ulid: null`, aber die Notiz bleibt mit ihrer Pfad-ID in der Liste.
+ * Was „keine ULID" bedeutet, entscheidet der Aufrufer — verschluckt wird nichts.
+ *
+ * Reihenfolge ist die Walk-Reihenfolge (nicht sortiert); die Aufrufer nutzen
+ * das Ergebnis als Menge.
+ */
+export async function listNoteIdentities(
+  opts: ListIdentitiesOpts = {},
+): Promise<NoteIdentity[]> {
+  if (opts.pull !== false) await pull();
+
+  const c = coreConfig();
+  const files = await walk(c.vaultDir);
+
+  const out: NoteIdentity[] = [];
+  for (let i = 0; i < files.length; i += IDENTITY_READ_CONCURRENCY) {
+    const batch = files.slice(i, i + IDENTITY_READ_CONCURRENCY);
+    const rows = await Promise.all(
+      batch.map(async (abs): Promise<NoteIdentity> => {
+        const pathId = pathToId(relative(c.vaultDir, abs));
+        try {
+          const raw = await readForFrontmatter(abs);
+          const { data } = parseFrontmatter(raw);
+          const id = typeof data.id === "string" ? data.id.trim() : "";
+          return { pathId, ulid: isUlid(id) ? id : null };
+        } catch {
+          // Unlesbar oder kaputtes YAML: die Notiz existiert trotzdem.
+          return { pathId, ulid: null };
+        }
+      }),
+    );
+    out.push(...rows);
+  }
+
+  return out;
 }
 
 /** Einzelne Notiz lesen. Pullt vorher — Forgejo ist die Wahrheit. */

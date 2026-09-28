@@ -1,7 +1,12 @@
 import type {
+  FileImportRejection,
+  FileImportResponse,
   GraphData,
   ImportDefaults,
   ImportRequest,
+  IngestApplyResponse,
+  IngestProposal,
+  IngestProposalStatus,
   Note,
   NoteSummary,
   PipeJob,
@@ -265,6 +270,32 @@ export interface TopicNoteItem {
   generatedAt: string | null;
   communityId: string | null;
 }
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Ingest-Time-Synthese (#67) — Vorschläge, die beim Import entstehen.
+ *
+ * Der Vertrag liegt in `@lokyy/shared` und wird hier nur weitergereicht, damit
+ * die Oberfläche weiter aus `./api.js` importieren kann. Ein Feld-für-Feld-
+ * Vergleich beim Zusammenführen ergab volle Deckung; abweichend war allein der
+ * NAME des Apply-Ergebnisses (`IngestApplyResponse` serverseitig), deshalb hier
+ * ein Alias statt einer zweiten Definition.
+ * ────────────────────────────────────────────────────────────────────── */
+
+export type {
+  IngestProposal,
+  IngestProposalAction,
+  IngestProposalStatus,
+} from "@lokyy/shared";
+
+/**
+ * Ergebnis einer Sammel-Entscheidung — Alias auf den Vertrag.
+ *
+ * `skipped` ist der wichtige Teil: ein freigegebener Vorschlag, der nicht
+ * angewandt werden konnte (Zielnotiz weg, Konflikt, Schreibfehler). Er MUSS
+ * mit Grund in der Oberfläche landen — sonst hätte der Nutzer freigegeben und
+ * nichts wäre passiert, ohne dass er es erfährt.
+ */
+export type IngestProposalsApplyResult = IngestApplyResponse;
 
 export interface AgentReviewQueue {
   mem0: Mem0ReviewItem[];
@@ -893,6 +924,28 @@ export interface UpdateJob {
   log: string[];
 }
 
+/* ──── Datei-/Ordner-Import (`POST /api/pipes/files`) ──── */
+
+/**
+ * Eine Datei auf dem Weg in den Vault, so wie der API-Vertrag sie erwartet.
+ *
+ * `relativePath` ist beim Ordner-Import der Pfad INNERHALB der Auswahl
+ * (`webkitRelativePath`, inklusive des gewählten Ordnernamens), bei einer
+ * einzeln gewählten Datei der leere String. Der Server baut die Struktur
+ * darunter nach; er ist die einzige Instanz, die den Pfad absichert.
+ */
+export interface FileImportEntry {
+  file: File;
+  relativePath: string;
+}
+
+/**
+ * Vertragstypen der Route liegen in `@lokyy/shared` (Server und PWA lesen
+ * dieselbe Definition). Hier nur weitergereicht, damit Aufrufer im PWA-Baum
+ * sie zusammen mit `api` importieren können.
+ */
+export type { FileImportRejection, FileImportResponse };
+
 export const api = {
   listNotes: () => fetch(`${BASE}/notes`).then(json<NoteSummary[]>),
 
@@ -1191,6 +1244,55 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
     }).then(json<PipeJob>),
+
+
+  /**
+   * Datei-/Ordner-Import aus dem Import-Panel.
+   *
+   * Multipart nach Vertrag: `file` und `relativePath` je n-mal, PARALLEL und
+   * in gleicher Reihenfolge — der Server paart sie über den Index. Deshalb
+   * werden beide Felder hier im selben Schleifendurchlauf angehängt; getrennte
+   * Schleifen wären dieselbe Reihenfolge, aber eine Zeile Umbau davon entfernt,
+   * sie stillschweigend zu verlieren.
+   *
+   * Kein `Content-Type`-Header von Hand: den setzt der Browser samt
+   * multipart-Boundary, und ein selbst gesetzter Header zerstört sie.
+   */
+  importFiles: (
+    entries: FileImportEntry[],
+    targetFolder?: string,
+  ): Promise<FileImportResponse> => {
+    const form = new FormData();
+    for (const entry of entries) {
+      form.append("file", entry.file);
+      form.append("relativePath", entry.relativePath);
+    }
+    const folder = targetFolder?.trim();
+    if (folder) form.append("targetFolder", folder);
+    return fetch(`${BASE}/pipes/files`, {
+      method: "POST",
+      body: form,
+      credentials: "include",
+    }).then(async (res) => {
+      if (res.ok) return (await res.json()) as FileImportResponse;
+      /* 400 = „gar nichts war verwertbar" — und trägt laut Vertrag dieselbe
+       * `rejected`-Liste. Das ist kein Transportfehler, sondern ein Ergebnis:
+       * jede Datei hat einen Grund. Es als ApiError zu werfen würde genau die
+       * Gründe wegwerfen, die der Nutzer sehen soll. Alles andere (401, 413,
+       * 5xx) bleibt ein Fehler und fliegt wie überall sonst. */
+      const body = (await res
+        .json()
+        .catch(() => null)) as FileImportResponse | { error?: string } | null;
+      const rejected = (body as FileImportResponse | null)?.rejected;
+      if (res.status === 400 && Array.isArray(rejected) && rejected.length > 0) {
+        return { jobs: [], rejected, error: (body as { error?: string }).error };
+      }
+      throw new ApiError(
+        res.status,
+        (body as { error?: string } | null)?.error ?? "Import fehlgeschlagen",
+      );
+    });
+  },
 
   /**
    * Web-Share-Target (Story 11.8) — dünner Wrapper auf das bestehende
@@ -1639,6 +1741,44 @@ export const api = {
       throw new ApiError(res.status, err.error ?? "reject failed");
     }
   },
+
+  /* ──── Ingest-Time-Synthese (#67) ──── */
+
+  /**
+   * Offene Vorschläge aus den Import-Läufen.
+   *
+   * Bewusst NICHT nach Job gefiltert: Vorschläge überleben den Import und
+   * dürfen später entschieden werden. Die Zuordnung zu einem Lauf steckt in
+   * `jobId` und wird erst in der Oberfläche verwendet.
+   */
+  listIngestProposals: (
+    status: IngestProposalStatus = "pending",
+  ): Promise<IngestProposal[]> =>
+    fetch(
+      `${BASE}/ingest/proposals?status=${encodeURIComponent(status)}`,
+      { credentials: "include" },
+    )
+      .then(json<{ proposals?: IngestProposal[] }>)
+      .then((d) => d.proposals ?? []),
+
+  /**
+   * Eine Sammel-Entscheidung abschicken.
+   *
+   * Freigegeben und abgelehnt gehen getrennt, weil beides eine Entscheidung
+   * ist: Abgelehntes bleibt serverseitig mit Status im Protokoll. Was in
+   * keiner der beiden Listen steht, bleibt `pending` — unentschieden ist
+   * nicht abgelehnt.
+   */
+  applyIngestProposals: (body: {
+    approved: string[];
+    rejected: string[];
+  }): Promise<IngestProposalsApplyResult> =>
+    fetch(`${BASE}/ingest/proposals/apply`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    }).then(json<IngestProposalsApplyResult>),
 
   /** Move a lint finding from `open` → `acknowledged`. */
   acknowledgeLintFinding: async (id: string): Promise<void> => {

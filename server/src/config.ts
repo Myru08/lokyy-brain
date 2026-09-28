@@ -20,6 +20,16 @@ function req(name: string): string {
   return v;
 }
 
+/**
+ * Positive Ganzzahl aus einer Umgebungsvariable, sonst der Default. Ein
+ * Tippfehler (`"10mb"`, `"-1"`) darf keine unbegrenzte Obergrenze ergeben —
+ * er faellt still auf den Default zurueck, statt die Grenze abzuschalten.
+ */
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
 export const config = {
   /** absoluter Pfad zum Vault-Working-Clone */
   vaultDir: resolve(process.env.VAULT_DIR ?? "../vault"),
@@ -72,5 +82,26 @@ export const config = {
    */
   whisperBaseUrl: process.env.WHISPER_BASE_URL ?? "",
   whisperApiKey: process.env.WHISPER_API_KEY ?? "",
+  /**
+   * Datei-/Ordner-Import (Issue #63) — Obergrenzen fuer
+   * `POST /api/pipes/files`, in Bytes.
+   *
+   * Warum zwei Grenzen: eine einzelne 200-MB-Datei und tausend
+   * 1-MB-Dateien sind dasselbe Speicherproblem. `importMaxFileBytes`
+   * begrenzt die einzelne Datei, `importMaxRequestBytes` die gesamte
+   * Anfrage — beide werden VOR dem Parsen bzw. pro Datei geprueft und
+   * fuehren zu einem benannten Eintrag in `rejected`, nie zu einem Absturz.
+   *
+   * Die Werte sind Roh-Dateigroessen. Im Payload liegen die Bytes
+   * base64-kodiert (+33 %), das ist in den Defaults einkalkuliert.
+   */
+  importMaxFileBytes: positiveInt(
+    process.env.IMPORT_MAX_FILE_BYTES,
+    10 * 1024 * 1024,
+  ),
+  importMaxRequestBytes: positiveInt(
+    process.env.IMPORT_MAX_REQUEST_BYTES,
+    50 * 1024 * 1024,
+  ),
   port: Number(process.env.PORT ?? 8787),
 } as const;
