@@ -12,6 +12,7 @@ import {
   listTags,
   parseFrontmatterTags,
   parseNoteTags,
+  parseDisplayTitle,
 } from "./graphService.js";
 import { getNote } from "../notes/notesService.js";
 
@@ -425,5 +426,22 @@ describe("Frontmatter-Tags in jeder YAML-Schreibweise", () => {
     await save("tags-read.md", taggedNote("Tags Read", ["tags:", "  - leseprobe-x"], "und #inline-x"), "seed tags read");
     const n = await getNote("tags-read");
     expect(n?.tags.sort()).toEqual(["inline-x", "leseprobe-x"]);
+  });
+});
+
+describe("parseDisplayTitle (read_note-Titel)", () => {
+  it("nimmt H1, sonst Frontmatter-Titel, sonst Dateiname", () => {
+    expect(parseDisplayTitle(note({ id: "x", title: "Mit Ueberschrift" }), "20_notes/x.md")).toBe("Mit Ueberschrift");
+    expect(parseDisplayTitle(note({ id: "y", title: "Nur im Frontmatter", noH1: true }), "20_notes/y.md")).toBe(
+      "Nur im Frontmatter",
+    );
+    expect(parseDisplayTitle("ohne alles", "20_notes/z.md")).toBe("z");
+    expect(parseDisplayTitle("---\ntitle: [kaputt\n---\ntext", "20_notes/k.md")).toBe("k");
+  });
+
+  it("getNote liefert den Frontmatter-Titel bei Notizen ohne H1", async () => {
+    await save("titel-ohne-h1.md", note({ id: "titel-ohne-h1", title: "Titel aus dem Frontmatter", noH1: true }), "seed titel");
+    const n = await getNote("titel-ohne-h1");
+    expect(n?.title).toBe("Titel aus dem Frontmatter");
   });
 });

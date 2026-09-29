@@ -14,6 +14,7 @@ export {
   parseTags,
   parseFrontmatterTags,
   parseNoteTags,
+  parseDisplayTitle,
   tagsFromFrontmatterData,
   parseTitle,
   type Backlink,

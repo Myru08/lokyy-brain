@@ -127,6 +127,25 @@ export function parseTitle(body: string, relPath: string): string {
   return base.replace(/\.md$/, "");
 }
 
+/**
+ * Anzeigetitel für read_note / listNotes: erste H1, sonst Frontmatter-`title:`,
+ * sonst Dateiname. Viele Notizen (u. a. aus dem ai-memory-Sync) tragen ihren
+ * Titel nur im Frontmatter; `parseTitle` zeigte dort den Dateinamen.
+ * Bewusst NICHT in `parseTitle` selbst: die Link-Auflösung (`byTitle`) bleibt
+ * unverändert, der Frontmatter-Titel ist dort schon eigener Weg (Schritt 5).
+ */
+export function parseDisplayTitle(body: string, relPath: string): string {
+  const h1 = body.match(H1);
+  if (h1) return h1[1].trim();
+  try {
+    const t = parseFrontmatter(body).data.title;
+    if (typeof t === "string" && t.trim()) return t.trim();
+  } catch {
+    // kaputtes YAML -> Dateiname
+  }
+  return parseTitle(body, relPath);
+}
+
 async function walk(dir: string, acc: string[] = []): Promise<string[]> {
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".")) continue;

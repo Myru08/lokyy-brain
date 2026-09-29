@@ -13,6 +13,7 @@ import {
 import {
   parseAliases,
   parseLinks,
+  parseDisplayTitle,
   parseNoteTags,
   parseTitle,
 } from "../graph/graphService.js";
@@ -164,7 +165,7 @@ async function readNoteFile(absPath: string): Promise<Note> {
   return {
     id: pathToId(relPath),
     path: relPath,
-    title: parseTitle(body, relPath),
+    title: parseDisplayTitle(body, relPath),
     body,
     tags: parseNoteTags(body),
     links: parseLinks(body),
