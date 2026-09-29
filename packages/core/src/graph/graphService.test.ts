@@ -7,7 +7,13 @@ import { promisify } from "node:util";
 
 import { initCore } from "../util/coreConfig.js";
 import { ensureRepo, save } from "../git/gitService.js";
-import { findBrokenLinks } from "./graphService.js";
+import {
+  findBrokenLinks,
+  listTags,
+  parseFrontmatterTags,
+  parseNoteTags,
+} from "./graphService.js";
+import { getNote } from "../notes/notesService.js";
 
 const exec = promisify(execFile);
 
@@ -361,5 +367,63 @@ describe("graphService.findBrokenLinks — Vorlagen", () => {
 
     const broken = await findBrokenLinks();
     expect(broken.some((b) => b.sourceId === "links-to-template")).toBe(false);
+  });
+});
+
+/** Notiz mit frei wählbarem Frontmatter-Block für die Tag-Tests. */
+function taggedNote(title: string, tagsYaml: string[], body = ""): string {
+  return [
+    "---",
+    "id: 01KZTAG5T0TP79ZXDAB4DXJ6FG",
+    "type: note",
+    `title: ${title}`,
+    "created: 2026-01-01T00:00:00.000Z",
+    "updated: 2026-01-01T00:00:00.000Z",
+    ...tagsYaml,
+    "---",
+    "",
+    `# ${title}`,
+    "",
+    body,
+  ].join("\n");
+}
+
+describe("Frontmatter-Tags in jeder YAML-Schreibweise", () => {
+  it("parseFrontmatterTags liest Block-Liste, Inline-Array und Komma-String", () => {
+    expect(parseFrontmatterTags(taggedNote("A", ["tags:", "  - elektro", "  - brandschutz"]))).toEqual([
+      "elektro",
+      "brandschutz",
+    ]);
+    expect(parseFrontmatterTags(taggedNote("B", ["tags: [ai-memory, 'auto-sync']"]))).toEqual([
+      "ai-memory",
+      "auto-sync",
+    ]);
+    expect(parseFrontmatterTags(taggedNote("C", ["tags: eins, zwei"]))).toEqual(["eins", "zwei"]);
+    expect(parseFrontmatterTags(taggedNote("C2", ['tags: ["#drei"]']))).toEqual(["drei"]);
+    expect(parseFrontmatterTags(taggedNote("D", []))).toEqual([]);
+    expect(parseFrontmatterTags("kein frontmatter #inline")).toEqual([]);
+    expect(parseFrontmatterTags("---\ntags: [kaputt\n---\n")).toEqual([]);
+  });
+
+  it("parseNoteTags vereinigt Inline-#tags und Frontmatter-Tags ohne Dubletten", () => {
+    const body = taggedNote("E", ["tags:", "  - elektro"], "Text mit #elektro und #praxis");
+    expect(parseNoteTags(body).sort()).toEqual(["elektro", "praxis"]);
+  });
+
+  it("listTags zählt Block-Listen-Tags (vorher unsichtbar)", async () => {
+    await save("tags-block.md", taggedNote("Tags Block", ["tags:", "  - blocktag-x", "  - gemeinsam-x"]), "seed tags block");
+    await save("tags-inline.md", taggedNote("Tags Inline", ["tags: [inlinetag-x, gemeinsam-x]"]), "seed tags inline");
+
+    const tags = await listTags();
+    const byTag = new Map(tags.map((t) => [t.tag, t]));
+    expect(byTag.get("blocktag-x")?.noteIds).toEqual(["tags-block"]);
+    expect(byTag.get("inlinetag-x")?.noteIds).toEqual(["tags-inline"]);
+    expect(byTag.get("gemeinsam-x")?.count).toBe(2);
+  });
+
+  it("getNote (read_note) liefert Frontmatter-Tags mit", async () => {
+    await save("tags-read.md", taggedNote("Tags Read", ["tags:", "  - leseprobe-x"], "und #inline-x"), "seed tags read");
+    const n = await getNote("tags-read");
+    expect(n?.tags.sort()).toEqual(["inline-x", "leseprobe-x"]);
   });
 });

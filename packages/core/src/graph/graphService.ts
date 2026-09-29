@@ -58,6 +58,46 @@ export function parseTags(body: string): string[] {
 }
 
 /**
+ * Tags aus einem bereits geparsten Frontmatter-Objekt. YAML liefert je nach
+ * Schreibweise ein Array (`tags: [a, b]` UND die Block-Liste `tags:\n  - a`,
+ * die Lokyy selbst schreibt) oder einen String (`tags: a, b`). Führendes `#`
+ * wird entfernt, Leeres und Nicht-Strings fallen weg.
+ */
+export function tagsFromFrontmatterData(data: Record<string, unknown>): string[] {
+  const raw = data.tags;
+  const items = Array.isArray(raw)
+    ? raw
+    : typeof raw === "string"
+      ? raw.split(",")
+      : [];
+  const out = new Set<string>();
+  for (const item of items) {
+    if (typeof item !== "string" && typeof item !== "number") continue;
+    const tag = String(item).trim().replace(/^#/, "");
+    if (tag) out.add(tag);
+  }
+  return [...out];
+}
+
+/**
+ * Frontmatter-`tags:` einer Notiz, in jeder YAML-Schreibweise. Vorher las
+ * `listTags()` nur die Inline-Form `tags: [a, b]` per Regex; die Block-Liste,
+ * die der Vault fast überall nutzt, fiel durch. Kaputtes YAML -> leere Liste.
+ */
+export function parseFrontmatterTags(body: string): string[] {
+  try {
+    return tagsFromFrontmatterData(parseFrontmatter(body).data);
+  } catch {
+    return [];
+  }
+}
+
+/** Alle Tags einer Notiz: Inline-`#tags` plus Frontmatter-`tags:`, dedupliziert. */
+export function parseNoteTags(body: string): string[] {
+  return [...new Set([...parseTags(body), ...parseFrontmatterTags(body)])];
+}
+
+/**
  * Frontmatter `aliases: [Foo, "Bar Baz"]` -> ["Foo", "Bar Baz"], dedupliziert.
  * Leeres Array, wenn kein Frontmatter-Block existiert oder `aliases` fehlt.
  *
@@ -139,7 +179,7 @@ export async function buildGraph(): Promise<GraphData> {
     if (forgotten) continue;
 
     const title = parseTitle(body, relPath);
-    nodes.push({ id, title, tags: parseTags(body) });
+    nodes.push({ id, title, tags: [...new Set([...parseTags(body), ...tagsFromFrontmatterData(data)])] });
     resolvable.push({
       id,
       title,
@@ -251,20 +291,10 @@ export async function listTags(): Promise<TagSummary[]> {
       if (!tagMap.has(t)) tagMap.set(t, new Set());
       tagMap.get(t)!.add(id);
     }
-    // Frontmatter tags: [foo, bar]
-    const fmMatch = /^---\n([\s\S]*?)\n---/.exec(body);
-    if (fmMatch) {
-      const tagsLine = /^tags:\s*\[([^\]]*)\]/m.exec(fmMatch[1]);
-      if (tagsLine) {
-        const items = tagsLine[1]
-          .split(",")
-          .map((s) => s.trim().replace(/^["']|["']$/g, ""))
-          .filter(Boolean);
-        for (const t of items) {
-          if (!tagMap.has(t)) tagMap.set(t, new Set());
-          tagMap.get(t)!.add(id);
-        }
-      }
+    // Frontmatter tags — jede YAML-Schreibweise (Inline-Array UND Block-Liste).
+    for (const t of parseFrontmatterTags(body)) {
+      if (!tagMap.has(t)) tagMap.set(t, new Set());
+      tagMap.get(t)!.add(id);
     }
   }
   return [...tagMap.entries()]
