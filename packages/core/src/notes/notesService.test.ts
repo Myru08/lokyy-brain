@@ -492,3 +492,45 @@ body
     expect(intact!.body).toContain("## intact");
   });
 });
+
+describe("notesService.saveNote — Vorlagen unter 00_meta/templates/", () => {
+  const TEMPLATE = `---
+id: __GENERATE_ULID__
+type: project
+title: ""
+created: "__NOW__"
+updated: "__NOW__"
+status: active       # active | paused | done | archived
+tags: []
+---
+
+## Ziel
+
+## Meilensteine
+
+- [ ] 
+`;
+
+  it("speichert eine Vorlage mit Platzhaltern wörtlich, ohne Schema-Fehler", async () => {
+    await saveNote("00_meta/templates/project", TEMPLATE);
+    const raw = await readFile(join(vault.workdir, "00_meta", "templates", "project.md"), "utf8");
+    expect(raw).toBe(TEMPLATE);
+  });
+
+  it("ersetzt nur den Rumpf, Frontmatter samt Kommentar bleibt Zeichen für Zeichen", async () => {
+    await saveNote("00_meta/templates/project", TEMPLATE);
+    const neuerRumpf = "## Ziel\n\n## Meilensteine\n\n- [ ] \n\n## Nächster Schritt\n\n- [ ] \n";
+    await saveNote("00_meta/templates/project", neuerRumpf);
+    const raw = await readFile(join(vault.workdir, "00_meta", "templates", "project.md"), "utf8");
+    expect(raw.startsWith(TEMPLATE.split("---\n\n")[0] + "---\n\n## Ziel")).toBe(true);
+    expect(raw).toContain("status: active       # active | paused | done | archived");
+    expect(raw).toContain('created: "__NOW__"');
+    expect(raw).toContain("## Nächster Schritt");
+  });
+
+  it("gilt nur für 00_meta/templates/: eine Notiz mit ungültigem Frontmatter scheitert weiter", async () => {
+    await expect(
+      saveNote("10_projects/kein-template", "---\ntype: project\ntitle: \"Test\"\nstatus: kaputt\n---\n\nx\n"),
+    ).rejects.toBeInstanceOf(FrontmatterValidationError);
+  });
+});

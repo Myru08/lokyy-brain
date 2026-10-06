@@ -343,10 +343,45 @@ export async function getNote(id: string): Promise<Note | null> {
  *   - The merged frontmatter is validated against its type schema; failure
  *     throws `FrontmatterValidationError` BEFORE any git operation.
  */
+const TEMPLATES_PREFIX = "00_meta/templates/";
+
+/**
+ * Speichert eine Vorlage unter `00_meta/templates/` wörtlich. Bringt der
+ * Aufrufer Frontmatter mit, gilt sein Text unverändert; sonst bleibt der
+ * Frontmatter-Block der Datei auf der Platte Zeichen für Zeichen erhalten
+ * (inklusive YAML-Kommentaren) und nur der Rumpf wird ersetzt.
+ */
+async function saveTemplate(id: string, relPath: string, abs: string, body: string): Promise<Note> {
+  let content: string;
+  if (/^---\r?\n/.test(body)) {
+    content = body;
+  } else {
+    let block = "";
+    try {
+      const onDisk = await readFile(abs, "utf8");
+      block = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(onDisk)?.[0] ?? "";
+    } catch {
+      // neue Vorlage ohne Frontmatter
+    }
+    content = block ? `${block}\n${body.replace(/^(\r?\n)+/, "")}` : body;
+  }
+  if (!content.endsWith("\n")) content += "\n";
+  await save(relPath, content, `vorlage: ${id}`);
+  return readNoteFile(abs);
+}
+
 export async function saveNote(id: string, body: string): Promise<Note> {
   const c = coreConfig();
   const relPath = id + ".md";
   const abs = join(c.vaultDir, ...id.split("/")) + ".md";
+
+  // Vorlagen sind keine Notizen: Sie tragen absichtlich Platzhalter
+  // (`__GENERATE_ULID__`, `__NOW__`, `title: ""`), die kein Typ-Schema erfüllt.
+  // Der pre-commit-Hook des Vaults überspringt `00_meta/` deshalb, die
+  // Link-Prüfung nimmt den Ordner aus (graphService). Hier genauso: wörtlich
+  // speichern, ohne Merge (der würde id/created/updated durch echte Werte
+  // ersetzen) und ohne Schema-Prüfung; nicht in die Suchindizes.
+  if (id.startsWith(TEMPLATES_PREFIX)) return saveTemplate(id, relPath, abs, body);
 
   // 1. Load existing on-disk frontmatter, if any.
   let existing: FrontmatterMap = {};
