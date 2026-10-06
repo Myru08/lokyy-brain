@@ -224,8 +224,12 @@ export class Tier1BM25 {
       // an empty BM25 query.
       const safeQuery = sanitizeBm25Query(query);
       if (safeQuery.length > 0) {
-        // ParadeDB pg_search path. `note_id @@@ $query` runs the query against
-        // every BM25-indexed field on the row (title + body + tags) and
+        // ParadeDB pg_search path. `note_id @@@ paradedb.parse($query)` runs the
+        // query against every BM25-indexed field on the row (title + body + tags)
+        // with OR between terms. Fork 2026-10-06: ab pg_search 0.26 durchsucht ein
+        // bloßer String rechts von `note_id @@@` nur noch das Schlüsselfeld und
+        // fand nie etwas; jede Suche fiel dann auf den langsamen Tier-1-Neuaufbau
+        // zurück. `lenient` verhindert Parse-Fehler bei Restzeichen. And
         // `paradedb.score(note_id)` returns the BM25 rank score.
         //
         // Phase C Wave C3 / Story 2 — Cognee `forget()` primitive: exclude
@@ -236,7 +240,7 @@ export class Tier1BM25 {
           const rows = (await database().execute(sql`
             SELECT note_id, title, body, paradedb.score(note_id) AS score
             FROM note_search
-            WHERE note_id @@@ ${safeQuery}
+            WHERE note_id @@@ paradedb.parse(${safeQuery}, lenient => true)
               AND forgotten = FALSE
               ${vaultClause}
             ORDER BY score DESC

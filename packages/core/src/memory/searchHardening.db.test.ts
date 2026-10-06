@@ -59,4 +59,17 @@ describe.skipIf(!DB_URL)("AC#6 — special-char search against live ParadeDB", (
     const followUp = await bm25.search("Klammer", 10, VAULT);
     expect(Array.isArray(followUp)).toBe(true);
   });
+
+  // Fork 2026-10-06: Ab pg_search 0.26 durchsucht ein bloßer String rechts von
+  // `note_id @@@` nur das Schlüsselfeld; die Suche lief fehlerfrei, fand aber
+  // nie etwas. Die Tests oben prüfen nur „wirft nicht“ und blieben grün.
+  it("findet ein Wort aus dem Rumpf (nicht nur die Notiz-ID)", async () => {
+    const hits = await bm25.search("Klammer", 10, VAULT);
+    expect(hits.map((h) => h.noteId)).toContain("01JREGRESS0000000000000000");
+  });
+
+  it("verknüpft mehrere Suchwörter mit ODER", async () => {
+    const hits = await bm25.search("Klammer gibtesnicht", 10, VAULT);
+    expect(hits.map((h) => h.noteId)).toContain("01JREGRESS0000000000000000");
+  });
 });

@@ -103,7 +103,7 @@ export async function hybridSearch(
                paradedb.score(note_id) AS s,
                ROW_NUMBER() OVER (ORDER BY paradedb.score(note_id) DESC) AS r
         FROM note_search
-        WHERE note_id @@@ ${query}
+        WHERE note_id @@@ paradedb.parse(${query}, lenient => true)
           AND forgotten = FALSE
           ${bm25VaultClause}
         ORDER BY paradedb.score(note_id) DESC
