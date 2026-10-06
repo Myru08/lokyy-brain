@@ -952,6 +952,14 @@ describe("MCP tool wiring (e2e via InMemoryTransport)", () => {
     expect(out.tags[0].count).toBe(3);
   });
 
+  it("get_tags mit counts_only liefert nur tag und count", async () => {
+    listTagsMock.mockResolvedValueOnce([
+      { tag: "ai", count: 3, noteIds: ["20_notes/a", "20_notes/b", "20_notes/c"] },
+    ]);
+    const res = await client.callTool({ name: "get_tags", arguments: { counts_only: true } });
+    expect(payload(res).tags).toEqual([{ tag: "ai", count: 3 }]);
+  });
+
   /* ---- Story 10.17 — get_history / get_note_diff / validate_note ---- */
 
   it("get_history calls core with the '.md' path and returns commits", async () => {

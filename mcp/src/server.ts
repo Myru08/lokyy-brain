@@ -684,8 +684,16 @@ export function createServer(): Server {
       {
         name: "get_tags",
         description:
-          "List EVERY tag in the Lokyy-Brain vault with its usage count — both frontmatter `tags: [...]` and inline `#tag`, aggregated and sorted by count (desc). Use this to discover the vault's tag vocabulary before tagging a new note (reuse an existing tag instead of inventing a near-duplicate) or to find the notes behind a tag. Takes no arguments. Returns { tags: [{ tag, count, noteIds }] }.",
-        inputSchema: { type: "object", properties: {} },
+          "List EVERY tag in the Lokyy-Brain vault with its usage count — both frontmatter `tags: [...]` and inline `#tag`, aggregated and sorted by count (desc). Use this to discover the vault's tag vocabulary before tagging a new note (reuse an existing tag instead of inventing a near-duplicate) or to find the notes behind a tag. Returns { tags: [{ tag, count, noteIds }] }. Pass `counts_only: true` to drop the noteIds lists (a few KB instead of ~100 KB on a large vault) when you only need the vocabulary.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            counts_only: {
+              type: "boolean",
+              description: "true = only { tag, count } per tag, without noteIds. Default false.",
+            },
+          },
+        },
       },
       {
         name: "get_history",
@@ -1353,6 +1361,12 @@ export function createServer(): Server {
           // aggregate is vault-wide metadata, not per-note content; no scope
           // gate (mirrors get_vault_conventions' "describes the vault" stance).
           const tags = await listTags();
+          // Fork 2026-10-06: Walters Wochenprüfung braucht nur das Vokabular;
+          // mit allen noteIds waren es ~94 KB, die in der Cron-Umgebung als
+          // Datei ausgelagert und dann nicht mehr lesbar waren.
+          if (args.counts_only === true) {
+            return text({ tags: tags.map(({ tag, count }) => ({ tag, count })) });
+          }
           return text({ tags });
         }
         case "get_history": {
