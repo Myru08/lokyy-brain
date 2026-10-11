@@ -10,6 +10,7 @@ import { getMemoryProvider } from "../../memory/index.js";
 import { parseFrontmatter, validateFrontmatter } from "../../frontmatter/index.js";
 import { DOC_TYPES } from "../../frontmatter/types.js";
 import { isHandsOffZone } from "../rawGuard.js";
+import { isLintExempt, dupCheckWindow } from "./lintScope.js";
 import { createPassErrorLog } from "../errorSamples.js";
 import type { DocType } from "../../frontmatter/index.js";
 import { LlmRouter } from "../../llm/router.js";
@@ -84,7 +85,11 @@ export const lintPass: SleepPass = {
       // so no finding is ever emitted ABOUT a hands-off note. Regular RAW notes
       // stay in scope — RAW is allowed to be read/checked, only the `_`-zone
       // is off-limits. Profile-independent pure-path filter (no-op under para).
-      const allNotes = (await listNotes()).filter((n) => !isHandsOffZone(n.id));
+      const vaultNotes = (await listNotes()).filter((n) => !isHandsOffZone(n.id));
+      // Fork: 00_meta/ (Vorlagen mit Platzhaltern) und 99_archive/ werden nicht
+      // selbst geprüft (siehe lintScope.ts). `vaultNotes` bleibt die Menge der
+      // existierenden Link-Ziele für den Missing-Link-Check.
+      const allNotes = vaultNotes.filter((n) => !isLintExempt(n.id));
 
       // ─── Check 1: Orphan Detection ─────────────────────────────────────
       const incomingLinks = new Map<string, number>();
@@ -120,8 +125,8 @@ export const lintPass: SleepPass = {
 
       // ─── Check 2: Missing Cross-References ────────────────────────────
       const linkTargets = new Map<string, Set<string>>();
-      const noteIdSet = new Set(allNotes.map((n) => n.id));
-      const noteTitleSet = new Set(allNotes.map((n) => n.title.toLowerCase()));
+      const noteIdSet = new Set(vaultNotes.map((n) => n.id));
+      const noteTitleSet = new Set(vaultNotes.map((n) => n.title.toLowerCase()));
 
       for (const note of allNotes) {
         try {
@@ -197,11 +202,13 @@ export const lintPass: SleepPass = {
       // ─── Check 4: Duplicate-Detection (cosine sim > DUP_THRESHOLD) ────
       const memory = getMemoryProvider(DEFAULT_VAULT_ID);
       const checkedPairs = new Set<string>();
-      for (const note of allNotes.slice(0, MAX_DUP_CHECK_NOTES)) {
+      // Fork: wöchentlich wanderndes Fenster statt immer der ersten 200.
+      for (const note of dupCheckWindow(allNotes, MAX_DUP_CHECK_NOTES)) {
         try {
           const neighbors = await memory.relatedNotes(note.id, { limit: 5 });
           for (const n of neighbors) {
             if (n.noteId === note.id) continue;
+            if (isLintExempt(n.noteId)) continue;
             // Only consider semantic (Tier-2) hits — Tier-1 fallback is a
             // structural score on a different scale.
             if (n.tier !== "t2") continue;
