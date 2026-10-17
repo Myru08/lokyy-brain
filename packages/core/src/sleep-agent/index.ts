@@ -76,8 +76,9 @@ const ALL_PASSES: SleepPass[] = [
 const LINT_WEEKDAY = 0;
 const LINT_HOUR = 4;
 const LINT_MINUTE = 30;
-const LINT_RETRY_MS = 5 * 60_000;
-const LINT_RETRY_LIMIT = 24;
+/** Fork: Ist der Agent zum Slot belegt, alle 5 min erneut versuchen (max. 2 h). */
+const BUSY_RETRY_MS = 5 * 60_000;
+const BUSY_RETRY_LIMIT = 24;
 
 /**
  * Nächster Zeitpunkt `weekday` (0 = Sonntag) um `hour:minute` Ortszeit,
@@ -309,16 +310,25 @@ export class SleepAgent {
   private scheduleWeeklyLint(weekday: number, hour: number, minute: number): void {
     const next = nextWeeklySlot(new Date(), weekday, hour, minute);
     this.armLintTimer(next.getTime() - Date.now(), () => {
-      this.tryLint(LINT_RETRY_LIMIT);
+      this.tryWhenIdle("lint", "weekly lint", BUSY_RETRY_LIMIT);
       this.scheduleWeeklyLint(weekday, hour, minute);
     });
   }
 
-  private tryLint(retriesLeft: number): void {
+  /**
+   * Fork: Startet `phase`, sobald kein anderer Lauf aktiv ist. Ein belegter
+   * Agent wird alle `BUSY_RETRY_MS` erneut geprüft statt den Slot still
+   * auszulassen (REM fiel sonst aus, wenn ein NREM-Idle-Lauf über 03:00 lief).
+   */
+  private tryWhenIdle(
+    phase: "rem" | "lint",
+    label: string,
+    retriesLeft: number,
+  ): void {
     if (!this.running) {
-      void this.runPhase("lint", "nightly").catch((err) => {
+      void this.runPhase(phase, "nightly").catch((err) => {
         console.warn(
-          `[sleep-agent] weekly lint run failed: ${
+          `[sleep-agent] ${label} run failed: ${
             err instanceof Error ? err.message : String(err)
           }`,
         );
@@ -326,12 +336,12 @@ export class SleepAgent {
       return;
     }
     if (retriesLeft <= 0) {
-      console.warn("[sleep-agent] weekly lint skipped — agent stayed busy");
+      console.warn(`[sleep-agent] ${label} skipped — agent stayed busy`);
       return;
     }
     const t = setTimeout(
-      () => this.tryLint(retriesLeft - 1),
-      LINT_RETRY_MS,
+      () => this.tryWhenIdle(phase, label, retriesLeft - 1),
+      BUSY_RETRY_MS,
     ) as { unref?: () => void };
     t.unref?.();
   }
@@ -366,15 +376,7 @@ export class SleepAgent {
     if (next <= now) next.setDate(next.getDate() + 1);
     const ms = Math.max(0, next.getTime() - now.getTime());
     this.nightlyTimer = setTimeout(() => {
-      if (!this.running) {
-        void this.runPhase("rem", "nightly").catch((err) => {
-          console.warn(
-            `[sleep-agent] nightly run failed: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          );
-        });
-      }
+      this.tryWhenIdle("rem", "nightly", BUSY_RETRY_LIMIT);
       // Re-anchor for the next calendar day, even if the run skipped.
       this.scheduleNightly(hour);
     }, ms);
